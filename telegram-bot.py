@@ -16,30 +16,33 @@ import asyncio
 import os
 import html
 
-# Настройки юзеров 
-NSFW_PREFS_FILE = "nsfw_preferences.json"
+import configparser
 
-DEFAULT_SYSTEM_PROMPT_FILE = "default.txt"
+_config = configparser.ConfigParser()
+_config.read("config.ini", encoding="utf-8")
 
-TELEGRAM_BOT_TOKEN = '8213556760:AAFhgUhSUNdItFtQbp5bmnawDHsOJZGT3wA'
-OPENWEBUI_URL = 'http://localhost:8000'
-OPENWEBUI_API_KEY = 'sk-59005e47c9dc492186ead3e975b3a7fb'
-DEFAULT_MODEL = 'gemma3:12b'
+SETTINGS = _config["settings"]
 
-OWNER_ID = 1551662876  # ← замени на свой
-OWNER_API_KEY = 'sk-6895cfcede6d49d2a21e26998343a980'
-NSFW_MODEL = 'benevolentjoker/nsfwmonika:latest'
-DEFAULT_API_KEY = 'sk-59005e47c9dc492186ead3e975b3a7fb'
-SFW_MODEL = 'gemma3:12b'
-DEFAULT_MODEL = 'gemma3:12b'
-DEFAULT_KB_ID = "d0d55860-a103-4dc2-81b6-f6fa6a834ae2"  # дефолтная база знаний
+# Пример доступа:
+DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
+TELEGRAM_BOT_TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
+OPENWEBUI_URL = SETTINGS["OPENWEBUI_URL"]
+OPENWEBUI_API_KEY = SETTINGS["OPENWEBUI_API_KEY"]
+DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 
-COMFY_API_URL = "http://localhost:8188"
-WORKFLOW_GENERAL_PATH = "flow.json"  # путь к простому workflow
-WORKFLOW_CHARACTER_PATH = "myflow.json"  # путь к workflow с персонажем
-COMFY_OUTPUT_DIR = "/home/alexey/projects/ComfyUI/output"
-COMFY_INPUT_DIR = "/home/alexey/projects/ComfyUI/input"
-AVATAR_DIR = "user_avatars"
+OWNER_ID = int(SETTINGS["OWNER_ID"])
+OWNER_API_KEY = SETTINGS["OWNER_API_KEY"]
+NSFW_MODEL = SETTINGS["NSFW_MODEL"]
+DEFAULT_API_KEY = SETTINGS["DEFAULT_API_KEY"]
+SFW_MODEL = SETTINGS["SFW_MODEL"]
+DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
+
+COMFY_API_URL = SETTINGS["COMFY_API_URL"]
+WORKFLOW_GENERAL_PATH = SETTINGS["WORKFLOW_GENERAL_PATH"]
+WORKFLOW_CHARACTER_PATH = SETTINGS["WORKFLOW_CHARACTER_PATH"]
+COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
+COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
+AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 
 MAX_HISTORY_MESSAGES = 300
 MAX_CAPTION_LENGTH = 160 # байт
@@ -80,7 +83,8 @@ NEGATIVE_PROMPTS = {
                 "extra hands, bad hands, extra eyebrows,(poor low details),ahegao, low contrast, oversaturated, undersaturated, "
                 "overexposed, underexposed, bad photo, bad photography,bad picture,face asymmetry, eyes asymmetry, "
                 "negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, two phones",
-        "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, breasts, topless, underboob, areola, sex, sexual, open clothes," 
+        "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, breasts, topless, underboob, areola, "
+                "sex, sexual, open clothes, unbuttoned, " 
                 "cleavage, revealing, lingerie, pussy, vagina, breast, exposed, erotic, penis, cock, lewd):3.5"
 }                
 
@@ -219,8 +223,6 @@ def clean_response(text: str) -> str:
     # Удаляем <think>...</think> если внутри только пробелы или ничего
     return re.sub(r'<think>\s*</think>', '', text, flags=re.DOTALL).strip()
 
-def get_system_prompt_file(user_id: int) -> str:
-    return os.path.join(SYSTEM_PROMPTS_DIR, f"{user_id}.txt")
 
 async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -239,7 +241,7 @@ async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["system_prompt"] = prompt_text
     save_user_settings(user_id, settings)
 
-    await update.message.reply_text("✅ Ok, deal!")
+    await update.message.reply_text("✅ Okay, deal!")
 
 
 
