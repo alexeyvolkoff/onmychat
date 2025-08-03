@@ -471,18 +471,6 @@ async def classify_user_intent(prompt: str) -> str:
     return response.lower().strip()
 
 
-
-
-def truncate_caption(caption: str, limit=MAX_CAPTION_LENGTH) -> str:
-    encoded = caption.encode("utf-8")
-    if len(encoded) <= limit:
-        return caption
-    # обрезаем, учитывая многобайтовость
-    while len(encoded) > limit:
-        caption = caption[:-1]
-        encoded = caption.encode("utf-8")
-    return caption + "…"
-
 async def generate_image_workflow(workflow, prompt, explained, update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отправить в ComfyUI
     try:
@@ -505,12 +493,15 @@ async def generate_image_workflow(workflow, prompt, explained, update: Update, c
         images = await poll_for_result(prompt_id)
         logging.info(f"Received images for prompt_id: {prompt_id} ")
         for image_path in images:
-            with open(image_path, "rb") as f:
-                caption = truncate_caption(escape_markdown_v2(prompt))
-                reply_text = format_response_for_markdown_v2(explained)
-                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.MARKDOWN_V2)
-                #logging.info(f"Chat ID: {user_id} output: {result}")
-                await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
+            # Отправляем фото без caption
+            await update.message.reply_photo(photo=f)
+
+            # Формируем сообщение с caption в виде цитаты + основной текст explained
+            caption_quote = f"> {escape_markdown_v2(prompt)}\n\n"
+            full_reply = caption_quote + format_response_for_markdown_v2(explained)
+
+            # Отправляем одним сообщением
+            await update.message.reply_text(full_reply, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logging.error(f"error for prompt:  {e}")
 
