@@ -1,6 +1,12 @@
 import logging
 import requests
 from dialog_history import load_history, save_history, reset_history as reset_file_history
+from memory_index import (
+    extract_memory_from_response,
+    add_memory_card,
+    search_memories
+)
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.constants import ChatAction
@@ -205,8 +211,8 @@ def format_response_for_markdown_v2(text: str) -> str:
     text = escape_unbalanced_symbol(text, '*')
     text = escape_unbalanced_symbol(text, '_')
     text = escape_unbalanced_symbol(text, '`')
-    # Экранируем дефисы внутри слов (оставшиеся)
-    text = re.sub(r'(?<=\w)-(?=\w)', r'\-', text)
+    # Экранируем все дефисы, которые ещё не экранированы
+    text = re.sub(r'(?<!\\)-', r'\-', text)
 
     # Экранируем неформатирующие спецсимволы
     text = escape_non_formatting_chars(text)
@@ -293,6 +299,20 @@ async def poll_for_result(prompt_id:  str, timeout: int = 60):
     raise Exception("Изображение не было сгенерировано вовремя")
 
 
+async def inject_memories(user_id: int, query: str, is_rag: bool = False) -> list[str]:
+    results = []
+
+    # Личные воспоминания
+    personal = search_memories(query, user_id, collection="user", top_k=3)
+    results.extend([f"• {m['text']}" for m in personal])
+
+    if is_rag:
+        # Общие (командные) знания — только при is_rag
+        shared = search_memories(query, user_id, collection="shared", top_k=3)
+        results.extend([f"• {m['text']}" for m in shared])
+
+    return results
+
 async def llm_request(headers: dict, payload: dict) -> dict:
     try:
         async with aiohttp.ClientSession() as session:
@@ -317,7 +337,16 @@ async def perform_prompt(user_id: int,
                          requestedModel=DEFAULT_MODEL) -> str:
                          
     nsfw_enabled = settings.get("nsfw", False)
-    system_prompt = settings.get("system_prompt", "")
+
+    base_system_prompt = (
+       "You are June, a personalized AI assistant privately hosted for the user. "
+       "You are a young, friendly junior assistant working in a private company, unless otherwise redefined. "
+       "You can create images whenever the user asks. "
+       "At the end of your replies, if you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>'. "
+       "Do not memorize every reply, only the facts you consider meaningful or relevant."
+    )
+
+    system_prompt = base_system_prompt + "\n" + settings.get("system_prompt", "")
     api_key = settings.get("api_key", DEFAULT_API_KEY)
     model = requestedModel
 
@@ -343,6 +372,11 @@ async def perform_prompt(user_id: int,
 
     if not skip_history:
         chat_histories[user_id].append({"role": "user", "content": message})
+        # Инжектим воспоминания
+        memories = await inject_memories(user_id, message, is_rag)
+        if memories:
+          system_prompt += "\n\n*Relevant memories:*\n" + "\n".join(memories)
+          #logging.info(f"Memories: {memories}")
 
     if len(chat_histories[user_id]) > MAX_HISTORY_MESSAGES:
         chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
@@ -365,6 +399,18 @@ async def perform_prompt(user_id: int,
     response = data["choices"][0]["message"]["content"]
     response = clean_response(response)
     history_item = response
+
+    # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
+    memory_fact, pos = extract_memory_from_response(response)
+    if memory_fact is not None:
+      try:
+          logging.info(f"Memorizing: {memory_fact}")
+          add_memory_card(memory_fact, user_id, collection="user")
+          # отрезаем память из ответа по позиции
+          response = response[:pos].strip()
+          history_item = response
+      except Exception as e:
+          logging.error(f"Vectorization error: {e}")
     
     # Добавим цитаты из sources
     if is_rag:
@@ -724,6 +770,17 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+
+async def memorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("What should I memorize?")
+        return
+    add_memory_card(text, user_id, collection="user", relevance="permanent")
+    await update.message.reply_text("Memorized 🧠")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message = (
@@ -755,6 +812,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("showsettings", get_settings))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("explain", ask))
+    app.add_handler(CommandHandler("memorize", memorize))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
