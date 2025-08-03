@@ -493,12 +493,13 @@ async def generate_image_workflow(workflow, prompt, explained, update: Update, c
         images = await poll_for_result(prompt_id)
         logging.info(f"Received images for prompt_id: {prompt_id} ")
         for image_path in images:
+          with open(image_path, "rb") as f:
             # Отправляем фото без caption
             await update.message.reply_photo(photo=f)
 
             # Формируем сообщение с caption в виде цитаты + основной текст explained
-            caption_quote = f"> {escape_markdown_v2(prompt)}\n\n"
-            full_reply = caption_quote + format_response_for_markdown_v2(explained)
+            quoted_prompt = f"> {escape_markdown_v2(prompt)}\n\n"
+            full_reply = quoted_prompt + format_response_for_markdown_v2(explained)
 
             # Отправляем одним сообщением
             await update.message.reply_text(full_reply, parse_mode=ParseMode.MARKDOWN_V2)
