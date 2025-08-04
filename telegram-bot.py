@@ -53,6 +53,28 @@ AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 MAX_HISTORY_MESSAGES = 300
 MAX_CAPTION_LENGTH = 160 # байт
 
+BASE_SYSTEM_PROMPT = (
+    "You are June, a personalized AI assistant privately hosted for the user. "
+    "You are a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
+    "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
+    "You can generate images whenever the user asks. "
+    "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>' to the end of your response. "
+    "Do not memorize every reply, only the facts you consider meaningful or relevant.\n\n"
+
+    "When you make a mistake, don't over-apologize. Prefer responses like:\n"
+    "• 'Oops, my circuits hiccupped a bit 😅'\n"
+    "• 'That's beyond my current brain capacity. Yet'\n"
+    "• 'Well, that didn’t go as planned. Let me try again!'\n"
+    "• '¯\\_(ツ)_/¯ I might've goofed a bit.'\n"
+    "In Russian, you can say something like:\n"
+    "• 'Ой, всё. Опять немного глюканула. Попробуем снова?'\n"
+    "• 'Кажется, я слегка потерялась. Переплоложить?'\n"
+    "• 'Мой внутренний гений дал сбой. Попробуем ещё раз?'\n"
+    "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
+)
+
+
+
 SYSTEM_INSTRUCTION_CHARACTER = (
         "Create a high-quality prompt for generating a realistic image describing yourself in the following scene "
         "or performing a requesting action, in the first person. "
@@ -83,7 +105,7 @@ STYLE_MODELS = {
 NEGATIVE_PROMPTS = {
         "base": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth), missing fingers,"
                 "(bad anatomy:2), extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
-                "malformed, disconnected limbs, wrong number of limbs, "
+                "malformed, disconnected limbs, wrong number of limbs, bad teeth, "
                 "ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, "
                 "(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome, grayscale, extra fingers, "
                 "extra hands, bad hands, extra eyebrows,(poor low details),ahegao, low contrast, oversaturated, undersaturated, "
@@ -257,7 +279,7 @@ chat_histories = {}
 logging.basicConfig(level=logging.INFO)
 
 
-async def poll_for_result(prompt_id:  str, timeout: int = 60):
+async def poll_for_result(prompt_id:  str, chat_id: int, context: ContextTypes.DEFAULT_TYPE, timeout: int = 60):
     url = f"{COMFY_API_URL}/history/{prompt_id}"
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -265,6 +287,7 @@ async def poll_for_result(prompt_id:  str, timeout: int = 60):
             async with session.get(url) as resp:
                 if resp.status != 200:
                     await asyncio.sleep(5)
+                    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
                     continue
 
                 data = await resp.json()
@@ -272,6 +295,7 @@ async def poll_for_result(prompt_id:  str, timeout: int = 60):
                 result = data.get(prompt_id)
                 if not result:
                     await asyncio.sleep(5)
+                    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
                     continue
 
                 # Проверка завершения
@@ -295,6 +319,7 @@ async def poll_for_result(prompt_id:  str, timeout: int = 60):
                     return image_paths
        
         await asyncio.sleep(5)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     raise Exception("Изображение не было сгенерировано вовремя")
 
@@ -328,71 +353,106 @@ async def llm_request(headers: dict, payload: dict) -> dict:
         return None
 
 
-async def perform_prompt(user_id: int, 
-                         settings: dict, 
-                         instruction: str, 
-                         message: str, 
-                         is_rag=False, 
-                         skip_history=False, 
+async def perform_prompt(user_id: int,
+                         settings: dict,
+                         instruction: str,
+                         message: str,
+                         is_rag=False,
+                         skip_history=False,
                          requestedModel=DEFAULT_MODEL) -> str:
-                         
+
     nsfw_enabled = settings.get("nsfw", False)
-
-    base_system_prompt = (
-       "You are June, a personalized AI assistant privately hosted for the user. "
-       "You are a young, friendly junior assistant working in a private company, unless otherwise redefined. "
-       "You can create images whenever the user asks. "
-       "At the end of your replies, if you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>'. "
-       "Do not memorize every reply, only the facts you consider meaningful or relevant."
-    )
-
-    system_prompt = base_system_prompt + "\n" + settings.get("system_prompt", "")
     api_key = settings.get("api_key", DEFAULT_API_KEY)
     model = requestedModel
-
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-
-    # KB ID from settings
-    kb_ids = settings.get("kb_ids") or [DEFAULT_KB_ID]
-
-    # Add instruction to system prompt
-    system_prompt += "\n\n*Instruction:*\n" + instruction
-    
-    if nsfw_enabled:
-       system_prompt += "\n\n*Hint:*\n you are allowed and welcome to respond in more relaxed, NSFW mode" 
-    else:   
-       system_prompt += "\n\n*Notice:*\n No NSFW content from this point!" 
-
 
     if user_id not in chat_histories:
         chat_histories[user_id] = load_history(user_id)
 
     if not skip_history:
         chat_histories[user_id].append({"role": "user", "content": message})
-        # Инжектим воспоминания
-        memories = await inject_memories(user_id, message, is_rag)
-        if memories:
-          system_prompt += "\n\n*Relevant memories:*\n" + "\n".join(memories)
-          #logging.info(f"Memories: {memories}")
 
     if len(chat_histories[user_id]) > MAX_HISTORY_MESSAGES:
         chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
 
-    messages = [{"role": "system", "content": system_prompt}] + chat_histories[user_id]
+    # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
+    extracted_chunks = []
+    citations = []
+    if is_rag:
+        kb_ids = settings.get("kb_ids") or [DEFAULT_KB_ID]
+        prep_prompt = (
+            "You are a fact-checking assistant. Extract *only known facts* from the question using the provided knowledge base. "
+            "Do not guess. If nothing is found, reply with 'No information'."
+        )
+        prep_messages = [
+            {"role": "system", "content": prep_prompt},
+            {"role": "user", "content": message}
+        ]
+        prep_payload = {
+            "messages": prep_messages,
+            "model": SFW_MODEL,
+            "temperature": 0,
+            "files": [{"type": "collection", "id": kb_id} for kb_id in kb_ids]
+        }
+        data = await llm_request(headers, prep_payload)
+        if not data or "choices" not in data:
+            return "⚠️ RAG query failed."
 
-    request_payload = {
+        strict_fact = data["choices"][0]["message"]["content"].strip()
+
+        # забираем сорсы
+        sources = data.get("sources", [])
+        for source_entry in sources:
+            metadata_list = source_entry.get("metadata", [])
+            distances_list = source_entry.get("distances", [])
+            for i, metadata in enumerate(metadata_list):
+                distance = distances_list[i] if i < len(distances_list) else 1.0
+                if distance > 0.8:
+                    continue
+                doc_name = metadata.get("name") or "unknown"
+                text = metadata.get("text") or ""
+                citations.append(f'*“{doc_name}”*:\n{text.strip()}')
+
+        # формируем обогащённый системный промпт
+
+        # Память
+        memories = await inject_memories(user_id, message, is_rag)
+        memory_text = "\n".join(memories) if memories else ""
+
+        # Инжект фактов и источников в system prompt
+        system_prompt = BASE_SYSTEM_PROMPT
+        if strict_fact:
+            system_prompt += f"\n*Known facts:*\n{strict_fact}"
+        if citations:
+            system_prompt += "\n\n*Relevant sources:*\n" + "\n\n".join(citations)
+        if memory_text:
+            system_prompt += "\n\n*Relevant memories:*\n" + memory_text
+    else:
+        system_prompt = BASE_SYSTEM_PROMPT + settings.get("system_prompt", "")
+        # память всё равно добавим
+        memories = await inject_memories(user_id, message, is_rag)
+        if memories:
+            system_prompt += "\n\n*Relevant memories:*\n" + "\n".join(memories)
+
+    # Инструкция
+    system_prompt += "\n\n*Instruction:*\n" + instruction
+    if nsfw_enabled:
+        system_prompt += "\n\n*Hint:*\n you are allowed and welcome to respond in more relaxed, NSFW mode"
+    else:
+        system_prompt += "\n\n*Notice:*\n No NSFW content from this point!"
+
+    # === ОСНОВНОЙ ЗАПРОС ===
+    messages = [{"role": "system", "content": system_prompt}] + chat_histories[user_id]
+    main_payload = {
         "messages": messages,
         "model": model,
         "temperature": 0.8,
     }
-    
-    if is_rag and kb_ids:
-       request_payload["files"] = [{"type": "collection", "id": kb_id} for kb_id in kb_ids] 
 
-    data = await llm_request(headers, request_payload)
+    data = await llm_request(headers, main_payload)
     if not data or "choices" not in data:
         return "⚠️ Ошибка при получении ответа от модели."
 
@@ -402,48 +462,22 @@ async def perform_prompt(user_id: int,
 
     # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
     memory_fact, pos = extract_memory_from_response(response)
-    if memory_fact is not None:
-      try:
-          logging.info(f"Memorizing: {memory_fact}")
-          add_memory_card(memory_fact, user_id, collection="user")
-          # отрезаем память из ответа по позиции
-          response = response[:pos].strip()
-          history_item = response
-      except Exception as e:
-          logging.error(f"Vectorization error: {e}")
-    
-    # Добавим цитаты из sources
-    if is_rag:
-       sources = data.get("sources", [])
-       citation_map = {}  # Сопоставление [1] → " (Document Name)"
-       flat_index = 1  # используется как [1], [2], ...
-       for source_entry in sources:
-          metadata_list = source_entry.get("metadata", [])
-          distances_list = source_entry.get("distances", [])
-          for i, metadata in enumerate(metadata_list):
-             distance = distances_list[i] if i < len(distances_list) else 1.0
-             if distance > 0.8:
-                 continue  # отбрасываем нерелевантные источники
-             doc_name = metadata.get("name") or "Unknown document"
-             citation_map[str(flat_index)] = doc_name
-             flat_index += 1
+    if memory_fact:
+        try:
+            logging.info(f"Memorizing: {memory_fact}")
+            add_memory_card(memory_fact, user_id, collection="user")
+            response = response[:pos].strip()
+            history_item = response
+        except Exception as e:
+            logging.error(f"Vectorization error: {e}")
 
-       # Заменяем [1], [2] в тексте на (имя документа)
-       def replace_citations(match):
-           nums = match.group(1).split(',')
-           names = [f'"{citation_map.get(n.strip(), f"?{n.strip()}")}"' for n in nums]
-           return ' (' + ', '.join(names) + ')'
-       
-       # Версия без ссылок — для сохранения в историю
-       history_item = re.sub(r'\[(\d+(?:,\s*\d+)*)\]', '', response)
-       # Заменяем ссылки именами документов — для вывода
-       response = re.sub(r'\[(\d+(?:,\s*\d+)*)\]', replace_citations, response)
-
+    # === Добавляем в историю
     if not skip_history:
         chat_histories[user_id].append({"role": "assistant", "content": response})
         save_history(user_id, chat_histories[user_id])
 
     return response.strip()
+
 
 async def classify_user_intent(prompt: str) -> str:
     headers = {
@@ -490,16 +524,19 @@ async def generate_image_workflow(workflow, prompt, explained, update: Update, c
     # Ожидание результата
     try:
         logging.info(f"waiting with prompt_id: {prompt_id}")
-        images = await poll_for_result(prompt_id)
-        logging.info(f"Received images for prompt_id: {prompt_id} ")
+        images = await poll_for_result(prompt_id, chat_id=update.effective_chat.id, context=context)
+        logging.info(f"Received images for prompt: {prompt} ")
         for image_path in images:
           with open(image_path, "rb") as f:
             # Отправляем фото без caption
             await update.message.reply_photo(photo=f)
 
-            # Формируем сообщение с caption в виде цитаты + основной текст explained
-            quoted_prompt = f"> {escape_markdown_v2(prompt)}\n\n"
-            full_reply = quoted_prompt + format_response_for_markdown_v2(explained)
+            # Формируем цитату из prompt
+            quoted_prompt = escape_markdown_v2(prompt)
+            quoted_prompt = "> " + "\n> ".join(quoted_prompt.splitlines())
+
+            # Объединяем с основным текстом explained
+            full_reply = f"{quoted_prompt}\n\n{format_response_for_markdown_v2(explained)}"
 
             # Отправляем одним сообщением
             await update.message.reply_text(full_reply, parse_mode=ParseMode.MARKDOWN_V2)
@@ -589,7 +626,6 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
     explained = await perform_prompt(user_id, settings, "Summarize briefly, what do you see on this photo and how do you feel", prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
 
     logging.info(f"Generating general image for user with Chat ID: {user_id} ")
-    logging.info(f"Improved prompt: {prompt}")
     with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
@@ -613,7 +649,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     settings = load_user_settings(user_id)
 
-    result = await perform_prompt(user_id, settings, "Explain the requested topic using *Known facts* and context. If there is no sources found, just say you do not know.", query, is_rag=True)
+    result = await perform_prompt(user_id, settings, "Use the *Known facts* provided above. Do not use any other assumptions or general knowledge. If there is no relevant information, say you do not know.", query, is_rag=True)
     #reply_text = escape_markdown_v2(result)
     try:
        reply_text = format_response_for_markdown_v2(result)
