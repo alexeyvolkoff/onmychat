@@ -6,6 +6,7 @@ from memory_index import (
     add_memory_card,
     fetch_document_text,
     chunk_and_vectorize_to_file,
+    make_file_name_from_document_id,
     search_memories
 )
 
@@ -71,7 +72,7 @@ BASE_SYSTEM_PROMPT = (
     "• '¯\\_(ツ)_/¯ I might've goofed a bit.'\n"
     "In Russian, you can say something like:\n"
     "• 'Ой, всё. Опять немного глюканула. Попробуем снова?'\n"
-    "• 'Кажется, я слегка потерялась. Переплоложить?'\n"
+    "• 'Ой, я слегка потерялась. Перепроложить?'\n"
     "• 'Мой внутренний гений дал сбой. Попробуем ещё раз?'\n"
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
 )
@@ -212,11 +213,26 @@ def format_response_for_markdown_v2(text: str) -> str:
             s = re.sub(pattern, rf'\\{sym}', s)
         return s
 
+   # Экранируем спецсимволы внутри markdown-ссылок [text](url)
+    def escape_markdown_link(match):
+        label = re.sub(r'([[\]()~>#+=|{}.!_-])', r'\\\1', match.group(1))
+        url = re.sub(r'([[\]()~>#+=|{}.!_-])', r'\\\1', match.group(2))
+        return f'[{label}]({url})'
 
     def escape_non_formatting_chars(s):
         # оставшиеся: *_` и -
         chars = r'[]()~>#+=|{}.!'
         return re.sub(r'([%s])' % re.escape(chars), r'\\\1', s)
+
+    def escape_link(s):
+        return s.replace('.', r'\.')
+
+    # Сохраняем Markdown-ссылки [text](url)
+    link_placeholders = []
+    def save_links(m):
+        link_placeholders.append(m.group(0))
+        return f"§§LINK{len(link_placeholders)}§§"
+    text = re.sub(r'\[[^\]]+\]\([^)]+\)', save_links, text)
 
     # Заменяем * или - в начале строки на юникодный буллет
     text = re.sub(r'(?m)^\s*[\*\-]\s+', '• ', text)
@@ -245,6 +261,11 @@ def format_response_for_markdown_v2(text: str) -> str:
     # Восстанавливаем блоки кода
     for i, code in enumerate(code_blocks, start=1):
         text = text.replace(f"§§§{i}§§§", f"```\n{code}\n```")
+
+    # Восстанавливаем ссылки
+    for i, link in enumerate(link_placeholders, start=1):
+        text = text.replace(f"§§LINK{i}§§", escape_link(link))
+
 
     return text
 
@@ -328,7 +349,7 @@ async def poll_for_result(prompt_id:  str, chat_id: int, context: ContextTypes.D
     raise Exception("Изображение не было сгенерировано вовремя")
 
 
-async def inject_facts(user_id: int, query: str, is_rag: bool = False, collection: str = "shared") -> tuple[list[str], list[str]]:
+async def inject_facts(user_id: int, query: str, collection: str = "") -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
 
@@ -336,16 +357,18 @@ async def inject_facts(user_id: int, query: str, is_rag: bool = False, collectio
     personal = search_memories(query, user_id, "user", top_k=3)
     for m in personal:
         facts.append(f"• {m['text']}")
-        if "document_id" in m:
-            document_ids.append(m["document_id"])
+        doc_id = m.get("document_id")
+        if doc_id:
+            document_ids.append(doc_id)
 
-    # Общие знания — только при is_rag
-    if is_rag:
+    # Общие знания — если есть collection
+    if collection:
         shared = search_memories(query, user_id, collection=collection, top_k=3)
         for m in shared:
             facts.append(f"• {m['text']}")
-            if "document_id" in m:
-                document_ids.append(m["document_id"])
+            doc_id = m.get("document_id")
+            if doc_id:
+                document_ids.append(doc_id)
 
     logging.info(f"{collection} MEMORIES: {facts} ")
     logging.info(f"{collection} DOC_IDS: {document_ids}")
@@ -392,16 +415,13 @@ async def perform_prompt(user_id: int,
     if len(chat_histories[user_id]) > MAX_HISTORY_MESSAGES:
         chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
 
-    # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
+    # === ВСПОМНИМ ФАКТЫ ===
     collection = settings.get("kb_id") or DEFAULT_KB_ID
     logging.info(f"collection: {collection} {is_rag}")
-    doc_ids = []
+    facts, doc_ids = await inject_facts(user_id, message, collection)
     if is_rag:
-        collection = settings.get("kb_id") or DEFAULT_KB_ID
-        logging.info(f"collection: {collection} {is_rag}")
-        facts, doc_ids = await inject_facts(user_id, message, is_rag, collection)
+        # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         facts_text = "\n".join(facts) if facts else ""
-        logging.info(f"Memory: {facts_text}")
 
         prep_prompt = (
             "You are a fact-checking assistant. Extract *only known facts* from the question using the provided knowledge base. "
@@ -437,8 +457,7 @@ async def perform_prompt(user_id: int,
             system_prompt += "\n\n*Relevant facts and memories:*\n" + facts_text
     else:
         system_prompt = BASE_SYSTEM_PROMPT + settings.get("system_prompt", "")
-        # память всё равно добавим
-        facts, doc_ids = await inject_facts(user_id, message, is_rag)
+        # память и факты всё равно добавим
         if facts:
             system_prompt += "\n\n*Relevant facts and memories:*\n" + "\n".join(facts)
 
@@ -478,8 +497,11 @@ async def perform_prompt(user_id: int,
 
     # Добавляем блок с источниками — только в отображаемый ответ
     if doc_ids:
-        links = [f"[Document {i+1}]({doc})" for i, doc in enumerate(doc_ids)]
-        response += "\n\n📎 *Sources:*\n" + "\n".join(links)
+       links = [
+          f"• [{make_file_name_from_document_id(doc)}]({doc})"
+          for doc in doc_ids
+       ]
+       response += "\n\n📎 *Sources:*\n" + "\n".join(links)
 
     # === Добавляем в историю
     if not skip_history:
@@ -660,7 +682,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_user_settings(user_id)
 
     result = await perform_prompt(user_id, settings, "Use the *Known facts* provided above. Do not use any other assumptions or general knowledge. If there is no relevant information, say you do not know.", query, is_rag=True)
-    #reply_text = escape_markdown_v2(result)
     try:
        reply_text = format_response_for_markdown_v2(result)
        #logging.info(f"Chat ID: {user_id} output: {result}")
@@ -829,7 +850,7 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
 
 async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("⚠️ Usage: /document <url> [collection]")
+        await update.message.reply_text("⚠️ Usage: /import <url> [collection]")
         return
 
     url = "https://onmydisk.net/" + context.args[0]

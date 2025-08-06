@@ -22,11 +22,13 @@ MEMORY_KEYWORDS = [
     "Zapamti:",           # 🇷🇸 Serbian/Croatian
 ]
 
+SUPPORTED_CONVERT_EXTS = {"docx", "odt", "pdf", "epub", "fb2", "csv"}
+SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
+
 _model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
 BASE_INDEX_DIR = "memory_index"
 USER_INDEX_PREFIX = "user_"
-SHARED_INDEX_FILE = "shared.jsonl"
 
 def cosine_distance(a, b):
     a = np.array(a)
@@ -39,7 +41,7 @@ def embed_text(text: str) -> list:
 def get_index_path(user_id: int | None = None, collection: str = "user") -> str:
     index_path = ""
     if collection == "user":
-        index_path = f"{BASE_INDEX_DIR}/user_{user_id}.jsonl"
+        index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
     return index_path
@@ -97,7 +99,7 @@ def make_file_name_from_document_id(document_id: str) -> str:
     decoded = urllib.parse.unquote(document_id)
     file_name = os.path.basename(decoded)
     file_name = file_name.replace("/", "_").replace("\\", "_")
-    return file_name + ".vec"
+    return file_name
 
 
 def search_document_chunks(
@@ -141,15 +143,15 @@ def search_document_chunks(
 
 def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     if collection == "user":
-        index_path = f"memory_index/user_{user_id}.jsonl"
+        index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
     else:
-        index_path = f"memory_index/{collection}.jsonl"
+        index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
     vec_path = ""
     if collection == "user":
-        vec_path = f"user_data/docs/user_{user_id}.jsonl"
+        vec_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}"
     else:
-        vec_path = f"user_data/docs/{collection}.jsonl"
+        vec_path = f"{BASE_INDEX_DIR}/{collection}"
 
 
     if not os.path.exists(index_path):
@@ -180,7 +182,7 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
                 doc_id = m.get("document_id")
                 if doc_id:
                     logging.info(f"Relevant document: {doc_id}")
-                    vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(doc_id))
+                    vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(doc_id) + ".vec")
                     if os.path.exists(vec_path):
                         # Adding relevant document chunks
                         doc_chunks = search_document_chunks(query, vec_path)
@@ -195,12 +197,21 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
     return permanent + contextual
 
 async def fetch_document_text(url: str, token: str) -> str:
+    ext = os.path.splitext(url)[-1].lower().lstrip('.')
+
+    if ext in SUPPORTED_CONVERT_EXTS:
+        url += "?totext"
+    elif ext in SUPPORTED_PLAIN_EXTS:
+        pass  # Leave URL unchanged
+    else:
+        raise ValueError(f"Unsupported file type: .{ext}")
+
     headers = {"Authorization": f"token:{token}"}
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
-            if resp.status != 200:
-                raise Exception(f"Failed to fetch document: {resp.status}")
-            return await resp.text()
+        async with session.get(url, headers=headers) as response:
+            if response.status != 200:
+                raise ValueError(f"Failed to fetch document: HTTP {response.status}")
+            return await response.text()
 
 def save_vec_file(vectors: list[list[float]], path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -212,10 +223,10 @@ def chunk_and_vectorize_to_file(user_id: int, text: str,  document_id: str, coll
     """Чанкает текст и сохраняет эмбеддинги в .vec файл"""
     vec_path = ""
     if collection == "user":
-        vec_path = f"user_data/docs/user_{user_id}.jsonl"
+        vec_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}"
     else:
-        vec_path = f"user_data/docs/{collection}.jsonl"
-    vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(document_id))
+        vec_path = f"{BASE_INDEX_DIR}/{collection}"
+    vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(document_id) + ".vec")
     os.makedirs(os.path.dirname(vec_path), exist_ok=True)
     words = text.split()
     chunks = []
