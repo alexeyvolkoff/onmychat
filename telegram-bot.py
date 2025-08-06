@@ -4,6 +4,8 @@ from dialog_history import load_history, save_history, reset_history as reset_fi
 from memory_index import (
     extract_memory_from_response,
     add_memory_card,
+    fetch_document_text,
+    chunk_and_vectorize_to_file,
     search_memories
 )
 
@@ -42,6 +44,7 @@ NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 DEFAULT_API_KEY = SETTINGS["DEFAULT_API_KEY"]
 SFW_MODEL = SETTINGS["SFW_MODEL"]
 DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
+OMD_TOKEN = SETTINGS["OMD_TOKEN"]
 
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
 WORKFLOW_GENERAL_PATH = SETTINGS["WORKFLOW_GENERAL_PATH"]
@@ -57,7 +60,7 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a personalized AI assistant privately hosted for the user. "
     "You are a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
-    "You can generate images whenever the user asks. "
+    "You can generate images upon user requests. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be breaf with the prompt. "
     "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>' to the end of your response. "
     "Do not memorize every reply, only the facts you consider meaningful or relevant.\n\n"
 
@@ -112,9 +115,9 @@ NEGATIVE_PROMPTS = {
                 "overexposed, underexposed, bad photo, bad photography,bad picture,face asymmetry, eyes asymmetry, "
                 "negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, two phones",
         "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, breasts, topless, underboob, areola, "
-                "sex, sexual, open clothes, unbuttoned, " 
+                "sex, sexual, open clothes, unbuttoned, "
                 "cleavage, revealing, lingerie, pussy, vagina, breast, exposed, erotic, penis, cock, lewd):3.5"
-}                
+}
 
 
 import re
@@ -136,7 +139,7 @@ def load_user_settings(user_id):
         "nsfw": False,
         "style": "realistic",
         "system_prompt": get_default_system_prompt(),
-        "kb_ids": [DEFAULT_KB_ID]
+        "kb_id": DEFAULT_KB_ID
     }
 
 def save_user_settings(user_id, settings):
@@ -168,7 +171,7 @@ def get_user_avatar_path(user_id: int) -> str:
         return user_avatar_rel
     else:
         return f"{AVATAR_DIR}/default.png"
- 
+
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -209,7 +212,7 @@ def format_response_for_markdown_v2(text: str) -> str:
             s = re.sub(pattern, rf'\\{sym}', s)
         return s
 
-    
+
     def escape_non_formatting_chars(s):
         # оставшиеся: *_` и -
         chars = r'[]()~>#+=|{}.!'
@@ -217,7 +220,7 @@ def format_response_for_markdown_v2(text: str) -> str:
 
     # Заменяем * или - в начале строки на юникодный буллет
     text = re.sub(r'(?m)^\s*[\*\-]\s+', '• ', text)
-    
+
     # Сохраняем многострочные блоки кода
     code_blocks = []
 
@@ -316,27 +319,38 @@ async def poll_for_result(prompt_id:  str, chat_id: int, context: ContextTypes.D
                             image_paths.append(full_path)
 
                 if image_paths:
+                    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
                     return image_paths
-       
+
         await asyncio.sleep(5)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     raise Exception("Изображение не было сгенерировано вовремя")
 
 
-async def inject_memories(user_id: int, query: str, is_rag: bool = False) -> list[str]:
-    results = []
+async def inject_facts(user_id: int, query: str, is_rag: bool = False, collection: str = "shared") -> tuple[list[str], list[str]]:
+    facts = []
+    document_ids = []
 
     # Личные воспоминания
-    personal = search_memories(query, user_id, collection="user", top_k=3)
-    results.extend([f"• {m['text']}" for m in personal])
+    personal = search_memories(query, user_id, "user", top_k=3)
+    for m in personal:
+        facts.append(f"• {m['text']}")
+        if "document_id" in m:
+            document_ids.append(m["document_id"])
 
+    # Общие знания — только при is_rag
     if is_rag:
-        # Общие (командные) знания — только при is_rag
-        shared = search_memories(query, user_id, collection="shared", top_k=3)
-        results.extend([f"• {m['text']}" for m in shared])
+        shared = search_memories(query, user_id, collection=collection, top_k=3)
+        for m in shared:
+            facts.append(f"• {m['text']}")
+            if "document_id" in m:
+                document_ids.append(m["document_id"])
 
-    return results
+    logging.info(f"{collection} MEMORIES: {facts} ")
+    logging.info(f"{collection} DOC_IDS: {document_ids}")
+
+    return facts, document_ids
 
 async def llm_request(headers: dict, payload: dict) -> dict:
     try:
@@ -379,23 +393,34 @@ async def perform_prompt(user_id: int,
         chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
 
     # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
-    extracted_chunks = []
-    citations = []
+    collection = settings.get("kb_id") or DEFAULT_KB_ID
+    logging.info(f"collection: {collection} {is_rag}")
+    doc_ids = []
     if is_rag:
-        kb_ids = settings.get("kb_ids") or [DEFAULT_KB_ID]
+        collection = settings.get("kb_id") or DEFAULT_KB_ID
+        logging.info(f"collection: {collection} {is_rag}")
+        facts, doc_ids = await inject_facts(user_id, message, is_rag, collection)
+        facts_text = "\n".join(facts) if facts else ""
+        logging.info(f"Memory: {facts_text}")
+
         prep_prompt = (
             "You are a fact-checking assistant. Extract *only known facts* from the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
         )
+
+        rag_system_prompt = prep_prompt;
+
+        if facts_text:
+            rag_system_prompt += "\n\n*Known facts and memories:*\n" + facts_text
+
         prep_messages = [
-            {"role": "system", "content": prep_prompt},
+            {"role": "system", "content": rag_system_prompt},
             {"role": "user", "content": message}
         ]
         prep_payload = {
             "messages": prep_messages,
             "model": SFW_MODEL,
             "temperature": 0,
-            "files": [{"type": "collection", "id": kb_id} for kb_id in kb_ids]
         }
         data = await llm_request(headers, prep_payload)
         if not data or "choices" not in data:
@@ -403,39 +428,19 @@ async def perform_prompt(user_id: int,
 
         strict_fact = data["choices"][0]["message"]["content"].strip()
 
-        # забираем сорсы
-        sources = data.get("sources", [])
-        for source_entry in sources:
-            metadata_list = source_entry.get("metadata", [])
-            distances_list = source_entry.get("distances", [])
-            for i, metadata in enumerate(metadata_list):
-                distance = distances_list[i] if i < len(distances_list) else 1.0
-                if distance > 0.8:
-                    continue
-                doc_name = metadata.get("name") or "unknown"
-                text = metadata.get("text") or ""
-                citations.append(f'*“{doc_name}”*:\n{text.strip()}')
-
-        # формируем обогащённый системный промпт
-
-        # Память
-        memories = await inject_memories(user_id, message, is_rag)
-        memory_text = "\n".join(memories) if memories else ""
-
         # Инжект фактов и источников в system prompt
         system_prompt = BASE_SYSTEM_PROMPT
         if strict_fact:
             system_prompt += f"\n*Known facts:*\n{strict_fact}"
-        if citations:
-            system_prompt += "\n\n*Relevant sources:*\n" + "\n\n".join(citations)
-        if memory_text:
-            system_prompt += "\n\n*Relevant memories:*\n" + memory_text
+
+        if facts_text:
+            system_prompt += "\n\n*Relevant facts and memories:*\n" + facts_text
     else:
         system_prompt = BASE_SYSTEM_PROMPT + settings.get("system_prompt", "")
         # память всё равно добавим
-        memories = await inject_memories(user_id, message, is_rag)
-        if memories:
-            system_prompt += "\n\n*Relevant memories:*\n" + "\n".join(memories)
+        facts, doc_ids = await inject_facts(user_id, message, is_rag)
+        if facts:
+            system_prompt += "\n\n*Relevant facts and memories:*\n" + "\n".join(facts)
 
     # Инструкция
     system_prompt += "\n\n*Instruction:*\n" + instruction
@@ -471,9 +476,14 @@ async def perform_prompt(user_id: int,
         except Exception as e:
             logging.error(f"Vectorization error: {e}")
 
+    # Добавляем блок с источниками — только в отображаемый ответ
+    if doc_ids:
+        links = [f"[Document {i+1}]({doc})" for i, doc in enumerate(doc_ids)]
+        response += "\n\n📎 *Sources:*\n" + "\n".join(links)
+
     # === Добавляем в историю
     if not skip_history:
-        chat_histories[user_id].append({"role": "assistant", "content": response})
+        chat_histories[user_id].append({"role": "assistant", "content": history_item})
         save_history(user_id, chat_histories[user_id])
 
     return response.strip()
@@ -499,7 +509,7 @@ async def classify_user_intent(prompt: str) -> str:
         "model": DEFAULT_MODEL,
         "temperature": 0.8,
     }
-    
+
     data = await llm_request(headers, request_payload)
     response =data["choices"][0]["message"]["content"]
     return response.lower().strip()
@@ -569,11 +579,11 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
     prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_CHARACTER, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
     #Объясняем промпт
     explained = await perform_prompt(user_id, settings, "It is you on this photo. Summarize briefly in first person, how do you feel in this scene", prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
-    
-    negative_prompt = NEGATIVE_PROMPTS["base"] 
+
+    negative_prompt = NEGATIVE_PROMPTS["base"]
     if nsfw_enabled:
         negative_prompt = NEGATIVE_PROMPTS["nsfw"] + "," + negative_prompt
-    
+
 
     logging.info(f"Generating character image for user with Chat ID: {user_id} ")
     logging.info(f"Improved prompt: {prompt}")
@@ -592,7 +602,7 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
     model = STYLE_MODELS[style]
     workflow_json["4"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
- 
+
     await generate_image_workflow(workflow_json, prompt, explained, update, context)
 
 
@@ -669,7 +679,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         await update.message.reply_text("Please explain what do you want.")
         return
-    
+
     settings = load_user_settings(user_id)
 
     # Получаем system prompt один раз
@@ -682,7 +692,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         intent = await classify_user_intent(message)
         logging.info(f"Chat ID: {user_id} User wants: {intent}")
-        
+
         if intent == "show":
             await generate_image_with_character(update, context)
             return
@@ -691,11 +701,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await generate_image_general(update, context)
             return
 
-        if intent == "explain" and not nsfw_enabled:
+        if intent == "explain":
             await ask(update, context)
             return
-       
-        reply = await perform_prompt(user_id, settings, "Simply respond to this message according to context", message, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL) 
+
+        reply = await perform_prompt(user_id, settings, "Simply respond to this message according to context", message, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
         #logging.info(f"Chat ID: {user_id} output: {reply}")
         reply_text = format_response_for_markdown_v2(reply)
         await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
@@ -734,7 +744,7 @@ async def reset_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
      # Удаление файла с историей
     file_path = f"history/{user_id}.json"
     if os.path.exists(file_path):
-        os.remove(file_path)    
+        os.remove(file_path)
     await update.message.reply_text("Okay let's start over.")
 
 
@@ -753,14 +763,14 @@ async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["style"] = chosen_style
     save_user_settings(user_id, settings)
 
-    await update.message.reply_text(f"✅ Style set to *{chosen_style}*", parse_mode="Markdown")    
+    await update.message.reply_text(f"✅ Style set to *{chosen_style}*", parse_mode="Markdown")
 
 
-async def addknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text(
-            "❗ Укажи ID базы знаний, например:\n`/addknowledge kb-abc123`",
+            "❗ Specify knowledge base, for example:\n`/useknowledge kb-abc123`",
             parse_mode="Markdown"
         )
         return
@@ -768,16 +778,10 @@ async def addknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb_id = context.args[0]
     settings = load_user_settings(user_id)
 
-    kb_ids = settings.get("kb_ids", [])
-    if kb_id in kb_ids:
-        await update.message.reply_text(f"ℹ️ База знаний `{kb_id}` уже добавлена.", parse_mode="Markdown")
-        return
-
-    kb_ids.append(kb_id)
-    settings["kb_ids"] = kb_ids
+    settings["kb_id"] = kb_id
     save_user_settings(user_id, settings)
 
-    await update.message.reply_text(f"✅ База знаний `{kb_id}` добавлена.", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Switched to `{kb_id}` knowledge base.", parse_mode="Markdown")
 
 
 async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -785,7 +789,7 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = load_user_settings(user_id)
     system_prompt = settings.get("system_prompt", "—")
     nsfw = "enabled" if settings.get("nsfw", False) else "disabled"
-    knowledge = settings.get("kb_ids", "none");   
+    knowledge = settings.get("kb_id", DEFAULT_KB_ID);
     style = settings.get("style", "realistic")
 
     msg = (
@@ -807,6 +811,55 @@ async def memorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     add_memory_card(text, user_id, collection="user", relevance="permanent")
     await update.message.reply_text("Memorized 🧠")
+
+
+def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
+    """Грубое суммари: первые 2048 байта нормализованного текста"""
+    # Убираем лишние пустые строки и пробелы
+    clean_lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    normalized = " ".join(clean_lines)
+
+    # Обрезаем по байтам (чтобы не порезать utf-8 символ)
+    encoded = normalized.encode("utf-8")[:max_bytes]
+    summary = encoded.decode("utf-8", errors="ignore")
+
+    return summary.strip() + "..."
+
+
+
+async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: /document <url> [collection]")
+        return
+
+    url = "https://onmydisk.net/" + context.args[0]
+    collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
+
+    try:
+        raw_text = await fetch_document_text(url, OMD_TOKEN)
+
+        # Векторизация и сохранение чанков
+        n_chunks = chunk_and_vectorize_to_file(
+            update.effective_user.id,
+            raw_text,
+            document_id=url,
+            collection=collection
+        )
+
+        # Добавление краткой аннотации в память
+        add_memory_card(
+            text=summarize_for_memory(raw_text),
+            user_id=update.effective_user.id,
+            document_id=url,
+            collection=collection
+        )
+
+        await update.message.reply_text(
+            f"✅ Document imported into *{collection}* collection\nChunks: {n_chunks}",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {e}")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -836,7 +889,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("reset", reset_history))
     app.add_handler(CommandHandler("nsfw", nsfw_command))
     app.add_handler(CommandHandler("style", set_style))
-    app.add_handler(CommandHandler("addknowledge", addknowledge))
+    app.add_handler(CommandHandler("useknowledge", useknowledge))
+    app.add_handler(CommandHandler("import", import_document))
     app.add_handler(CommandHandler("showsettings", get_settings))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("explain", ask))
