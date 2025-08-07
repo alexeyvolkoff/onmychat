@@ -35,12 +35,9 @@ SETTINGS = _config["settings"]
 # Пример доступа:
 DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
 TELEGRAM_BOT_TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
-OPENWEBUI_URL = SETTINGS["OPENWEBUI_URL"]
-OPENWEBUI_API_KEY = SETTINGS["OPENWEBUI_API_KEY"]
+OLLAMA_URL = SETTINGS["OLLAMA_URL"] or "http://localhost:11434"
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 
-OWNER_ID = int(SETTINGS["OWNER_ID"])
-OWNER_API_KEY = SETTINGS["OWNER_API_KEY"]
 NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 DEFAULT_API_KEY = SETTINGS["DEFAULT_API_KEY"]
 SFW_MODEL = SETTINGS["SFW_MODEL"]
@@ -61,7 +58,7 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a personalized AI assistant privately hosted for the user. "
     "You are a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
-    "You can generate images upon user requests. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be breaf with the prompt. "
+    "You can generate images upon user request. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be brief with the prompt. "
     "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>' to the end of your response. "
     "Do not memorize every reply, only the facts you consider meaningful or relevant.\n\n"
 
@@ -121,6 +118,13 @@ NEGATIVE_PROMPTS = {
 }
 
 
+# Храним историю диалога на уровне чата
+chat_histories = {}
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 import re
 
 def get_default_system_prompt() -> str:
@@ -140,6 +144,7 @@ def load_user_settings(user_id):
         "nsfw": False,
         "style": "realistic",
         "system_prompt": get_default_system_prompt(),
+        "omd_key": "",
         "kb_id": DEFAULT_KB_ID
     }
 
@@ -297,12 +302,6 @@ async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# Храним историю диалога на уровне чата
-chat_histories = {}
-
-logging.basicConfig(level=logging.INFO)
-
-
 async def poll_for_result(prompt_id:  str, chat_id: int, context: ContextTypes.DEFAULT_TYPE, timeout: int = 60):
     url = f"{COMFY_API_URL}/history/{prompt_id}"
     start_time = time.time()
@@ -370,8 +369,8 @@ async def inject_facts(user_id: int, query: str, collection: str = "") -> tuple[
             if doc_id:
                 document_ids.append(doc_id)
 
-    logging.info(f"{collection} MEMORIES: {facts} ")
-    logging.info(f"{collection} DOC_IDS: {document_ids}")
+    #logging.info(f"{collection} MEMORIES: {facts} ")
+    #logging.info(f"{collection} DOC_IDS: {document_ids}")
 
     return facts, document_ids
 
@@ -379,7 +378,7 @@ async def llm_request(headers: dict, payload: dict) -> dict:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{OPENWEBUI_URL}/api/chat/completions",
+                f"{OLLAMA_URL}/api/chat",
                 headers=headers,
                 json=payload
             ) as resp:
@@ -402,7 +401,6 @@ async def perform_prompt(user_id: int,
     api_key = settings.get("api_key", DEFAULT_API_KEY)
     model = requestedModel
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -417,7 +415,7 @@ async def perform_prompt(user_id: int,
 
     # === ВСПОМНИМ ФАКТЫ ===
     collection = settings.get("kb_id") or DEFAULT_KB_ID
-    logging.info(f"collection: {collection} {is_rag}")
+    #logging.info(f"collection: {collection} {is_rag}")
     facts, doc_ids = await inject_facts(user_id, message, collection)
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
@@ -440,13 +438,16 @@ async def perform_prompt(user_id: int,
         prep_payload = {
             "messages": prep_messages,
             "model": SFW_MODEL,
-            "temperature": 0,
+            "stream": False,
+            "options": {
+               "temperature": 0,
+            }
         }
         data = await llm_request(headers, prep_payload)
-        if not data or "choices" not in data:
+        if not data:
             return "⚠️ RAG query failed."
 
-        strict_fact = data["choices"][0]["message"]["content"].strip()
+        strict_fact = data["message"]["content"].strip()
 
         # Инжект фактов и источников в system prompt
         system_prompt = BASE_SYSTEM_PROMPT
@@ -473,14 +474,17 @@ async def perform_prompt(user_id: int,
     main_payload = {
         "messages": messages,
         "model": model,
-        "temperature": 0.8,
+        "stream": False,
+        "options": {
+           "temperature": 0.8,
+        }
     }
 
     data = await llm_request(headers, main_payload)
-    if not data or "choices" not in data:
-        return "⚠️ Ошибка при получении ответа от модели."
 
-    response = data["choices"][0]["message"]["content"]
+    #logging.info(data)
+
+    response = data["message"]["content"]
     response = clean_response(response)
     history_item = response
 
@@ -513,7 +517,6 @@ async def perform_prompt(user_id: int,
 
 async def classify_user_intent(prompt: str) -> str:
     headers = {
-        "Authorization": f"Bearer {DEFAULT_API_KEY}",
         "Content-Type": "application/json",
     }
     system = (
@@ -521,7 +524,8 @@ async def classify_user_intent(prompt: str) -> str:
         "Respond with exactly one word. "
         "If the user wants to see a scene involving you, yourself, your outfit, or a selfie — respond with 'show'. "
         "If the user wants to see an object, item, interior, or landscape — respond with 'view'. "
-        "If the user asks a question for which you don't have a precise answer — respond with 'explain'. "
+        "If the user wants to see an object, item, interior, or landscape — respond with 'view'. "
+        "If the user wants to see code, configuration, or setup manual — respond with 'explain'. "
         "In all other cases, respond with 'chat'."
     )
     messages = [{"role": "system", "content": system},{"role": "user", "content": prompt}]
@@ -529,11 +533,15 @@ async def classify_user_intent(prompt: str) -> str:
     request_payload = {
         "messages": messages,
         "model": DEFAULT_MODEL,
-        "temperature": 0.8,
+        "stream": False,
+        "options": {
+          "temperature": 0,
+        }
     }
 
     data = await llm_request(headers, request_payload)
-    response =data["choices"][0]["message"]["content"]
+    #logging.info(data)
+    response =data["message"]["content"]
     return response.lower().strip()
 
 
@@ -555,7 +563,7 @@ async def generate_image_workflow(workflow, prompt, explained, update: Update, c
 
     # Ожидание результата
     try:
-        logging.info(f"waiting with prompt_id: {prompt_id}")
+        #logging.info(f"waiting with prompt_id: {prompt_id}")
         images = await poll_for_result(prompt_id, chat_id=update.effective_chat.id, context=context)
         logging.info(f"Received images for prompt: {prompt} ")
         for image_path in images:
@@ -805,6 +813,24 @@ async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Switched to `{kb_id}` knowledge base.", parse_mode="Markdown")
 
 
+async def setomdkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "❗ Specify you On My Disk account key:\n`/setomdkey abcdxxxxx...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    key = context.args[0]
+    settings = load_user_settings(user_id)
+
+    settings["omd_key"] = key
+    save_user_settings(user_id, settings)
+
+    await update.message.reply_text(f"✅ On My Disk account with key `{key}` successfully linked.", parse_mode="Markdown")
+
+
 async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = load_user_settings(user_id)
@@ -853,11 +879,18 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: /import <url> [collection]")
         return
 
+    user_id = update.effective_user.id
+    settings = load_user_settings(user_id)
+    key = settings.get("omd_key", "")
+    if not key:
+        await update.message.reply_text("⚠️ Provide On My Disk account key to access your files:\n`/setomdkey abcdxxxxx...`")
+        return
+
     url = "https://onmydisk.net/" + context.args[0]
     collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
 
     try:
-        raw_text = await fetch_document_text(url, OMD_TOKEN)
+        raw_text = await fetch_document_text(url, key)
 
         # Векторизация и сохранение чанков
         n_chunks = chunk_and_vectorize_to_file(
@@ -911,6 +944,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("nsfw", nsfw_command))
     app.add_handler(CommandHandler("style", set_style))
     app.add_handler(CommandHandler("useknowledge", useknowledge))
+    app.add_handler(CommandHandler("setomdkey", setomdkey))
     app.add_handler(CommandHandler("import", import_document))
     app.add_handler(CommandHandler("showsettings", get_settings))
     app.add_handler(CommandHandler("ask", ask))

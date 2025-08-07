@@ -25,7 +25,7 @@ MEMORY_KEYWORDS = [
 SUPPORTED_CONVERT_EXTS = {"docx", "odt", "pdf", "epub", "fb2", "csv"}
 SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
 
-_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
+_model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
 
 BASE_INDEX_DIR = "memory_index"
 USER_INDEX_PREFIX = "user_"
