@@ -28,7 +28,7 @@ SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
 _model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
 
 BASE_INDEX_DIR = "memory_index"
-USER_INDEX_PREFIX = "user_"
+USER_INDEX_PREFIX = "user"
 
 def cosine_distance(a, b):
     a = np.array(a)
@@ -176,8 +176,8 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
         elif relevance == "contextual":
             distance = cosine_distance(query_emb, m["embedding"])
             memory_id = m.get("memory_id")
-            logging.info(f"{index_path} {memory_id} {distance}")
             if distance <= distance_threshold:
+                logging.info(f"Relevant memory: {collection} {memory_id} {distance}")
                 m["distance"] = distance
                 doc_id = m.get("document_id")
                 if doc_id:

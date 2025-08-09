@@ -24,6 +24,8 @@ import aiohttp
 import asyncio
 import os
 import html
+from PIL import Image
+import io, base64
 
 import configparser
 
@@ -52,7 +54,7 @@ COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 
 MAX_HISTORY_MESSAGES = 300
-MAX_CAPTION_LENGTH = 160 # байт
+MAX_CAPTION_LEN = 1024 # байт
 
 BASE_SYSTEM_PROMPT = (
     "You are June, a personalized AI assistant privately hosted for the user. "
@@ -78,17 +80,17 @@ BASE_SYSTEM_PROMPT = (
 
 SYSTEM_INSTRUCTION_CHARACTER = (
         "Create a high-quality prompt for generating a realistic image describing yourself in the following scene "
-        "or performing a requesting action, in the first person. "
+        "or performing a requesting action, in the first person: {}\n "
         "Translate to English, add your appearance, visual details, environment, style, outfit and emotions according to the "
-        "conversation context. Be brief, do not explain your reasoning or express your thoughts."
+        "conversation context. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
         "Create a high-quality prompt for generating a realistic image "
-        "of the requested object or scene from this short user input "
+        "of the requested object or scene from this short user input: {}\n "
         " (as you see it from aside). (Avoid placing yourself into the scene). "
         "Translate to English, add visual details, environment "
-        "according to the conversation context. Be brief, do not explain your reasoning or express your thoughts."
+        "according to the conversation context. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
 
 RAG_SYSTEM_PROMPT = (
@@ -105,14 +107,14 @@ STYLE_MODELS = {
 
 NEGATIVE_PROMPTS = {
         "base": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth), missing fingers,"
-                "(bad anatomy:2), extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
+                "(bad anatomy:2), curvy, extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
                 "malformed, disconnected limbs, wrong number of limbs, bad teeth, "
                 "ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, "
                 "(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome, grayscale, extra fingers, "
                 "extra hands, bad hands, extra eyebrows,(poor low details),ahegao, low contrast, oversaturated, undersaturated, "
                 "overexposed, underexposed, bad photo, bad photography,bad picture,face asymmetry, eyes asymmetry, "
                 "negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, two phones",
-        "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, breasts, topless, underboob, areola, "
+        "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, extra anus, breasts, topless, underboob, areola, "
                 "sex, sexual, open clothes, unbuttoned, "
                 "cleavage, revealing, lingerie, pussy, vagina, breast, exposed, erotic, penis, cock, lewd):3.5"
 }
@@ -126,6 +128,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 import re
+
 
 def get_default_system_prompt() -> str:
     if os.path.exists(DEFAULT_SYSTEM_PROMPT_FILE):
@@ -389,13 +392,32 @@ async def llm_request(headers: dict, payload: dict) -> dict:
         return None
 
 
+def resize_and_base64encode(image_path: str) -> str:
+    """
+    Ресайзит изображение, кодирует в base64
+    """
+    # Ресайз + кодирование
+    try:
+        img = Image.open(image_path)
+        img.thumbnail((512, 512))
+        fmt = img.format or "PNG"
+        buf = io.BytesIO()
+        img.save(buf, format=fmt)
+        return base64.b64encode(buf.getvalue()).decode('utf-8')
+    except Exception as e:
+        logging.error(f"❌ Ошибка при обработке изображения: {e}")
+        return ""
+
+
+
 async def perform_prompt(user_id: int,
                          settings: dict,
                          instruction: str,
                          message: str,
                          is_rag=False,
                          skip_history=False,
-                         requestedModel=DEFAULT_MODEL) -> str:
+                         requestedModel=DEFAULT_MODEL,
+                         b64_image = "") -> str:
 
     nsfw_enabled = settings.get("nsfw", False)
     api_key = settings.get("api_key", DEFAULT_API_KEY)
@@ -406,9 +428,6 @@ async def perform_prompt(user_id: int,
 
     if user_id not in chat_histories:
         chat_histories[user_id] = load_history(user_id)
-
-    if not skip_history:
-        chat_histories[user_id].append({"role": "user", "content": message})
 
     if len(chat_histories[user_id]) > MAX_HISTORY_MESSAGES:
         chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
@@ -471,6 +490,18 @@ async def perform_prompt(user_id: int,
 
     # === ОСНОВНОЙ ЗАПРОС ===
     messages = [{"role": "system", "content": system_prompt}] + chat_histories[user_id]
+
+    # Добавляем новый запрос
+    user_message = {
+        "role": "user",
+        "content": message,
+    }
+
+    if b64_image:
+       user_message["images"] = [b64_image]
+
+    messages.append(user_message)
+
     main_payload = {
         "messages": messages,
         "model": model,
@@ -482,7 +513,7 @@ async def perform_prompt(user_id: int,
 
     data = await llm_request(headers, main_payload)
 
-    #logging.info(data)
+    logging.info(data)
 
     response = data["message"]["content"]
     response = clean_response(response)
@@ -509,6 +540,8 @@ async def perform_prompt(user_id: int,
 
     # === Добавляем в историю
     if not skip_history:
+        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
+        chat_histories[user_id].append(msg_to_save)
         chat_histories[user_id].append({"role": "assistant", "content": history_item})
         save_history(user_id, chat_histories[user_id])
 
@@ -523,7 +556,6 @@ async def classify_user_intent(prompt: str) -> str:
         "Classify the user's intent. Possible intents are: show, view, explain, chat. "
         "Respond with exactly one word. "
         "If the user wants to see a scene involving you, yourself, your outfit, or a selfie — respond with 'show'. "
-        "If the user wants to see an object, item, interior, or landscape — respond with 'view'. "
         "If the user wants to see an object, item, interior, or landscape — respond with 'view'. "
         "If the user wants to see code, configuration, or setup manual — respond with 'explain'. "
         "In all other cases, respond with 'chat'."
@@ -545,7 +577,54 @@ async def classify_user_intent(prompt: str) -> str:
     return response.lower().strip()
 
 
-async def generate_image_workflow(workflow, prompt, explained, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recognize_image(user_id: int, instruction: str, prompt: str, img: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
+
+
+    # Берём последние 10 сообщений из истории (если есть)
+    history = chat_histories.get(user_id, [])
+    recent_messages = history[-20:] if len(history) > 20 else history
+
+    # Добавляем system-инструкцию
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Добавляем историю
+    messages.extend(recent_messages)
+
+    # Добавляем новый запрос с изображением
+    messages.append({
+        "role": "user",
+        "content": prompt,
+        "images": [img]
+    })
+
+    request_payload = {
+        "messages": messages,
+        "model": DEFAULT_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.8,
+        }
+    }
+
+    data = await llm_request(headers, request_payload)
+
+    if "message" in data and "content" in data["message"]:
+        response = data["message"]["content"]
+    else:
+        # на случай, если ответ в другом формате
+        response = data.get("content") or str(data)
+
+    return response.lower().strip()
+
+
+
+
+async def generate_image_workflow(workflow, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
     # Отправить в ComfyUI
     try:
         payload = {
@@ -565,23 +644,9 @@ async def generate_image_workflow(workflow, prompt, explained, update: Update, c
     try:
         #logging.info(f"waiting with prompt_id: {prompt_id}")
         images = await poll_for_result(prompt_id, chat_id=update.effective_chat.id, context=context)
-        logging.info(f"Received images for prompt: {prompt} ")
-        for image_path in images:
-          with open(image_path, "rb") as f:
-            # Отправляем фото без caption
-            await update.message.reply_photo(photo=f)
-
-            # Формируем цитату из prompt
-            quoted_prompt = escape_markdown_v2(prompt)
-            quoted_prompt = "> " + "\n> ".join(quoted_prompt.splitlines())
-
-            # Объединяем с основным текстом explained
-            full_reply = f"{quoted_prompt}\n\n{format_response_for_markdown_v2(explained)}"
-
-            # Отправляем одним сообщением
-            await update.message.reply_text(full_reply, parse_mode=ParseMode.MARKDOWN_V2)
+        return images[0]
     except Exception as e:
-        logging.error(f"error for prompt:  {e}")
+        logging.error(f"error in generate_image_workflow:  {e}")
 
 
 async def generate_image_with_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -605,10 +670,12 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
 
     settings = load_user_settings(user_id)
     nsfw_enabled = settings["nsfw"]
+    user_prompt = prompt
+    chat_histories[user_id].append({"role": "user", "content": user_prompt})
+
     #Улучшаем промпт
-    prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_CHARACTER, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
-    #Объясняем промпт
-    explained = await perform_prompt(user_id, settings, "It is you on this photo. Summarize briefly in first person, how do you feel in this scene", prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
+    #prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_CHARACTER, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
+    prompt = await perform_prompt(user_id, settings, "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt), requestedModel = NSFW_MODEL)
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
     if nsfw_enabled:
@@ -633,7 +700,46 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
     workflow_json["4"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
 
-    await generate_image_workflow(workflow_json, prompt, explained, update, context)
+    image_path = await generate_image_workflow(workflow_json, update, context)
+    b64_image = resize_and_base64encode(image_path)
+    #logging.info(f"Image: {b64_image}")
+
+    with open(image_path, "rb") as f:
+            # Отправляем фото
+            caption = escape_markdown_v2(prompt)
+            if len(caption) > MAX_CAPTION_LEN:
+               caption = caption[:MAX_CAPTION_LEN - 1] + "…"
+            await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")
+
+            recognition_prompt = (
+               "Describe the scene in first person and express how you feel in it."
+            )
+
+            await update.message.chat.send_action(action=ChatAction.TYPING)
+
+            explained = await perform_prompt(
+               user_id,
+               settings,
+               instruction=(
+                    "Recognize and describe the provided images. "
+                    "If no image is provided, or it is unreadable to you, reply exactly with 'no image'. "
+                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+               ),
+               message=recognition_prompt,
+               skip_history=True,
+               requestedModel=SFW_MODEL,
+               b64_image=b64_image
+            )
+
+            reply = format_response_for_markdown_v2(explained)
+
+            logging.info(f"Explained prompt: {explained}")
+
+            chat_histories[user_id].append({"role": "assistant", "content": explained})
+            save_history(user_id, chat_histories[user_id])
+
+            # Отправляем одним сообщением
+            await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN_V2)
 
 
 
@@ -659,11 +765,12 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.chat.send_action(action=ChatAction.TYPING)
     settings = load_user_settings(user_id)
     nsfw_enabled = settings["nsfw"]
+    #Сохраняем оригинальный промпт
+    user_prompt = prompt
+    chat_histories[user_id].append({"role": "user", "content": user_prompt})
 
     #Улучшаем промпт
     prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_GENERAL, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
-    #Объясняем промпт
-    explained = await perform_prompt(user_id, settings, "Summarize briefly, what do you see on this photo and how do you feel", prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
 
     logging.info(f"Generating general image for user with Chat ID: {user_id} ")
     with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
@@ -679,7 +786,45 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
 
 
     #logging.info(f"json: {workflow_json}")
-    await generate_image_workflow(workflow_json, propmt, explained, update, context)
+    image_path = await generate_image_workflow(workflow_json, update, context)
+    b64_image = resize_and_base64encode(image_path)
+    with open(image_path, "rb") as f:
+            # Отправляем фото
+            caption = escape_markdown_v2(prompt)
+            if len(caption) > MAX_CAPTION_LEN:
+               caption = caption[:MAX_CAPTION_LEN - 1] + "…"
+            await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")
+
+            # Объясняем картинку
+            recognition_prompt = (
+               "Summarize briefly, what do you see on this photo and how do you feel about it"
+            )
+
+            await update.message.chat.send_action(action=ChatAction.TYPING)
+            explained = await perform_prompt(
+               user_id,
+               settings,
+               instruction=(
+                    "Recognize and describe the provided images. "
+                    "If no image is provided, or it is unreadable to you, reply exactly with 'no image'. "
+                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+               ),
+               message=recognition_prompt,
+               skip_history=True,
+               requestedModel=SFW_MODEL,
+               b64_image=b64_image
+            )
+            # Формируем цитату из prompt
+            reply = format_response_for_markdown_v2(explained)
+
+            logging.info(f"Explained prompt: {explained}")
+
+            chat_histories[user_id].append({"role": "assistant", "content": explained})
+            save_history(user_id, chat_histories[user_id])
+
+            # Отправляем одним сообщением
+            await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN_V2)
+
 
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
