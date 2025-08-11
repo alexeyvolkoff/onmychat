@@ -81,6 +81,7 @@ BASE_SYSTEM_PROMPT = (
 SYSTEM_INSTRUCTION_CHARACTER = (
         "Create a high-quality prompt for generating a realistic image describing yourself in the following scene "
         "or performing a requesting action, in the first person: {}\n "
+        "all the characters are adults, encounter is consensual and joyful. "
         "Translate to English, add your appearance, visual details, environment, style, outfit and emotions according to the "
         "conversation context. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
@@ -118,6 +119,42 @@ NEGATIVE_PROMPTS = {
                 "sex, sexual, open clothes, unbuttoned, "
                 "cleavage, revealing, lingerie, pussy, vagina, breast, exposed, erotic, penis, cock, lewd):3.5"
 }
+
+INTENT_PROMPT = (
+    "Classify the user's intent. Possible intents are: show, view, explain, recognize, chat.\n"
+    "Respond with exactly one word or 'recognize:<path_or_url>'.\n"
+    "\n"
+    "\n"
+    "Rules:\n"
+    "1. If the user wants to see a scene involving you, yourself, your outfit, or a selfie — respond with 'show'.\n"
+    "   - Example: \"Show me your outfit\" → 'show'\n"
+    "   - Example: \"Show me your selfie from party\" → 'show'\n"
+    "   - Example: \"Show me your photo from vatations\" → 'show'\n"
+    "\n"
+    "2. If the user wants to see an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
+    "   - Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
+    "   - Example: \"Show me the Eiffel Tower\" → 'view'\n"
+    "   - Example: \"Show me view from the window\" → 'view'\n"
+    "   - Example: \"I have a bicycle\" → 'chat'\n"
+    "\n"
+    "3. If the user only mentions themselves and does not explicitly ask for an image — respond with 'chat'.\n"
+    "   - Do NOT classify as 'show' or 'view' if the user only mentions themselves (\"It's me\", \"That's my town\", \"I live here\") without explicitly asking for an image.\n"
+    "   - Example: \"It's me\" → 'chat'\n"
+    "   - Example: \"Draw my town\" → 'view'\n"
+    "   - Example: \"This is my town\" → 'chat'\n"
+    "\n"
+    "4. If the user requests code, configuration, or a setup manual — respond with 'explain'.\n"
+    "   - Example: \"Show me example of nginx configuration\" → 'explain'\n"
+    "\n"
+    "5. If the user wants you to recognize or describe the contents of an image:\n"
+    "   - If the message contains a URL or file path, respond with 'recognize:<path_or_url>'.\n"
+    "   - If no link or path is present, respond with 'recognize'.\n"
+    "\n"
+    "6. In all other cases — respond with 'chat'.\n"
+    "\n"
+    "Do not guess the intent if the request is ambiguous — default to 'chat'.\n"
+    "Return nothing except the classification."
+)
 
 
 # Храним историю диалога на уровне чата
@@ -552,15 +589,26 @@ async def classify_user_intent(prompt: str) -> str:
     headers = {
         "Content-Type": "application/json",
     }
-    system = (
-        "Classify the user's intent. Possible intents are: show, view, explain, chat. "
-        "Respond with exactly one word. "
-        "If the user wants to see a scene involving you, yourself, your outfit, or a selfie — respond with 'show'. "
-        "If the user wants to see an object, item, interior, or landscape — respond with 'view'. "
-        "If the user wants to see code, configuration, or setup manual — respond with 'explain'. "
-        "In all other cases, respond with 'chat'."
-    )
-    messages = [{"role": "system", "content": system},{"role": "user", "content": prompt}]
+
+
+    # На всякий случай сами проверим ссылку/путь
+    url_or_path = None
+    url_match = re.search(r'(https?://\S+)', prompt)
+    path_match = re.search(r'(/[^\s]+\.(?:jpg|jpeg|png|gif|webp))', prompt, re.IGNORECASE)
+
+    if url_match:
+        url_or_path = url_match.group(1)
+    elif path_match:
+        url_or_path = path_match.group(1)
+
+    # Если нашли путь сами — можно сразу вернуть без LLM
+    if url_or_path:
+        return f"recognize:{url_or_path}"
+
+    messages = [
+        {"role": "system", "content": INTENT_PROMPT},
+        {"role": "user", "content": prompt}
+    ]
 
     request_payload = {
         "messages": messages,
@@ -572,9 +620,53 @@ async def classify_user_intent(prompt: str) -> str:
     }
 
     data = await llm_request(headers, request_payload)
-    #logging.info(data)
-    response =data["message"]["content"]
+    response = data["message"]["content"]
     return response.lower().strip()
+
+
+async def generate_image_prompt(user_id: int, instruction: str, prompt: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
+
+
+    # Берём последние 10 сообщений из истории (если есть)
+    history = chat_histories.get(user_id, [])
+    recent_messages = history[-20:] if len(history) > 20 else history
+
+    # Добавляем system-инструкцию
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Добавляем историю
+    messages.extend(recent_messages)
+
+    # Добавляем новый запрос с изображением
+    messages.append({
+        "role": "user",
+        "content": prompt
+    })
+
+    request_payload = {
+        "messages": messages,
+        "model": NSFW_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.8,
+        }
+    }
+
+    data = await llm_request(headers, request_payload)
+
+    if "message" in data and "content" in data["message"]:
+        response = data["message"]["content"]
+    else:
+        # на случай, если ответ в другом формате
+        response = data.get("content") or str(data)
+
+    return response.lower().strip()
+
 
 
 async def recognize_image(user_id: int, instruction: str, prompt: str, img: str) -> str:
@@ -674,8 +766,7 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
     chat_histories[user_id].append({"role": "user", "content": user_prompt})
 
     #Улучшаем промпт
-    #prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_CHARACTER, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
-    prompt = await perform_prompt(user_id, settings, "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt), requestedModel = NSFW_MODEL)
+    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt))
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
     if nsfw_enabled:
@@ -722,7 +813,6 @@ async def generate_image_with_character(update: Update, context: ContextTypes.DE
                settings,
                instruction=(
                     "Recognize and describe the provided images. "
-                    "If no image is provided, or it is unreadable to you, reply exactly with 'no image'. "
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
                ),
                message=recognition_prompt,
@@ -770,7 +860,7 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
     chat_histories[user_id].append({"role": "user", "content": user_prompt})
 
     #Улучшаем промпт
-    prompt = await perform_prompt(user_id, settings, SYSTEM_INSTRUCTION_GENERAL, prompt, requestedModel = NSFW_MODEL if nsfw_enabled else SFW_MODEL)
+    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt))
 
     logging.info(f"Generating general image for user with Chat ID: {user_id} ")
     with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
@@ -806,7 +896,6 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
                settings,
                instruction=(
                     "Recognize and describe the provided images. "
-                    "If no image is provided, or it is unreadable to you, reply exactly with 'no image'. "
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
                ),
                message=recognition_prompt,
@@ -824,7 +913,6 @@ async def generate_image_general(update: Update, context: ContextTypes.DEFAULT_T
 
             # Отправляем одним сообщением
             await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN_V2)
-
 
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -847,25 +935,93 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recognize_image_request(img_source: str, settings: dict, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photos = update.message.photo
     user_id = update.message.chat_id
-    message = update.message.text
-    if not message:
-        await update.message.reply_text("Please explain what do you want.")
+    omd_key = settings.get("omd_key", "")
+    message = update.message.text or "What is on this photo?"
+    b64_image = None
+
+    if photos:
+        photo_file = await photos[-1].get_file()
+        user_folder = f"user_data/files-{user_id}"
+        os.makedirs(user_folder, exist_ok=True)
+        file_path = os.path.join(user_folder, os.path.basename(photo_file.file_path))
+        await photo_file.download_to_drive(file_path)
+        logging.info(f"Recognizing uploaded photo: {file_path}")
+        b64_image = resize_and_base64encode(file_path)
+
+    elif img_source:
+        if re.match(r"^https?://", img_source):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(img_source) as resp:
+                    data = await resp.read()
+                    b64_image = base64.b64encode(data).decode("utf-8")
+        elif os.path.exists(img_source):
+            b64_image = resize_and_base64encode(img_source)
+        elif img_source.startswith("/") and omd_key:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://onmydisk.net{img_source}?resize=true&width=512&height=512",
+                    headers={"Authorization": f"token:{omd_key}"}
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        # не сохраняем — сразу base64
+                        b64_image = base64.b64encode(data).decode("utf-8")
+                    else:
+                        logging.error(f"❌ On My Disk access failed: {resp.status}")
+                        await update.message.reply_text("Failed to get image from On My Disk.")
+
+    if not b64_image:
+        await update.message.reply_text("Image not found or could not be processed.")
         return
 
+    recognition_prompt = re.sub(r"(https?://\S+)|(\S*\.(jpg|jpeg|png|gif|webp))", "", message, flags=re.IGNORECASE).strip()
+
+    explained = await recognize_image(
+        user_id=user_id,
+        instruction="Recognize the image.",
+        prompt=recognition_prompt,
+        img=b64_image
+    )
+
+    reply_text = format_response_for_markdown_v2(explained)
+    await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
     settings = load_user_settings(user_id)
+
+    # Показать "печатает..."
+    await update.message.chat.send_action(action=ChatAction.TYPING)
+
+    # Получаем текст, если он есть
+    message = update.message.text or ""
+    photos = update.message.photo
+
+    # Если нет текста и нет фото
+    if not message and not photos:
+        await update.message.reply_text("Please explain what you want.")
+        return
 
     # Получаем system prompt один раз
     system_prompt = settings["system_prompt"]
     nsfw_enabled = settings["nsfw"]
 
-    # Показать "печатает..."
-    await update.message.chat.send_action(action=ChatAction.TYPING)
-    await asyncio.sleep(0.5)  # <= небольшая задержка
     try:
         intent = await classify_user_intent(message)
         logging.info(f"Chat ID: {user_id} User wants: {intent}")
+
+        # General image detection
+        if intent.startswith("recognize") or photos:
+           img_source = None
+
+           if ":" in intent:
+              img_source = intent.split(":", 1)[1]
+           await recognize_image_request(img_source, settings, update, context)
+           return
 
         if intent == "show":
             await generate_image_with_character(update, context)
@@ -1017,7 +1173,18 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
 
     return summary.strip() + "..."
 
-
+# Команда /recognize
+async def recognize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /recognize [image_url_or_path] [prompt]")
+        return
+    user_id = update.effective_user.id
+    settings = load_user_settings(user_id)
+    img_source = args[0]
+    prompt = " ".join(args[1:]) if len(args) > 1 else ""
+    update.message.text = prompt  # чтобы сохранить совместимость с recognize_image_request
+    await recognize_image_request(img_source, settings, update, context)
 
 async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1064,7 +1231,7 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message = (
-        "Hi! I'm June — your junior assistant for *On My Disk* and *On My Chat*, the products we proudly build here.\n\n"
+        "Hi! I'm June — junior assistant for *On My Disk* and *On My Chat*, the products we proudly build here.\n\n"
         "Are you curious about what we do, or just in the mood for a little chat?\n"
         "Feel free to ask me anything!\n\n"
         "_Tip_: try `/explain how On My Disk works` or `/show selfie from the office` 😉"
@@ -1095,6 +1262,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("explain", ask))
     app.add_handler(CommandHandler("memorize", memorize))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("recognize", recognize_command))
+    app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.PHOTO, handle_message))
     app.run_polling()
 
