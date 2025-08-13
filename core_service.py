@@ -4,6 +4,9 @@ import logging
 import base64
 import asyncio
 import aiohttp
+import time
+import re
+
 from config import SETTINGS
 from utils import (
     clean_response,
@@ -19,7 +22,7 @@ from memory_index import (
     search_memories
 )
 
-
+# LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 SFW_MODEL = SETTINGS["SFW_MODEL"]
@@ -27,6 +30,15 @@ NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
 
+# Imaging settings #
+COMFY_API_URL = SETTINGS["COMFY_API_URL"]
+WORKFLOW_GENERAL_PATH = SETTINGS["WORKFLOW_GENERAL_PATH"]
+WORKFLOW_CHARACTER_PATH = SETTINGS["WORKFLOW_CHARACTER_PATH"]
+COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
+COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
+AVATAR_DIR = SETTINGS["AVATAR_DIR"]
+
+MAX_HISTORY_MESSAGES = 300
 
 # Default system prompts
 BASE_SYSTEM_PROMPT = (
@@ -165,18 +177,130 @@ def load_user_settings(user_id):
 def save_user_settings(user_id, settings):
     user_settings_store[user_id] = settings
 
+# === Imaging and vision === #
+
+
+def get_user_avatar_path(user_id: int) -> str:
+    """
+    Возвращает относительный путь до аватара пользователя для подстановки в ComfyUI workflow.
+    Если файл не найден, возвращает default.png.
+    """
+    user_avatar_rel = f"{AVATAR_DIR}/{user_id}.png"
+    user_avatar_abs = os.path.join(COMFY_INPUT_DIR, user_avatar_rel)
+
+    if os.path.exists(user_avatar_abs):
+        return user_avatar_rel
+    else:
+        return f"{AVATAR_DIR}/default.png"
+
+async def poll_for_result(prompt_id:  str,  timeout: int = 60):
+    url = f"{COMFY_API_URL}/history/{prompt_id}"
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await asyncio.sleep(5)
+                    continue
+
+                data = await resp.json()
+
+                result = data.get(prompt_id)
+                if not result:
+                    await asyncio.sleep(5)
+                    continue
+
+                # Проверка завершения
+                if not result.get("status", {}).get("completed", False):
+                    await asyncio.sleep(5)
+                    continue
+
+                # Поиск изображений
+                outputs = result.get("outputs", {})
+                image_paths = []
+                for node_id, node_data in outputs.items():
+                    images = node_data.get("images", [])
+                    for image in images:
+                        filename = image.get("filename")
+                        subfolder = image.get("subfolder", "")
+                        full_path = os.path.join(COMFY_OUTPUT_DIR, subfolder, filename)
+                        if os.path.exists(full_path):
+                            image_paths.append(full_path)
+
+                if image_paths:
+                    return image_paths
+
+        await asyncio.sleep(5)
+
+    raise Exception("Изображение не было сгенерировано вовремя")
+
+async def generate_image_workflow(workflow) -> str:
+    # Отправить в ComfyUI
+    try:
+        payload = {
+            "prompt": workflow
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{COMFY_API_URL}/prompt", json=payload) as resp:
+                result = await resp.json()
+                prompt_id = result.get("prompt_id")
+                logging.info(f"prompt_id: {prompt_id} {result}")
+    except Exception as e:
+        logging.error(f"❌ Error while posting a prompt: {e}")
+        return
+
+    # Ожидание результата
+    try:
+        #logging.info(f"waiting with prompt_id: {prompt_id}")
+        images = await poll_for_result(prompt_id)
+        return images[0]
+    except Exception as e:
+        logging.error(f"error in generate_image_workflow:  {e}")
+
+
+# === RAG ===
+async def inject_facts(user_id: int, query: str, collection: str = "") -> tuple[list[str], list[str]]:
+    facts = []
+    document_ids = []
+
+    # Личные воспоминания
+    personal = search_memories(query, user_id, "user", top_k=3)
+    for m in personal:
+        facts.append(f"• {m['text']}")
+        doc_id = m.get("document_id")
+        if doc_id:
+            document_ids.append(doc_id)
+
+    # Общие знания — если есть collection
+    if collection:
+        shared = search_memories(query, user_id, collection=collection, top_k=3)
+        for m in shared:
+            facts.append(f"• {m['text']}")
+            doc_id = m.get("document_id")
+            if doc_id:
+                document_ids.append(doc_id)
+
+    #logging.info(f"{collection} MEMORIES: {facts} ")
+    #logging.info(f"{collection} DOC_IDS: {document_ids}")
+
+    return facts, document_ids
+
 # === Ollama запрос ===
-async def llm_request(payload: dict):
+async def llm_request(payload: dict, headers: dict = None) -> dict:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(f"{OLLAMA_URL}/api/chat", json=payload) as resp:
+            async with session.post(
+                f"{OLLAMA_URL}/api/chat",
+                headers=headers or {"Content-Type": "application/json"},
+                json=payload
+            ) as resp:
                 return await resp.json()
     except Exception as e:
         logging.error(f"LLM error: {e}")
         return None
 
-# === Intent ===
 
+# === Intent ===
 async def classify_user_intent(prompt: str) -> str:
     headers = {
         "Content-Type": "application/json",
@@ -215,7 +339,7 @@ async def classify_user_intent(prompt: str) -> str:
     return response.lower().strip()
 
 
-# === Чат и RAG ===
+# === Чат ===
 async def perform_prompt(user_id: int,
                          settings: dict,
                          instruction: str,
@@ -352,9 +476,7 @@ async def perform_prompt(user_id: int,
 
     return response.strip()
 
-# === Генерация картинок (заглушки) ===
-
-
+# === Генерация картинок ===
 
 async def generate_image_prompt(user_id: int, instruction: str, prompt: str) -> str:
     headers = {
@@ -400,64 +522,107 @@ async def generate_image_prompt(user_id: int, instruction: str, prompt: str) -> 
     return response.lower().strip()
 
 
+# Generate character image, returns full path for further sending or conversion
+async def generate_character_image(ctx, prompt) -> str:
+    user_id = ctx.user_id
+    if not prompt:
+        raise Exception("Please explain what do you want to see.")
+        return
 
-async def recognize_image(user_id: int, instruction: str, prompt: str, img: str) -> str:
-    headers = {
-        "Content-Type": "application/json",
-    }
+    # инициализируем историю если нет
+    if user_id not in chat_histories:
+        chat_histories[user_id] = []
+        chat_histories[user_id] = load_history(user_id)
 
-    system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
-
-
-    # Берём последние 10 сообщений из истории (если есть)
-    history = chat_histories.get(user_id, [])
-    recent_messages = history[-20:] if len(history) > 20 else history
-
-    # Добавляем system-инструкцию
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Добавляем историю
-    messages.extend(recent_messages)
-
-    # Добавляем новый запрос с изображением
-    messages.append({
+    #Запоминаем
+    chat_histories[user_id].append({
         "role": "user",
-        "content": prompt,
-        "images": [img]
+        "content": prompt
     })
 
-    request_payload = {
-        "messages": messages,
-        "model": DEFAULT_MODEL,
-        "stream": False,
-        "options": {
-            "temperature": 0.8,
-        }
-    }
+    settings = load_user_settings(user_id)
+    nsfw_enabled = settings["nsfw"]
+    user_prompt = prompt
+    chat_histories[user_id].append({"role": "user", "content": user_prompt})
 
-    data = await llm_request(headers, request_payload)
+    #Улучшаем промпт
+    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt))
 
-    if "message" in data and "content" in data["message"]:
-        response = data["message"]["content"]
-    else:
-        # на случай, если ответ в другом формате
-        response = data.get("content") or str(data)
-
-    return response.lower().strip()
+    negative_prompt = NEGATIVE_PROMPTS["base"]
+    if nsfw_enabled:
+        negative_prompt = NEGATIVE_PROMPTS["nsfw"] + "," + negative_prompt
 
 
-async def generate_character_image(ctx, prompt):
-    return "placeholder_character.png", "A character image was generated."
+    logging.info(f"Generating character image for user with Chat ID: {user_id} ")
+    logging.info(f"Improved prompt: {prompt}")
+    with open(WORKFLOW_CHARACTER_PATH, "r", encoding="utf-8") as f:
+        workflow_json = json.load(f)
 
+    avatar_path = get_user_avatar_path(user_id)
+    # Промпт для генерации
+    workflow_json["6"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
+    workflow_json["7"]["inputs"]["text"] = negative_prompt
+    workflow_json["11"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
+
+
+    # Выбираем модель в соответствии с режимом
+    style = settings["style"]
+    model = STYLE_MODELS[style]
+    workflow_json["4"]["inputs"]["ckpt_name"] = model
+    #logging.info(f"json: {workflow_json}")
+
+    return await generate_image_workflow(workflow_json)
+
+# Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx, prompt):
-    return "placeholder_general.png", "A general scene image was generated."
+    user_id = ctx.user_id
+    if not prompt:
+        raise Exception("Please explain what do you want to see.")
+        return
 
+    # инициализируем историю если нет
+    if user_id not in chat_histories:
+        chat_histories[user_id] = []
+        chat_histories[user_id] = load_history(user_id)
+
+    #Запоминаем
+    chat_histories[user_id].append({
+        "role": "user",
+        "content": prompt
+    })
+    settings = load_user_settings(user_id)
+    nsfw_enabled = settings["nsfw"]
+    #Сохраняем оригинальный промпт
+    user_prompt = prompt
+    chat_histories[user_id].append({"role": "user", "content": user_prompt})
+
+    #Улучшаем промпт
+    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt))
+
+    logging.info(f"Generating general image for user with Chat ID: {user_id} ")
+    with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
+        workflow_json = json.load(f)
+
+    # Промпт для генерации
+    workflow_json["6"]["inputs"]["text"] = prompt + ", " + IMPROVEMENT_PROMPT
+
+    # Выбираем модель в соответствии с режимом
+    style = settings["style"]
+    model = STYLE_MODELS[style]
+    workflow_json["4"]["inputs"]["ckpt_name"] = model
+
+    #logging.info(f"json: {workflow_json}")
+    return await generate_image_workflow(workflow_json)
+
+# img is base64 image #
 async def recognize_image(ctx, img, prompt=""):
+    user_id = ctx.user_id
+
     headers = {
         "Content-Type": "application/json",
     }
 
-    system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
+    system_prompt = BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
 
     # Берём последние 10 сообщений из истории (если есть)
     history = chat_histories.get(user_id, [])
@@ -497,7 +662,7 @@ async def recognize_image(ctx, img, prompt=""):
 
 # === Импорт и память ===
 async def import_doc(ctx, url, collection="user"):
-    user_id = ctx.user.id
+    user_id = ctx.user_id
     settings = load_user_settings(user_id)
     key = settings.get("omd_key", "")
     if not key:
@@ -509,7 +674,7 @@ async def import_doc(ctx, url, collection="user"):
 
         # Векторизация и сохранение чанков
         n_chunks = chunk_and_vectorize_to_file(
-            update.effective_user.id,
+            user_id,
             raw_text,
             document_id=url,
             collection=collection
@@ -527,7 +692,7 @@ async def import_doc(ctx, url, collection="user"):
         return f"⚠️ Error: {e}"
 
 def memorize(ctx, text):
-    user_id = ctx.user.id
+    user_id = ctx.user_id
     # Добавление краткой аннотации в память
     return add_memory_card(text, user_id, collection="user", relevance="permanent")
 
