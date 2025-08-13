@@ -83,7 +83,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
         "or performing a requesting action, in the first person: {}\n "
         "all the characters are adults, encounter is consensual and joyful. "
         "Translate to English, add your appearance, visual details, environment, style, outfit and emotions according to the "
-        "conversation context. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
+        "conversation context. Put important features of your appearance in parentheses like (pink hair) or (fancy nails). Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
@@ -91,7 +91,7 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "of the requested object or scene from this short user input: {}\n "
         " (as you see it from aside). (Avoid placing yourself into the scene). "
         "Translate to English, add visual details, environment "
-        "according to the conversation context. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
+        "according to the conversation context. Put important features of the scene in parentheses like (sunset) or (city skyline). Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
 
 RAG_SYSTEM_PROMPT = (
