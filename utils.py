@@ -2,7 +2,8 @@ import base64
 import os
 from PIL import Image
 import re
-
+import io
+import logging
 
 def escape_markdown_v2(text: str) -> str:
     """

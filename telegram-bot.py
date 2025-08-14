@@ -11,9 +11,10 @@ from telegram.ext import (
 )
 from config import SETTINGS
 import core_service as core
-from utils import resize_and_base64encode, format_response_for_markdown_v2
+from utils import resize_and_base64encode, format_response_for_markdown_v2, escape_markdown_v2
 
 TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
+MAX_CAPTION_LEN = 1024 # байт
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -130,14 +131,74 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     intent = await core.classify_user_intent(text)
     logging.info(f"Intent: {intent}")
+    chat_id = update.effective_chat.id
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     if intent == "show":
-        path = await core.generate_character_image(ctx, text)
-        await update.message.reply_photo(open(path, "rb"))
+        prompt = await core.generate_character_image_prompt(ctx, text)
+        await update.message.chat.send_action(action=ChatAction.TYPING)
+        # Отправляем фото
+        path = await core.generate_character_image(ctx, prompt)
+        b64_image = resize_and_base64encode(path)
+        with open(path, "rb") as f:
+            # Отправляем фото
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+            caption = escape_markdown_v2(prompt)
+            if len(caption) > MAX_CAPTION_LEN:
+               caption = caption[:MAX_CAPTION_LEN - 1] + "…"
+            await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")
+            # Объясняем картинку
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            recognition_prompt = (
+               "Describe the scene in first person and express how you feel in it."
+            )
+            explained = await core.perform_prompt(
+               ctx,
+               settings,
+               instruction=(
+                    "Recognize and describe the provided images. "
+                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+               ),
+               message=recognition_prompt,
+               skip_history=True,
+               b64_image=b64_image
+            )
+            result = format_response_for_markdown_v2(explained)
+            await update.message.reply_text(result, parse_mode="MarkdownV2")
+            logging.info(f"Explained photo: {explained}")
 
     elif intent == "view":
-        path = await core.generate_general_image(ctx, text)
-        await update.message.reply_photo(open(path, "rb"))
+        prompt = await core.generate_general_image_prompt(ctx, text)
+        await update.message.chat.send_action(action=ChatAction.TYPING)
+        path = await core.generate_general_image(ctx, prompt)
+        b64_image = resize_and_base64encode(path)
+        with open(path, "rb") as f:
+            # Отправляем фото
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+            caption = escape_markdown_v2(prompt)
+            if len(caption) > MAX_CAPTION_LEN:
+               caption = caption[:MAX_CAPTION_LEN - 1] + "…"
+            await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            # Объясняем картинку
+            recognition_prompt = (
+               "Summarize briefly, what do you see on this photo and how do you feel about it"
+            )
+            explained = await core.perform_prompt(
+               ctx,
+               settings,
+               instruction=(
+                    "Recognize and describe the provided images. "
+                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+               ),
+               message=recognition_prompt,
+               skip_history=True,
+               b64_image=b64_image
+            )
+            result = format_response_for_markdown_v2(explained)
+            await update.message.reply_text(result, parse_mode="MarkdownV2")
+            logging.info(f"Explained photo: {explained}")
+
 
     elif intent == "explain":
         result = await core.perform_prompt(ctx, settings, "", text, is_rag=True)
@@ -166,6 +227,8 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     query = " ".join(args) if args else update.message.text.strip()
+    chat_id = update.effective_chat.id
+    await update.message.chat.send_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     settings = core.load_user_settings(ctx)
     result = await core.perform_prompt(
@@ -202,6 +265,27 @@ async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     core.save_user_settings(ctx, settings)
     await update.message.reply_text(f"✅ Style set to *{chosen_style}*", parse_mode="Markdown")
 
+
+async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = _ctx(update.effective_user.id)
+    settings = core.load_user_settings(ctx)
+    system_prompt = settings.get("system_prompt", "—")
+    nsfw = "enabled" if settings.get("nsfw", False) else "disabled"
+    knowledge = settings.get("kb_id", "")
+    style = settings.get("style", "realistic")
+
+    msg = (
+        f"*User settings:*\n"
+        f"• NSFW: `{nsfw}`\n"
+        f"• Style: `{style}`\n"
+        f"• Knowledge: `{knowledge}`\n"
+        f"• System prompt:\n`{system_prompt}`"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+
 # ==== Main ====
 
 def main():
@@ -218,6 +302,7 @@ def main():
     app.add_handler(CommandHandler("style", set_style))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_text))
+    app.add_handler(CommandHandler("showsettings", get_settings))
 
     app.run_polling()
 

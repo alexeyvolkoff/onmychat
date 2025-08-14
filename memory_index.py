@@ -106,7 +106,7 @@ def search_document_chunks(
     query: str,
     vec_path: str,
     top_k: int = 3,
-    distance_threshold: float = 0.6
+    distance_threshold: float = 0.8
 ) -> list[dict]:
     """Ищет релевантные чанки в .vec-файле документа"""
     if not os.path.exists(vec_path):
@@ -141,7 +141,7 @@ def search_document_chunks(
     return results[:top_k]
 
 
-def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.8) -> list[dict]:
     if collection == "user":
         index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
     else:
@@ -176,6 +176,7 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
         elif relevance == "contextual":
             distance = cosine_distance(query_emb, m["embedding"])
             memory_id = m.get("memory_id")
+            logging.info(f"Checking memory: {collection} {memory_id} {distance}")
             if distance <= distance_threshold:
                 logging.info(f"Relevant memory: {collection} {memory_id} {distance}")
                 m["distance"] = distance

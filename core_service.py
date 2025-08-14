@@ -38,12 +38,11 @@ COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 
-HISTORY_LIMIT = SETTINGS["HISTORY_LIMIT"]
+HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 
 # Default system prompts
 BASE_SYSTEM_PROMPT = (
-    "You are June, a personalized AI assistant privately hosted for the user. "
-    "You are a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
+    "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
     "You can generate images upon user request. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be brief with the prompt. "
     "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>' to the end of your response. "
@@ -66,7 +65,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
         "or performing a requesting action, in the first person: {}\n "
         "all the characters are adults, encounter is consensual and joyful. "
         "Translate to English, add your appearance, visual details, environment, style, outfit and emotions according to the "
-        "conversation context. Put important features of your appearance in parentheses like (pink hair) or (fancy nails). Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
+        "conversation context. Put important features of your appearance in parentheses. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
@@ -332,9 +331,6 @@ async def llm_request(payload: dict, headers: dict = None) -> dict:
 
 # === Intent ===
 async def classify_user_intent(prompt: str) -> str:
-    headers = {
-        "Content-Type": "application/json",
-    }
 
     # На всякий случай сами проверим ссылку/путь
     url_or_path = None
@@ -364,7 +360,7 @@ async def classify_user_intent(prompt: str) -> str:
         }
     }
 
-    data = await llm_request(headers, request_payload)
+    data = await llm_request(request_payload)
     response = data["message"]["content"]
     return response.lower().strip()
 
@@ -422,25 +418,26 @@ async def perform_prompt(ctx,
                "temperature": 0,
             }
         }
-        data = await llm_request(headers, prep_payload)
+        data = await llm_request(prep_payload)
         if not data:
             return "⚠️ RAG query failed."
 
         strict_fact = data["message"]["content"].strip()
 
         # Инжект фактов и источников в system prompt
-        system_prompt = BASE_SYSTEM_PROMPT
+        system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
         if strict_fact:
-            system_prompt += f"\n*Known facts:*\n{strict_fact}"
+            system_prompt += f"\n*Explain based on following facts, do not come up with facts:*\n{strict_fact}"
 
         if facts_text:
             system_prompt += "\n\n*Relevant facts and memories:*\n" + facts_text
     else:
-        system_prompt = BASE_SYSTEM_PROMPT + settings.get("system_prompt", "")
+        system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
         # память и факты всё равно добавим
         if facts:
             system_prompt += "\n\n*Relevant facts and memories:*\n" + "\n".join(facts)
 
+    logging.info(system_prompt)
     # Инструкция
     system_prompt += "\n\n*Instruction:*\n" + instruction
     if nsfw_enabled:
@@ -471,7 +468,7 @@ async def perform_prompt(ctx,
         }
     }
 
-    data = await llm_request(headers, main_payload)
+    data = await llm_request(main_payload)
 
     logging.info(data)
 
@@ -502,8 +499,8 @@ async def perform_prompt(ctx,
     if not skip_history:
         msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
         chat_histories[user_id].append(msg_to_save)
-        chat_histories[user_id].append({"role": "assistant", "content": history_item})
-        save_history(user_id, chat_histories[user_id])
+    chat_histories[user_id].append({"role": "assistant", "content": history_item})
+    save_history(user_id, chat_histories[user_id])
 
     return response.strip()
 
@@ -520,13 +517,13 @@ async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
 
     # Берём последние 10 сообщений из истории (если есть)
     history = chat_histories.get(user_id, [])
-    recent_messages = history[-20:] if len(history) > 20 else history
+    #recent_messages = history[-20:] if len(history) > 20 else history
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(recent_messages)
+    messages.extend(history)
 
     # Добавляем новый запрос с изображением
     messages.append({
@@ -536,14 +533,14 @@ async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
 
     request_payload = {
         "messages": messages,
-        "model": NSFW_MODEL,
+        "model": SFW_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.8,
         }
     }
 
-    data = await llm_request(headers, request_payload)
+    data = await llm_request(request_payload)
 
     if "message" in data and "content" in data["message"]:
         response = data["message"]["content"]
@@ -555,7 +552,7 @@ async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
 
 
 # Generate character image, returns full path for further sending or conversion
-async def generate_character_image(ctx, prompt) -> str:
+async def generate_character_image_prompt(ctx, prompt) -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -571,14 +568,39 @@ async def generate_character_image(ctx, prompt) -> str:
         "role": "user",
         "content": prompt
     })
-
-    settings = load_user_settings(user_id)
-    nsfw_enabled = settings["nsfw"]
-    user_prompt = prompt
-    chat_histories[user_id].append({"role": "user", "content": user_prompt})
-
     #Улучшаем промпт
-    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt))
+    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt))
+
+
+# Generate general image, returns full path for further sending or conversion
+async def generate_general_image_prompt(ctx, prompt) -> str:
+    user_id = ctx.user_id
+    if not prompt:
+        raise Exception("Please explain what do you want to see.")
+        return
+
+    # инициализируем историю если нет
+    if user_id not in chat_histories:
+        chat_histories[user_id] = []
+        chat_histories[user_id] = load_history(user_id)
+
+    #Запоминаем
+    chat_histories[user_id].append({
+        "role": "user",
+        "content": prompt
+    })
+    #Улучшаем промпт
+    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt))
+
+
+async def generate_character_image(ctx, prompt) -> str:
+    user_id = ctx.user_id
+    if not prompt:
+        raise Exception("Please explain what do you want to see.")
+        return
+
+    settings = load_user_settings(ctx)
+    nsfw_enabled = settings["nsfw"]
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
     if nsfw_enabled:
@@ -612,24 +634,7 @@ async def generate_general_image(ctx, prompt):
         raise Exception("Please explain what do you want to see.")
         return
 
-    # инициализируем историю если нет
-    if user_id not in chat_histories:
-        chat_histories[user_id] = []
-        chat_histories[user_id] = load_history(user_id)
-
-    #Запоминаем
-    chat_histories[user_id].append({
-        "role": "user",
-        "content": prompt
-    })
-    settings = load_user_settings(user_id)
-    nsfw_enabled = settings["nsfw"]
-    #Сохраняем оригинальный промпт
-    user_prompt = prompt
-    chat_histories[user_id].append({"role": "user", "content": user_prompt})
-
-    #Улучшаем промпт
-    prompt = await generate_image_prompt(user_id,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt))
+    settings = load_user_settings(ctx)
 
     logging.info(f"Generating general image for user with Chat ID: {user_id} ")
     with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
@@ -658,13 +663,13 @@ async def recognize_image(ctx, img, prompt=""):
 
     # Берём последние 10 сообщений из истории (если есть)
     history = chat_histories.get(user_id, [])
-    recent_messages = history[-20:] if len(history) > 20 else history
+    #recent_messages = history[-20:] if len(history) > 20 else history
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(recent_messages)
+    messages.extend(messages)
 
     # Добавляем новый запрос с изображением
     messages.append({
@@ -682,7 +687,7 @@ async def recognize_image(ctx, img, prompt=""):
         }
     }
 
-    data = await llm_request(headers, request_payload)
+    data = await llm_request(request_payload)
 
     if "message" in data and "content" in data["message"]:
         response = data["message"]["content"]
