@@ -153,17 +153,40 @@ def get_default_system_prompt() -> str:
     return "You are a helpful assistant."  # fallback, если default.txt не найден
 
 # === Настройки пользователя ===
-def load_user_settings(user_id):
-    return user_settings_store.get(user_id, {
+def load_user_settings(ctx):
+    path = f"user_data/{ctx.user_id}.json"
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
         "nsfw": False,
         "style": "realistic",
         "system_prompt": get_default_system_prompt(),
         "omd_key": "",
         "kb_id": DEFAULT_KB_ID
-    })
+    }
 
-def save_user_settings(user_id, settings):
-    user_settings_store[user_id] = settings
+
+def save_user_settings(ctx, settings):
+    os.makedirs("user_data", exist_ok=True)
+    path = f"user_data/{ctx.user_id}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def bind_account(ctx, omd_key: str):
+    settings = load_user_settings(ctx)
+    settings["omd_key"] = omd_key
+    save_user_settings(ctx, settings)
+    return True
+
+
+def unbind_account(ctx):
+    settings = load_user_settings(ctx)
+    settings["omd_key"] = ""
+    save_user_settings(ctx, settings)
+    return True
+
 
 # === Ollama запрос ===
 async def llm_request(payload: dict):
@@ -496,38 +519,43 @@ async def recognize_image(ctx, img, prompt=""):
     return response.lower().strip()
 
 # === Импорт и память ===
-async def import_doc(ctx, url, collection="user"):
-    user_id = ctx.user.id
-    settings = load_user_settings(user_id)
+async def import_doc(ctx, url_or_path, collection="user"):
+    settings = load_user_settings(ctx)
     key = settings.get("omd_key", "")
-    if not key:
-        raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/setomdkey abcdxxxxx...`")
-        return
 
-    try:
-        raw_text = await fetch_document_text(url, key)
+    # Определяем, это OMD или нет
+    if url_or_path.startswith("/") or "onmydisk.net" in url_or_path:
+        if url_or_path.startswith("/"):
+            url_or_path = f"https://onmydisk.net{url_or_path}"
+        if not key:
+            raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
+        raw_text = await fetch_document_text(url_or_path, key)
+    else:
+        raw_text = await fetch_document_text(url_or_path)  # без токена
 
-        # Векторизация и сохранение чанков
-        n_chunks = chunk_and_vectorize_to_file(
-            update.effective_user.id,
-            raw_text,
-            document_id=url,
-            collection=collection
-        )
+    # Векторизация и сохранение чанков
+    n_chunks = chunk_and_vectorize_to_file(
+        ctx.user_id,
+        raw_text,
+        document_id=url_or_path,
+        collection=collection
+    )
 
-        # Добавление краткой аннотации в память
-        mem_id = add_memory_card(
-            text=summarize_for_memory(raw_text),
-            user_id=user_id,
-            document_id=url,
-            collection=collection
-        )
-        return mem_id
-    except Exception as e:
-        return f"⚠️ Error: {e}"
+    # Добавление краткой аннотации в память
+    mem_id = add_memory_card(
+        text=summarize_for_memory(raw_text),
+        user_id=ctx.user_id,
+        document_id=url_or_path,
+        collection=collection
+    )
+
+    return {
+        "chunks": n_chunks,
+        "memory_id": mem_id
+    }
 
 def memorize(ctx, text):
-    user_id = ctx.user.id
+    user_id = ctx.user_id
     # Добавление краткой аннотации в память
     return add_memory_card(text, user_id, collection="user", relevance="permanent")
 

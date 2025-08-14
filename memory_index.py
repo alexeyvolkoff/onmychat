@@ -196,17 +196,18 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
 
     return permanent + contextual
 
-async def fetch_document_text(url: str, token: str) -> str:
-    ext = os.path.splitext(url)[-1].lower().lstrip('.')
+async def fetch_document_text(url: str, token: str = None) -> str:
+    headers = {}
+    if token:
+        ext = os.path.splitext(url.split("?")[0])[-1].lower().lstrip('.')
+        if ext in SUPPORTED_CONVERT_EXTS:
+           url += "?totext"
+        elif ext in SUPPORTED_PLAIN_EXTS:
+           pass
+        else:
+           raise ValueError(f"Unsupported file type: .{ext}")
+        headers["Authorization"] = f"token:{token}"
 
-    if ext in SUPPORTED_CONVERT_EXTS:
-        url += "?totext"
-    elif ext in SUPPORTED_PLAIN_EXTS:
-        pass  # Leave URL unchanged
-    else:
-        raise ValueError(f"Unsupported file type: .{ext}")
-
-    headers = {"Authorization": f"token:{token}"}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             if response.status != 200:
