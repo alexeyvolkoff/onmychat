@@ -2,9 +2,9 @@
 
 import os
 import json
-
-HISTORY_DIR = "history"
-HISTORY_LIMIT = 200  # Используется в telegram-bot.py
+from config import SETTINGS
+HISTORY_DIR = SETTINGS["HISTORY_DIR"] or "history"
+HISTORY_LIMIT = SETTINGS["HISTORY_LIMIT"] or 200  # Используется в telegram-bot.py
 
 def _get_path(user_id: int) -> str:
     return os.path.join(HISTORY_DIR, f"{user_id}.json")

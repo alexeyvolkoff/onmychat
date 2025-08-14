@@ -160,7 +160,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = _ctx(update.effective_user.id)
-    query = " ".join(context.args) if context.args else update.message.text.strip()
+    args = context.args
+    if not args:
+        await update.message.reply_text("❗ Usage: /ask <your questing>")
+        return
+
+    query = " ".join(args) if args else update.message.text.strip()
+
     settings = core.load_user_settings(ctx)
     result = await core.perform_prompt(
         ctx, settings,

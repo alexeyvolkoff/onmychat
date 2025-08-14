@@ -38,7 +38,7 @@ COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 
-MAX_HISTORY_MESSAGES = 300
+HISTORY_LIMIT = SETTINGS["HISTORY_LIMIT"]
 
 # Default system prompts
 BASE_SYSTEM_PROMPT = (
@@ -150,12 +150,19 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
     clean_lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     normalized = " ".join(clean_lines)
 
-    # Обрезаем по байтам (чтобы не порезать utf-8 символ)
-    encoded = normalized.encode("utf-8")[:max_bytes]
-    summary = encoded.decode("utf-8", errors="ignore")
+    # Decode the string to Unicode first
+    unicode_text = normalized
 
-    return summary.strip() + "..."
+    # Get the maximum number of characters, not bytes
+    max_chars = min(max_bytes // 1, len(unicode_text)) # to prevent from slicing too much, max size is based on bytes
 
+    # Slice the Unicode string
+    summary_unicode = unicode_text[:max_chars]
+
+    # Encode the sliced Unicode string back to UTF-8
+    summary_encoded = summary_encoded.encode("utf-8", errors="ignore")
+
+    return summary_encoded.decode("utf-8", errors="ignore").strip() + "..."
 
 def get_default_system_prompt() -> str:
     if os.path.exists(DEFAULT_SYSTEM_PROMPT_FILE):
@@ -363,7 +370,7 @@ async def classify_user_intent(prompt: str) -> str:
 
 
 # === Чат ===
-async def perform_prompt(user_id: int,
+async def perform_prompt(ctx,
                          settings: dict,
                          instruction: str,
                          message: str,
@@ -372,6 +379,7 @@ async def perform_prompt(user_id: int,
                          requestedModel=DEFAULT_MODEL,
                          b64_image = "") -> str:
 
+    user_id = ctx.user_id
     nsfw_enabled = settings.get("nsfw", False)
     model = requestedModel
     headers = {
@@ -381,8 +389,8 @@ async def perform_prompt(user_id: int,
     if user_id not in chat_histories:
         chat_histories[user_id] = load_history(user_id)
 
-    if len(chat_histories[user_id]) > MAX_HISTORY_MESSAGES:
-        chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY_MESSAGES:]
+    if len(chat_histories[user_id]) > HISTORY_LIMIT:
+        chat_histories[user_id] = chat_histories[user_id][-HISTORY_LIMIT:]
 
     # === ВСПОМНИМ ФАКТЫ ===
     collection = settings.get("kb_id") or DEFAULT_KB_ID
@@ -501,10 +509,11 @@ async def perform_prompt(user_id: int,
 
 # === Генерация картинок ===
 
-async def generate_image_prompt(user_id: int, instruction: str, prompt: str) -> str:
+async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
     headers = {
         "Content-Type": "application/json",
     }
+    user_id = ctx.user_id
 
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
 
