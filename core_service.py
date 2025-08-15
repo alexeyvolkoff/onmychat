@@ -44,7 +44,7 @@ HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
-    "You can generate images upon user request. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be brief with the prompt. "
+    "Generate images *upon user request ONLY*. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be brief with the prompt. "
     "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <summary or fact>' to the end of your response. "
     "Do not memorize every reply, only the facts you consider meaningful or relevant.\n\n"
 
@@ -156,7 +156,7 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
     max_chars = min(max_bytes // 1, len(unicode_text)) # to prevent from slicing too much, max size is based on bytes
 
     # Slice the Unicode string
-    summary_unicode = unicode_text[:max_chars]
+    summary_encoded = unicode_text[:max_chars]
 
     # Encode the sliced Unicode string back to UTF-8
     summary_encoded = summary_encoded.encode("utf-8", errors="ignore")
@@ -389,22 +389,23 @@ async def perform_prompt(ctx,
         chat_histories[user_id] = chat_histories[user_id][-HISTORY_LIMIT:]
 
     # === ВСПОМНИМ ФАКТЫ ===
+    facts_text = ""
     collection = settings.get("kb_id") or DEFAULT_KB_ID
     #logging.info(f"collection: {collection} {is_rag}")
     facts, doc_ids = await inject_facts(user_id, message, collection)
+    if facts:
+        facts_text = "\n\n*Known facts and memories:*\n" + "\n".join(facts) if facts else ""
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
-        facts_text = "\n".join(facts) if facts else ""
-
         prep_prompt = (
             "You are a fact-checking assistant. Extract *only known facts* from the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
         )
 
-        rag_system_prompt = prep_prompt;
+        rag_system_prompt = prep_prompt
 
         if facts_text:
-            rag_system_prompt += "\n\n*Known facts and memories:*\n" + facts_text
+            rag_system_prompt += facts_text
 
         prep_messages = [
             {"role": "system", "content": rag_system_prompt},
@@ -425,19 +426,19 @@ async def perform_prompt(ctx,
         strict_fact = data["message"]["content"].strip()
 
         # Инжект фактов и источников в system prompt
-        system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
         if strict_fact:
-            system_prompt += f"\n*Explain based on following facts, do not come up with facts:*\n{strict_fact}"
+            facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
 
-        if facts_text:
-            system_prompt += "\n\n*Relevant facts and memories:*\n" + facts_text
-    else:
-        system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
-        # память и факты всё равно добавим
-        if facts:
-            system_prompt += "\n\n*Relevant facts and memories:*\n" + "\n".join(facts)
+    
+    # Персонализация
+    system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
+    #logging.info(system_prompt)
 
-    logging.info(system_prompt)
+    # Факты
+    if facts_text:
+        logging.info(facts_text)
+        system_prompt += facts_text
+
     # Инструкция
     system_prompt += "\n\n*Instruction:*\n" + instruction
     if nsfw_enabled:
@@ -488,12 +489,19 @@ async def perform_prompt(ctx,
             logging.error(f"Vectorization error: {e}")
 
     # Добавляем блок с источниками — только в отображаемый ответ
+    links = []
     if doc_ids:
-       links = [
-          f"• [{make_file_name_from_document_id(doc)}]({doc})"
-          for doc in doc_ids
-       ]
-       response += "\n\n📎 *Sources:*\n" + "\n".join(links)
+        seen = set()
+        for doc in doc_ids:
+            if doc in seen:
+                continue  # пропускаем дубликаты
+            seen.add(doc)
+            label = make_file_name_from_document_id(doc)
+            # Формируем ссылку без экранирования, она будет безопасно обработана позже
+            links.append(f"• [{label}]({doc})")
+    
+    if links:  # добавляем блок только если есть ссылки
+        response += "\n\n📎 *Sources:*\n" + "\n".join(links)
 
     # === Добавляем в историю
     if not skip_history:
@@ -728,10 +736,7 @@ async def import_doc(ctx, url_or_path, collection="user"):
         collection=collection
     )
 
-    return {
-        "chunks": n_chunks,
-        "memory_id": mem_id
-    }
+    return mem_id
 
 def memorize(ctx, text):
     user_id = ctx.user_id

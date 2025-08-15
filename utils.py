@@ -38,19 +38,21 @@ def format_response_for_markdown_v2(text: str) -> str:
             s = re.sub(pattern, rf'\\{sym}', s)
         return s
 
-   # Экранируем спецсимволы внутри markdown-ссылок [text](url)
-    def escape_markdown_link(match):
-        label = re.sub(r'([[\]()~>#+=|{}.!_-])', r'\\\1', match.group(1))
-        url = re.sub(r'([[\]()~>#+=|{}.!_-])', r'\\\1', match.group(2))
-        return f'[{label}]({url})'
-
+    # Экранируем спецсимволы внутри markdown-ссылок [text](url)
+    def escape_markdown_link_str(link: str) -> str:
+        # Парсим [label](url)
+        m = re.match(r'\[([^\]]+)\]\(([^)]+)\)', link)
+        if m:
+            label = re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', m.group(1))
+            url = re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', m.group(2))
+            return f'[{label}]({url})'
+        else:
+            # Если парсинг не удался — экранируем всю строку
+            return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', link)
+            
     def escape_non_formatting_chars(s):
-        # оставшиеся: *_` и -
         chars = r'[]()~>#+=|{}.!'
         return re.sub(r'([%s])' % re.escape(chars), r'\\\1', s)
-
-    def escape_link(s):
-        return s.replace('.', r'\.')
 
     # Сохраняем Markdown-ссылки [text](url)
     link_placeholders = []
@@ -77,8 +79,6 @@ def format_response_for_markdown_v2(text: str) -> str:
     text = escape_unbalanced_symbol(text, '*')
     text = escape_unbalanced_symbol(text, '_')
     text = escape_unbalanced_symbol(text, '`')
-    # Экранируем все дефисы, которые ещё не экранированы
-    text = re.sub(r'(?<!\\)-', r'\-', text)
 
     # Экранируем неформатирующие спецсимволы
     text = escape_non_formatting_chars(text)
@@ -87,10 +87,12 @@ def format_response_for_markdown_v2(text: str) -> str:
     for i, code in enumerate(code_blocks, start=1):
         text = text.replace(f"§§§{i}§§§", f"```\n{code}\n```")
 
+    # Экранируем все дефисы
+    text = re.sub(r"-", r"\-", text)
+
     # Восстанавливаем ссылки
     for i, link in enumerate(link_placeholders, start=1):
-        text = text.replace(f"§§LINK{i}§§", escape_link(link))
-
+        text = text.replace(f"§§LINK{i}§§", escape_markdown_link_str(link))
 
     return text
 
