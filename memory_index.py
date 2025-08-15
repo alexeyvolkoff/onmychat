@@ -4,8 +4,8 @@ import aiohttp
 import numpy as np
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
-import urllib.parse
 import logging
+import warnings
 
 MEMORY_KEYWORDS = [
     "Запомнить:",        # 🇷🇺 Russian
@@ -25,6 +25,8 @@ MEMORY_KEYWORDS = [
 SUPPORTED_CONVERT_EXTS = {"docx", "odt", "pdf", "epub", "fb2", "csv"}
 SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
 
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 _model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
 
 BASE_INDEX_DIR = "memory_index"
@@ -36,7 +38,7 @@ def cosine_distance(a, b):
     return 1 - np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def embed_text(text: str) -> list:
-    return _model.encode(text).tolist()
+    return _model.encode(text, show_progress_bar=False).tolist()
 
 def get_index_path(user_id: int | None = None, collection: str = "user") -> str:
     index_path = ""
@@ -58,22 +60,25 @@ def add_memory_card(
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
 
     vec = embed_text(text)
+    mem_id = datetime.now().strftime("%Y%m%dT%H%M%S") + (f"_user_{user_id}" if user_id else "")
 
     entry = {
         "embedding": vec,
         "text": text.strip(),
         "collection": collection,
         "relevance": relevance,
-        "document_id": document_id,
-        "user_id": user_id if collection == "user" else None,
-        "memory_id": datetime.now().strftime("%Y%m%dT%H%M%S") + (f"_user_{user_id}" if user_id else ""),
+        "user_id": user_id,
+        "memory_id": mem_id,
         "timestamp": datetime.now().isoformat(timespec="seconds")
     }
+
+    if document_id:
+        entry["document_id"] = document_id
 
     with open(index_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    return entry
+    return mem_id
 
 
 def extract_memory_from_response(response: str) -> tuple[str | None, int | None]:
@@ -106,7 +111,7 @@ def search_document_chunks(
     query: str,
     vec_path: str,
     top_k: int = 3,
-    distance_threshold: float = 0.8
+    distance_threshold: float = 0.6
 ) -> list[dict]:
     """Ищет релевантные чанки в .vec-файле документа"""
     if not os.path.exists(vec_path):
@@ -122,13 +127,13 @@ def search_document_chunks(
     if not chunks:
         return []
 
-    query_emb = np.array(_model.encode([query])[0])
+    query_emb = np.array(_model.encode([query], show_progress_bar=False)[0])
 
     results = []
     for chunk in chunks:
         distance = cosine_distance(query_emb, chunk["embedding"])
-        logging.info(f"Chunk distance: {distance}")
         if distance <= distance_threshold:
+            logging.info(f"Relevant chunk: {distance}")
             results.append({
                 "text": chunk.get("text", "").strip(),
                 "distance": distance,
@@ -141,7 +146,7 @@ def search_document_chunks(
     return results[:top_k]
 
 
-def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.8) -> list[dict]:
+def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     if collection == "user":
         index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
     else:
@@ -163,7 +168,7 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
     if not memories:
         return []
 
-    query_emb = np.array(_model.encode([query])[0])
+    query_emb = np.array(_model.encode([query], show_progress_bar=False)[0])
 
     permanent = []
     contextual = []
@@ -176,18 +181,21 @@ def search_memories(query: str, user_id: int, collection: str = "user", top_k: i
         elif relevance == "contextual":
             distance = cosine_distance(query_emb, m["embedding"])
             memory_id = m.get("memory_id")
-            logging.info(f"Checking memory: {collection} {memory_id} {distance}")
+            doc_id = m.get("document_id")
+            #logging.info(f"Checking memory: {collection} {memory_id} {distance} {doc_id}")
             if distance <= distance_threshold:
-                logging.info(f"Relevant memory: {collection} {memory_id} {distance}")
+                logging.info(f"Relevant memory: {collection} {memory_id} {distance} {doc_id}")
                 m["distance"] = distance
                 doc_id = m.get("document_id")
                 if doc_id:
-                    logging.info(f"Relevant document: {doc_id}")
-                    vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(doc_id) + ".vec")
-                    if os.path.exists(vec_path):
+                    vec_file = make_file_name_from_document_id(doc_id) + ".vec"
+                    vec_file_path = f"{vec_path}/{vec_file}"
+                    if os.path.exists(vec_file_path):
                         # Adding relevant document chunks
-                        doc_chunks = search_document_chunks(query, vec_path)
+                        doc_chunks = search_document_chunks(query, vec_file_path)
                         contextual.extend(doc_chunks)
+                    else: 
+                        logging.warning(f"Not found: {vec_file_path}")    
                 else:
                   # Adding memory card
                   contextual.append(m)

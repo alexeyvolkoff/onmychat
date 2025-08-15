@@ -1,5 +1,6 @@
 config.ini
 user_data
+memory_index
 history
 __pycache__
 venv

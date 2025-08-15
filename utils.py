@@ -43,13 +43,14 @@ def format_response_for_markdown_v2(text: str) -> str:
         # Парсим [label](url)
         m = re.match(r'\[([^\]]+)\]\(([^)]+)\)', link)
         if m:
+            # Экранируем спецсимволы только в label
             label = re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', m.group(1))
             url = re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', m.group(2))
             return f'[{label}]({url})'
         else:
             # Если парсинг не удался — экранируем всю строку
             return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', link)
-            
+    
     def escape_non_formatting_chars(s):
         chars = r'[]()~>#+=|{}.!'
         return re.sub(r'([%s])' % re.escape(chars), r'\\\1', s)
@@ -75,6 +76,8 @@ def format_response_for_markdown_v2(text: str) -> str:
 
     text = re.sub(r"```(?:\w*\n)?(.*?)```", replace_code_blocks, text, flags=re.DOTALL)
 
+    # Экранируем одинокие обратные слэши
+    text = text.replace('\\', '\\\\')
     # Экранируем непарные символы форматирования
     text = escape_unbalanced_symbol(text, '*')
     text = escape_unbalanced_symbol(text, '_')
@@ -82,7 +85,6 @@ def format_response_for_markdown_v2(text: str) -> str:
 
     # Экранируем неформатирующие спецсимволы
     text = escape_non_formatting_chars(text)
-
     # Восстанавливаем блоки кода
     for i, code in enumerate(code_blocks, start=1):
         text = text.replace(f"§§§{i}§§§", f"```\n{code}\n```")

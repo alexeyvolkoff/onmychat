@@ -56,10 +56,11 @@ async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /import_doc <url>")
+        await update.message.reply_text("Usage: /import_doc <url> [kb_id]")
         return
     ctx = _ctx(update.effective_user.id)
-    result = await core.import_doc(ctx, context.args[0])
+    collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
+    result = await core.import_doc(ctx, context.args[0], collection)
     await update.message.reply_text(f"Document imported: {result}")
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -201,7 +202,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     elif intent == "explain":
-        result = await core.perform_prompt(ctx, settings, "", text, is_rag=True)
+        instruction=(
+            "Use the *Known facts* provided above. If no related facts provided, do not guess, say you do not know."
+        )
+        result = await core.perform_prompt(ctx, settings, instruction, text, is_rag=True)
         await update.message.reply_text(
             format_response_for_markdown_v2(result),
             parse_mode="MarkdownV2"
@@ -215,6 +219,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
     else:
+        instruction=(
+            "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
+        )
         result = await core.perform_prompt(ctx, settings, "", text)
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
@@ -294,7 +301,7 @@ def main():
     app.add_handler(CommandHandler("bind", bind))
     app.add_handler(CommandHandler("unbind", unbind))
     app.add_handler(CommandHandler("system", set_system_prompt))
-    app.add_handler(CommandHandler("import_doc", import_doc))
+    app.add_handler(CommandHandler("import", import_doc))
     app.add_handler(CommandHandler("remember", remember))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("recognize", handle_text))
