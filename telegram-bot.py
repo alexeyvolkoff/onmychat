@@ -73,9 +73,8 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==== Image recognition helper ====
 
-async def recognize_image_request(ctx, img_source: str, omd_key: str, update: Update):
+async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Update):
     photos = update.message.photo
-    message = update.message.text or "What is on this photo?"
     b64_image = None
 
     if photos:
@@ -104,33 +103,22 @@ async def recognize_image_request(ctx, img_source: str, omd_key: str, update: Up
                         b64_image = base64.b64encode(data).decode("utf-8")
                     else:
                         logging.error(f"OMD access failed: {resp.status}")
-                        return "Failed to get image from On My Disk."
+                        return None
+    return b64_image                
 
-    if not b64_image:
-        return "Image not found or could not be processed."
-
-    recognition_prompt = re.sub(
-        r"(https?://\S+)|(\S*\.(jpg|jpeg|png|gif|webp))",
-        "",
-        message,
-        flags=re.IGNORECASE
-    ).strip()
-
-    return await core.recognize_image(
-        ctx=ctx,
-        instruction="Recognize the image.",
-        prompt=recognition_prompt,
-        img=b64_image
-    )
+    
 
 # ==== Core Handlers ====
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = _ctx(update.effective_user.id)
     settings = core.load_user_settings(ctx)
-    text = update.message.text
-
-    intent = await core.classify_user_intent(text)
+    text = update.message.text or ""
+    intent = "chat"
+    if not text and update.message.photo:
+        intent = "recognize"
+    else:    
+        intent = await core.classify_user_intent(text)
     logging.info(f"Intent: {intent}")
     chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -215,8 +203,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_source = None
         if ":" in intent:
             img_source = intent.split(":", 1)[1]
-        result = await recognize_image_request(ctx, img_source, settings.get("omd_key"), update)
-        await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
+        
+        b64_image = await get_image_from_request(ctx, img_source, settings.get("omd_key"), update)    
+
+        recognition_prompt = (
+            "Recognize the image according to context."
+        )
+        explained = await core.perform_prompt(
+               ctx,
+               settings,
+               instruction=(
+                    "Recognize and describe the provided images."
+               ),
+               message=recognition_prompt,
+               b64_image=b64_image
+            )
+        result = format_response_for_markdown_v2(explained)
+        await update.message.reply_text(result, parse_mode="MarkdownV2")    
 
     else:
         instruction=(
