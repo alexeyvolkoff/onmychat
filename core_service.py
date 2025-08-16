@@ -119,7 +119,7 @@ INTENT_PROMPT = (
     "   - Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
     "   - Example: \"Show me the Eiffel Tower\" → 'view'\n"
     "   - Example: \"Show me view from the window\" → 'view'\n"
-    "   - Example: \"Chack out my bicycle\" → 'chat'\n"
+    "   - Example: \"Check out my new bicycle\" → 'chat'\n"
     "\n"
     "3. If the user only mentions themselves, or you, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
     "   - Do NOT classify as 'show' or 'view' if the user only mentions themselves (\"It's me\", \"That's my town\", \"I live here\") without explicitly asking for an image.\n"
