@@ -56,12 +56,12 @@ async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /import_doc <url> [kb_id]")
+        await update.message.reply_text("Usage: /import <url> [kb_id]")
         return
     ctx = _ctx(update.effective_user.id)
     collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
     result = await core.import_doc(ctx, context.args[0], collection)
-    await update.message.reply_text(f"Document imported: {result}")
+    await update.message.reply_text(f"✅ Document imported: `{result}`")
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -69,7 +69,7 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ctx = _ctx(update.effective_user.id)
     result = core.memorize(ctx, " ".join(context.args))
-    await update.message.reply_text(f"Memorized: {result}")
+    await update.message.reply_text(f"✅ Memorized: `{result}`")
 
 # ==== Image recognition helper ====
 
@@ -294,7 +294,22 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = _ctx(update.effective_user.id)
+    if not context.args:
+        await update.message.reply_text(
+            "❗ Specify knowledge base, for example:\n`/useknowledge kb-abc123`",
+            parse_mode="Markdown"
+        )
+        return
 
+    kb_id = context.args[0]
+    settings = core.load_user_settings(ctx)
+
+    settings["kb_id"] = kb_id
+    core.save_user_settings(ctx, settings)
+
+    await update.message.reply_text(f"✅ Switched to `{kb_id}` knowledge base.", parse_mode="Markdown")
 
 # ==== Main ====
 
@@ -310,9 +325,10 @@ def main():
     app.add_handler(CommandHandler("recognize", handle_text))
     app.add_handler(CommandHandler("nsfw", nsfw_command))
     app.add_handler(CommandHandler("style", set_style))
+    app.add_handler(CommandHandler("showsettings", get_settings))
+    app.add_handler(CommandHandler("useknowledge", useknowledge))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_text))
-    app.add_handler(CommandHandler("showsettings", get_settings))
 
     app.run_polling()
 
