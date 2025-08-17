@@ -79,7 +79,7 @@ def get_context_by_account(account_id: str) -> UserContext:
         response.raise_for_status()
         user_info = response.json()
         if user_info.get("valid", False):
-            username = user_info["username"]
+            username = user_info["user"]
             # сохраняем в биндинги только в by_account (телеграма нет)
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
             save_bindings()

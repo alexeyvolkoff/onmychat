@@ -1,85 +1,176 @@
-from fastapi import FastAPI, HTTPException, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 import core_service
-import inspect, asyncio
+import user_context
+import dialog_history
+import memory_index
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
-# Разрешённые методы core_service
-ALLOWED_METHODS = {
-    "summarize_for_memory": core_service.summarize_for_memory,
-    "chat": core_service.chat,
-    "generate_image": core_service.generate_image,
-    "recognize_image": core_service.recognize_image,
-    "memorize": core_service.memorize,
-    "import": core_service.import_doc,
-}
+# ==== Модели ввода ====
 
-class MethodCallInput(BaseModel):
-    args: dict = {}
+class ChatInput(BaseModel):
+    omd_key: str
+    prompt: str
+    chat: str = "default"
 
-# === Авторизация ===
-def get_user_context(omd_key: str = Header(..., alias="X-OMD-Key")):
-    if not omd_key:
-        raise HTTPException(status_code=401, detail="Missing X-OMD-Key")
-    return {"omd_key": omd_key}
+class ImportInput(BaseModel):
+    omd_key: str
+    url_or_path: str
+    collection: str = "user"
 
-@app.get("/methods")
-async def methods_endpoint():
-    return {"methods": list(ALLOWED_METHODS.keys()) + ["history", "memory"]}
+class MemorizeInput(BaseModel):
+    omd_key: str
+    text: str
 
-@app.post("/methods/{name}")
-async def methods_method_endpoint(
-    name: str,
-    input: MethodCallInput,
-    ctx: dict = Depends(get_user_context)
-):
-    if name not in ALLOWED_METHODS:
-        raise HTTPException(status_code=400, detail=f"Method {name} not allowed")
+class RecognizeInput(BaseModel):
+    omd_key: str
+    prompt: str = ""
+    chat: str = "default"
 
-    method = ALLOWED_METHODS[name]
+class GenerateInput(BaseModel):
+    omd_key: str
+    prompt: str
+    chat: str = "default"
 
-    try:
-        args = {**input.args, **ctx}  # пробрасываем omd_key в core
-        if inspect.iscoroutinefunction(method):
-            result = await method(**args)
-        else:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: method(**args))
-        return {"result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-# === Автогенерация алиасов ===
-def create_alias(name: str, method):
-    @app.post(f"/{name}")
-    async def alias_endpoint(
-        input: MethodCallInput,
-        ctx: dict = Depends(get_user_context),
-        _name=name
-    ):
-        return await methods_method_endpoint(_name, input, ctx)
+# ==== Хелпер ====
 
-for method_name, method_func in ALLOWED_METHODS.items():
-    create_alias(method_name, method_func)
+def get_ctx(omd_key: str):
+    ctx = user_context.get_context_by_account(omd_key)
+    if ctx.type == "temp":
+        raise HTTPException(status_code=401, detail="Invalid or unbound OMD key")
+    return ctx
 
-# === История ===
+
+# ==== Эндпоинты ====
+
+
 @app.get("/history")
-async def history_endpoint(
-    chat: str = Query("telegram"),
-    ctx: dict = Depends(get_user_context)
-):
+async def history_endpoint(omd_key: str, chat: str = "default"):
+    ctx = get_ctx(omd_key)
     try:
-        result = await core_service.history(chat=chat, **ctx)
-        return {"history": result}
+        history = dialog_history.load_history(ctx.user_id, chat=chat)
+        return {"chat": chat, "history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# === Память (jsonl) ===
+
 @app.get("/memory")
-async def memory_endpoint(ctx: dict = Depends(get_user_context)):
+async def memory_endpoint(omd_key: str, collection: str = "user"):
+    ctx = get_ctx(omd_key)
     try:
-        jsonl = await core_service.dump_memory_jsonl(**ctx)
-        return {"memory": jsonl}
+        memories = memory_index.load_memories(ctx.user_id, collection=collection)
+        return {"collection": collection, "memories": memories}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/chats")
+async def chats_endpoint(omd_key: str):
+    ctx = get_ctx(omd_key)
+    try:
+        # простая реализация через список директорий истории
+        from dialog_history import list_chats
+        chats = list_chats(ctx.user_id)
+        return {"chats": chats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat")
+async def chat_endpoint(data: ChatInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        settings = core_service.load_user_settings(ctx)
+        instruction=(
+            "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
+        )
+        result = await core_service.perform_prompt(
+            ctx,
+            settings,  # settings можно прокидывать из load_user_settings(ctx)
+            instruction=instruction,
+            message=data.prompt,
+            chat=data.chat,
+        )
+        return {"response": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/import")
+async def import_endpoint(data: ImportInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        await core_service.import_doc(ctx, data.url_or_path, data.collection)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/memorize")
+async def memorize_endpoint(data: MemorizeInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        core_service.memorize(ctx, data.text)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/recognize")
+async def recognize_endpoint(
+    omd_key: str = Form(...),
+    chat: str = Form("default"),
+    prompt: str = Form(""),
+    file: UploadFile = File(...)
+):
+    ctx = get_ctx(omd_key)
+    try:
+        img_bytes = await file.read()
+        result = await core_service.recognize_image(ctx, img_bytes, prompt, chat)
+        return {"response": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/image/character")
+async def generate_character_image(data: GenerateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        result = await core_service.generate_character_image(ctx, data.prompt)
+        return {"image": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/image/general")
+async def generate_general_image(data: GenerateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        result = await core_service.generate_general_image(ctx, data.prompt)
+        return {"image": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/prompt/character")
+async def generate_character_image_prompt(data: GenerateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        result = await core_service.generate_character_image_prompt(ctx, data.prompt, data.chat)
+        return {"prompt": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/prompt/general")
+async def generate_general_image_prompt(data: GenerateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat)
+        return {"prompt": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

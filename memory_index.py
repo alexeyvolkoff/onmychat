@@ -149,26 +149,34 @@ def search_document_chunks(
     return results[:top_k]
 
 
-def search_memories(query: str, user_id: str, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def load_memories(user_id: str, collection: str = "user") -> list[dict]:
     if collection == "user":
         index_path = f"{USER_DATA_DIR}/{user_id}/memory.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
+    if not os.path.exists(index_path):
+        return []
+    
+    memories = []
+    
+    logging.info(f"loading memories {index_path}")
+    with open(index_path, "r", encoding="utf-8") as f:
+        memories = [json.loads(line) for line in f if line.strip()]
+
+    return memories    
+
+
+def search_memories(query: str, user_id: str, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+    # Load memories
+    memories = load_memories(user_id, collection)
     vec_path = ""
+
     if collection == "user":
         vec_path = f"{USER_DATA_DIR}/{user_id}/vec"
     else:
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
-
-
-    if not os.path.exists(index_path):
-        return []
     
-    logging.info(f"loading {index_path}")
-    with open(index_path, "r", encoding="utf-8") as f:
-        memories = [json.loads(line) for line in f if line.strip()]
-
     if not memories:
         return []
 

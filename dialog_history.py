@@ -38,3 +38,14 @@ def reset_history(user_id: str):
         except Exception as e:
             print(f"[history] Remove errer: {e}")
 
+
+
+def list_chats(user_id: str) -> list[str]:
+    chats_dir = os.path.join(USER_DATA_DIR, user_id, "chats")
+    if not os.path.exists(chats_dir):
+        return []
+    chats = []
+    for name in os.listdir(chats_dir):
+        if name.endswith(".json"):
+            chats.append(name[:-5])  # убираем расширение
+    return chats
