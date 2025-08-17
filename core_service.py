@@ -7,11 +7,12 @@ import time
 import re
 
 from config import SETTINGS
-from utils import (
-    clean_response,
-    resize_and_base64encode
-)
-from dialog_history import load_history, save_history, reset_history as reset_file_history
+from config import USER_DATA_DIR
+
+from utils import clean_response
+
+from dialog_history import load_history, save_history
+
 from memory_index import (
     extract_memory_from_response,
     add_memory_card,
@@ -22,6 +23,7 @@ from memory_index import (
 )
 
 import user_context
+
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
@@ -177,7 +179,7 @@ def get_default_system_prompt() -> str:
 
 # === Настройки пользователя ===
 def load_user_settings(ctx):
-    path = f"user_data/{ctx.user_id}.json"
+    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -192,8 +194,8 @@ def load_user_settings(ctx):
 
 
 def save_user_settings(ctx, settings):
-    os.makedirs("user_data", exist_ok=True)
-    path = f"user_data/{ctx.user_id}.json"
+    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
+    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
@@ -204,18 +206,27 @@ def bind_account(ctx, omd_key: str):
     #check if already linked
     if ctx.type == "omd":
         return ctx
+    tmp_user_id = ctx.user_id
     ctx = user_context.bind(int(ctx.user_id), omd_key)
+    #renaming user data folder 
+    old_dir = os.path.join(USER_DATA_DIR, tmp_user_id)
+    new_dir = os.path.join(USER_DATA_DIR, ctx.user_id)
+
+    if os.path.exists(old_dir):
+        # если у нового юзера ещё нет директории — просто переименуем
+        if not os.path.exists(new_dir):
+            os.rename(old_dir, new_dir)
+        else:
+            # если у нового юзера уже есть данные — можно смержить
+            # пока просто оставим старое и не трогаем
+            logging.warning(f"[bind_account] WARNING: {new_dir} already exists, skipping rename")
     #Save settings as persistent
     save_user_settings(ctx, settings)
     #todo: move history and memory to user storage
     return ctx
 
-
-
 # === Imaging and vision === #
-
-
-def get_user_avatar_path(user_id: int) -> str:
+def get_user_avatar_path(user_id: str) -> str:
     """
     Возвращает относительный путь до аватара пользователя для подстановки в ComfyUI workflow.
     Если файл не найден, возвращает default.png.
@@ -294,7 +305,7 @@ async def generate_image_workflow(workflow) -> str:
 
 
 # === RAG ===
-async def inject_facts(user_id: int, query: str, collection: str = "") -> tuple[list[str], list[str]]:
+async def inject_facts(user_id: str, query: str, collection: str = "") -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
 

@@ -6,6 +6,8 @@ from datetime import datetime
 from sentence_transformers import SentenceTransformer
 import logging
 import warnings
+from config import USER_DATA_DIR
+
 
 MEMORY_KEYWORDS = [
     "Запомнить:",        # 🇷🇺 Russian
@@ -31,6 +33,8 @@ _model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
 
 BASE_INDEX_DIR = "memory_index"
 
+
+
 def cosine_distance(a, b):
     a = np.array(a)
     b = np.array(b)
@@ -42,7 +46,7 @@ def embed_text(text: str) -> list:
 def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
     index_path = ""
     if collection == "user":
-        index_path = f"{BASE_INDEX_DIR}/{user_id}.jsonl"
+        index_path = f"{USER_DATA_DIR}/{user_id}/memory.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
     return index_path
@@ -147,13 +151,13 @@ def search_document_chunks(
 
 def search_memories(query: str, user_id: str, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     if collection == "user":
-        index_path = f"{BASE_INDEX_DIR}/{user_id}.jsonl"
+        index_path = f"{USER_DATA_DIR}/{user_id}/memory.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
     vec_path = ""
     if collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{user_id}"
+        vec_path = f"{USER_DATA_DIR}/{user_id}/vec"
     else:
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
 
@@ -232,7 +236,7 @@ def chunk_and_vectorize_to_file(user_id: int, text: str,  document_id: str, coll
     """Чанкает текст и сохраняет эмбеддинги в .vec файл"""
     vec_path = ""
     if collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{user_id}"
+        vec_path = f"{USER_DATA_DIR}/{user_id}/vec"
     else:
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
     vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(document_id) + ".vec")

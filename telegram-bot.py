@@ -10,6 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 )
 from config import SETTINGS
+from config import USER_DATA_DIR
 import core_service as core
 from utils import resize_and_base64encode, format_response_for_markdown_v2, escape_markdown_v2
 from user_context import (load_bindings, get_context)
@@ -75,7 +76,7 @@ async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Upd
 
     if photos:
         photo_file = await photos[-1].get_file()
-        user_folder = f"user_data/files-{ctx.user_id}"
+        user_folder = f"{USER_DATA_DIR}/{ctx.user_id}/files"
         os.makedirs(user_folder, exist_ok=True)
         file_path = os.path.join(user_folder, os.path.basename(photo_file.file_path))
         await photo_file.download_to_drive(file_path)
