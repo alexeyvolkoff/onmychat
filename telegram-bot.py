@@ -21,11 +21,6 @@ MAX_CAPTION_LEN = 1024 # байт
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-
-def _ctx(user_id):
-    return type("Ctx", (), {"user_id": user_id})
-
-
 # ==== Commands ====
 
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,7 +142,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                ),
                message=recognition_prompt,
                skip_history=True,
-               b64_image=b64_image
+               b64_image=b64_image,
+               chat="telegram"
             )
             result = format_response_for_markdown_v2(explained)
             await update.message.reply_text(result, parse_mode="MarkdownV2")
@@ -179,7 +175,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                ),
                message=recognition_prompt,
                skip_history=True,
-               b64_image=b64_image
+               b64_image=b64_image,
+               chat="telegram"
             )
             result = format_response_for_markdown_v2(explained)
             await update.message.reply_text(result, parse_mode="MarkdownV2")
@@ -190,7 +187,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instruction=(
             "Use the *Known facts* provided above. If no related facts provided, do not guess, say you do not know."
         )
-        result = await core.perform_prompt(ctx, settings, instruction, text, is_rag=True)
+        result = await core.perform_prompt(ctx, settings, instruction, text, is_rag=True, chat="telegram")
         await update.message.reply_text(
             format_response_for_markdown_v2(result),
             parse_mode="MarkdownV2"
@@ -213,7 +210,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Recognize and describe the provided images."
                ),
                message=recognition_prompt,
-               b64_image=b64_image
+               b64_image=b64_image,
+               chat="telegram"
             )
         result = format_response_for_markdown_v2(explained)
         await update.message.reply_text(result, parse_mode="MarkdownV2")    
@@ -222,7 +220,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
         )
-        result = await core.perform_prompt(ctx, settings, "", text)
+        result = await core.perform_prompt(ctx, settings, instruction=instruction, message=text, is_rag=False, chat="telegram")
+        if not result:
+           result = "✅ Done!" 
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 
@@ -241,7 +241,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await core.perform_prompt(
         ctx, settings,
         "Use the *Known facts* provided above. If no info, say you do not know.",
-        query, is_rag=True
+        query, is_rag=True, chat="telegram"
     )
     await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 

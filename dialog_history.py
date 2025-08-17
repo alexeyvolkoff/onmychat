@@ -7,11 +7,11 @@ from config import USER_DATA_DIR
 
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используется в telegram-bot.py
 
-def _get_path(user_id: str) -> str:
-    return  f"{USER_DATA_DIR}/{user_id}/history.json"
+def _get_path(user_id: str, chat: str) -> str:
+    return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
-def load_history(user_id: str) -> list:
-    path = _get_path(user_id)
+def load_history(user_id: str, chat: str = "default") -> list:
+    path = _get_path(user_id, chat)
     if not os.path.exists(path):
         return []
     try:
@@ -21,9 +21,9 @@ def load_history(user_id: str) -> list:
         print(f"[history] Load error: {user_id} {e}")
         return []
 
-def save_history(user_id: str, history: list):
+def save_history(user_id: str, history: list,  chat: str = "default"):
     os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
-    path = _get_path(user_id)
+    path = _get_path(user_id, chat)
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(history[-HISTORY_LIMIT:], f, ensure_ascii=False, indent=2)

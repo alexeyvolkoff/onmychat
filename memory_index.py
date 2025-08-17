@@ -164,7 +164,8 @@ def search_memories(query: str, user_id: str, collection: str = "user", top_k: i
 
     if not os.path.exists(index_path):
         return []
-
+    
+    logging.info(f"loading {index_path}")
     with open(index_path, "r", encoding="utf-8") as f:
         memories = [json.loads(line) for line in f if line.strip()]
 

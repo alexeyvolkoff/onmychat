@@ -147,8 +147,6 @@ INTENT_PROMPT = (
 )
 
 
-chat_histories = {}
-
 # === Private functions ===
 def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
     """Грубое суммари: первые 2048 байта нормализованного текста"""
@@ -390,21 +388,15 @@ async def perform_prompt(ctx,
                          is_rag=False,
                          skip_history=False,
                          requestedModel=DEFAULT_MODEL,
-                         b64_image = "") -> str:
+                         b64_image = "",
+                         chat = "default") -> str:
 
     user_id = ctx.user_id
     nsfw_enabled = settings.get("nsfw", False)
     model = requestedModel
-    headers = {
-        "Content-Type": "application/json",
-    }
 
-    if user_id not in chat_histories:
-        chat_histories[user_id] = load_history(user_id)
-
-    if len(chat_histories[user_id]) > HISTORY_LIMIT:
-        chat_histories[user_id] = chat_histories[user_id][-HISTORY_LIMIT:]
-
+    history = load_history(user_id, chat)
+    
     # === ВСПОМНИМ ФАКТЫ ===
     facts_text = ""
     collection = settings.get("kb_id") or DEFAULT_KB_ID
@@ -464,7 +456,7 @@ async def perform_prompt(ctx,
         system_prompt += "\n\n*Notice:*\n No NSFW content from this point!"
 
     # === ОСНОВНОЙ ЗАПРОС ===
-    messages = [{"role": "system", "content": system_prompt}] + chat_histories[user_id]
+    messages = [{"role": "system", "content": system_prompt}] + history
 
     # Добавляем новый запрос
     user_message = {
@@ -523,34 +515,33 @@ async def perform_prompt(ctx,
     # === Добавляем в историю
     if not skip_history:
         msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
-        chat_histories[user_id].append(msg_to_save)
-    chat_histories[user_id].append({"role": "assistant", "content": history_item})
-    save_history(user_id, chat_histories[user_id])
+        history.append(msg_to_save)
+    history.append({"role": "assistant", "content": history_item})
+    save_history(user_id, history, chat)
 
     return response.strip()
 
 # === Генерация картинок ===
 
-async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
+async def generate_image_prompt(ctx, instruction: str, prompt: str, chat = "default") -> str:
     user_id = ctx.user_id
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
 
-
+    history = load_history(user_id, chat)
     # Берём последние 10 сообщений из истории (если есть)
-    history = chat_histories.get(user_id, [])
     #recent_messages = history[-20:] if len(history) > 20 else history
+
+    # Добавляем новый запрос
+    history.append({
+        "role": "user",
+        "content": prompt
+    })
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
     messages.extend(history)
-
-    # Добавляем новый запрос с изображением
-    messages.append({
-        "role": "user",
-        "content": prompt
-    })
 
     request_payload = {
         "messages": messages,
@@ -573,45 +564,23 @@ async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
 
 
 # Generate character image, returns full path for further sending or conversion
-async def generate_character_image_prompt(ctx, prompt) -> str:
+async def generate_character_image_prompt(ctx, prompt, chat="default") -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
-        return
 
-    # инициализируем историю если нет
-    if user_id not in chat_histories:
-        chat_histories[user_id] = []
-        chat_histories[user_id] = load_history(user_id)
-
-    #Запоминаем
-    chat_histories[user_id].append({
-        "role": "user",
-        "content": prompt
-    })
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt))
+    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt), chat)
 
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image_prompt(ctx, prompt) -> str:
+async def generate_general_image_prompt(ctx, prompt, chat="default") -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
-        return
 
-    # инициализируем историю если нет
-    if user_id not in chat_histories:
-        chat_histories[user_id] = []
-        chat_histories[user_id] = load_history(user_id)
-
-    #Запоминаем
-    chat_histories[user_id].append({
-        "role": "user",
-        "content": prompt
-    })
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt))
+    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt), chat)
 
 
 async def generate_character_image(ctx, prompt) -> str:
@@ -673,31 +642,26 @@ async def generate_general_image(ctx, prompt):
     return await generate_image_workflow(workflow_json)
 
 # img is base64 image #
-async def recognize_image(ctx, img, prompt=""):
+async def recognize_image(ctx, img, prompt="", chat="default"):
     user_id = ctx.user_id
-
-    headers = {
-        "Content-Type": "application/json",
-    }
 
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
 
     # Берём последние 10 сообщений из истории (если есть)
-    history = chat_histories.get(user_id, [])
+    history = load_history(user_id, chat)
     #recent_messages = history[-20:] if len(history) > 20 else history
 
-    # Добавляем system-инструкцию
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Добавляем историю
-    messages.extend(messages)
-
     # Добавляем новый запрос с изображением
-    messages.append({
+    history.append({
         "role": "user",
         "content": prompt,
         "images": [img]
     })
+    # Добавляем system-инструкцию
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Добавляем историю
+    messages.extend(history)
 
     request_payload = {
         "messages": messages,
