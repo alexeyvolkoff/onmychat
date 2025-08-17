@@ -30,7 +30,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 _model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
 
 BASE_INDEX_DIR = "memory_index"
-USER_INDEX_PREFIX = "user"
 
 def cosine_distance(a, b):
     a = np.array(a)
@@ -40,17 +39,17 @@ def cosine_distance(a, b):
 def embed_text(text: str) -> list:
     return _model.encode(text, show_progress_bar=False).tolist()
 
-def get_index_path(user_id: int | None = None, collection: str = "user") -> str:
+def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
     index_path = ""
     if collection == "user":
-        index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
+        index_path = f"{BASE_INDEX_DIR}/{user_id}.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
     return index_path
 
 def add_memory_card(
     text: str,
-    user_id: int | None = None,
+    user_id: str | None = None,
     collection: str = "user",
     relevance: str = "contextual",
     document_id: str | None = None
@@ -146,15 +145,15 @@ def search_document_chunks(
     return results[:top_k]
 
 
-def search_memories(query: str, user_id: int, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def search_memories(query: str, user_id: str, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     if collection == "user":
-        index_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}.jsonl"
+        index_path = f"{BASE_INDEX_DIR}/{user_id}.jsonl"
     else:
         index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
     vec_path = ""
     if collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}"
+        vec_path = f"{BASE_INDEX_DIR}/{user_id}"
     else:
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
 
@@ -233,7 +232,7 @@ def chunk_and_vectorize_to_file(user_id: int, text: str,  document_id: str, coll
     """Чанкает текст и сохраняет эмбеддинги в .vec файл"""
     vec_path = ""
     if collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{USER_INDEX_PREFIX}_{user_id}"
+        vec_path = f"{BASE_INDEX_DIR}/{user_id}"
     else:
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
     vec_path = os.path.join(f"{vec_path}", make_file_name_from_document_id(document_id) + ".vec")

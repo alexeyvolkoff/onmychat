@@ -12,6 +12,7 @@ from telegram.ext import (
 from config import SETTINGS
 import core_service as core
 from utils import resize_and_base64encode, format_response_for_markdown_v2, escape_markdown_v2
+from user_context import (load_bindings, get_context)
 
 TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
 MAX_CAPTION_LEN = 1024 # байт
@@ -30,17 +31,12 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /bind <account_id>")
         return
-    ctx = _ctx(update.effective_user.id)
-    core.bind_account(ctx, context.args[0])
-    await update.message.reply_text("Account bound.")
-
-async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
-    core.unbind_account(ctx)
-    await update.message.reply_text("Account unbound.")
+    ctx = get_context(update.effective_user.id)
+    ctx = core.bind_account(ctx, context.args[0])
+    await update.message.reply_text(f"✅ Account bound: `{ctx.user_id}`", parse_mode="Markdown")
 
 async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     prompt_text = " ".join(context.args).strip()
     if not prompt_text:
         await update.message.reply_text(
@@ -58,18 +54,18 @@ async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /import <url> [kb_id]")
         return
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
     result = await core.import_doc(ctx, context.args[0], collection)
-    await update.message.reply_text(f"✅ Document imported: `{result}`")
+    await update.message.reply_text(f"✅ Document imported: `{result}`", parse_mode="Markdown")
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /remember <text>")
         return
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     result = core.memorize(ctx, " ".join(context.args))
-    await update.message.reply_text(f"✅ Memorized: `{result}`")
+    await update.message.reply_text(f"✅ Memorized: `{result}`", parse_mode="Markdown")
 
 # ==== Image recognition helper ====
 
@@ -111,7 +107,7 @@ async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Upd
 # ==== Core Handlers ====
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     settings = core.load_user_settings(ctx)
     text = update.message.text or ""
     intent = "chat"
@@ -230,7 +226,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     args = context.args
     if not args:
         await update.message.reply_text("❗ Usage: /ask <your questing>")
@@ -249,7 +245,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     args = context.args
     if not args or args[0].lower() not in ['on', 'off']:
         await update.message.reply_text("❗ Usage: /nsfw on | off")
@@ -262,7 +258,7 @@ async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"NSFW mode {status}")
 
 async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     if not context.args:
         await update.message.reply_text("❗ Choose style: realistic, dream, tooned.")
         return
@@ -277,25 +273,27 @@ async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     settings = core.load_user_settings(ctx)
     system_prompt = settings.get("system_prompt", "—")
     nsfw = "enabled" if settings.get("nsfw", False) else "disabled"
     knowledge = settings.get("kb_id", "")
     style = settings.get("style", "realistic")
+    storage = settings.get("storage", "")
 
     msg = (
         f"*User settings:*\n"
-        f"• NSFW: `{nsfw}`\n"
+        f"• User: `{ctx.user_id}`\n"
         f"• Style: `{style}`\n"
         f"• Knowledge: `{knowledge}`\n"
+        f"• Storage: `{storage}`\n"
         f"• System prompt:\n`{system_prompt}`"
     )
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = _ctx(update.effective_user.id)
+    ctx = get_context(update.effective_user.id)
     if not context.args:
         await update.message.reply_text(
             "❗ Specify knowledge base, for example:\n`/useknowledge kb-abc123`",
@@ -311,13 +309,34 @@ async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Switched to `{kb_id}` knowledge base.", parse_mode="Markdown")
 
+
+async def setstorage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = get_context(update.effective_user.id)
+    if not context.args:
+        await update.message.reply_text(
+            "❗ Specify setstorage path, for example:\n`/mylaptop/data/onmychat`",
+            parse_mode="Markdown"
+        )
+        return
+
+    storage = context.args[0]
+    settings = core.load_user_settings(ctx)
+
+    settings["storage"] = storage
+    core.save_user_settings(ctx, settings)
+
+    await update.message.reply_text(f"✅ Storage for your data: `{storage}`", parse_mode="Markdown")
+
+
 # ==== Main ====
 
 def main():
+
+    load_bindings()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("bind", bind))
-    app.add_handler(CommandHandler("unbind", unbind))
     app.add_handler(CommandHandler("system", set_system_prompt))
     app.add_handler(CommandHandler("import", import_doc))
     app.add_handler(CommandHandler("remember", remember))
@@ -327,6 +346,7 @@ def main():
     app.add_handler(CommandHandler("style", set_style))
     app.add_handler(CommandHandler("showsettings", get_settings))
     app.add_handler(CommandHandler("useknowledge", useknowledge))
+    app.add_handler(CommandHandler("setstorage", setstorage))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_text))
 

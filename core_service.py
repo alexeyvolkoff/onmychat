@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-import base64
 import asyncio
 import aiohttp
 import time
@@ -21,6 +20,8 @@ from memory_index import (
     make_file_name_from_document_id,
     search_memories
 )
+
+import user_context
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
@@ -54,8 +55,8 @@ BASE_SYSTEM_PROMPT = (
     "• 'Well, that didn’t go as planned. Let me try again!'\n"
     "• '¯\\_(ツ)_/¯ I might've goofed a bit.'\n"
     "In Russian, you can say something like:\n"
-    "• 'Ой, всё. Опять немного глюканула. Попробуем снова?'\n"
-    "• 'Ой, я слегка потерялась. Перепроложить?'\n"
+    "• 'Ой, всё. Опять глюканула. Попробуем снова?'\n"
+    "• 'Ой, всё. Я потерялась. Перепроложить?'\n"
     "• 'Мой внутренний гений дал сбой. Попробуем ещё раз?'\n"
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
 )
@@ -90,7 +91,7 @@ STYLE_MODELS = {
 
 NEGATIVE_PROMPTS = {
         "base": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth), missing fingers,"
-                "(bad anatomy:2), curvy, extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
+                "(bad anatomy:2), strawberry, curvy, extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
                 "malformed, disconnected limbs, wrong number of limbs, bad teeth, "
                 "ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, "
                 "(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome, grayscale, extra fingers, "
@@ -145,7 +146,6 @@ INTENT_PROMPT = (
 
 
 chat_histories = {}
-user_settings_store = {}
 
 # === Private functions ===
 def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
@@ -186,6 +186,7 @@ def load_user_settings(ctx):
         "style": "realistic",
         "system_prompt": get_default_system_prompt(),
         "omd_key": "",
+        "storage": "",
         "kb_id": DEFAULT_KB_ID
     }
 
@@ -200,15 +201,15 @@ def save_user_settings(ctx, settings):
 def bind_account(ctx, omd_key: str):
     settings = load_user_settings(ctx)
     settings["omd_key"] = omd_key
+    #check if already linked
+    if ctx.type == "omd":
+        return ctx
+    ctx = user_context.bind(int(ctx.user_id), omd_key)
+    #Save settings as persistent
     save_user_settings(ctx, settings)
-    return True
+    #todo: move history and memory to user storage
+    return ctx
 
-
-def unbind_account(ctx):
-    settings = load_user_settings(ctx)
-    settings["omd_key"] = ""
-    save_user_settings(ctx, settings)
-    return True
 
 
 # === Imaging and vision === #
@@ -520,11 +521,7 @@ async def perform_prompt(ctx,
 # === Генерация картинок ===
 
 async def generate_image_prompt(ctx, instruction: str, prompt: str) -> str:
-    headers = {
-        "Content-Type": "application/json",
-    }
     user_id = ctx.user_id
-
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
 
 
