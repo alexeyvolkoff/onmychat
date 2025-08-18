@@ -13,7 +13,7 @@ from config import SETTINGS
 from config import USER_DATA_DIR
 import core_service as core
 from utils import resize_and_base64encode, format_response_for_markdown_v2, escape_markdown_v2
-from user_context import (load_bindings, get_context)
+from user_context import (load_bindings, get_context, save_user_settings)
 
 TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
 MAX_CAPTION_LEN = 1024 # байт
@@ -41,9 +41,8 @@ async def set_system_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
         )
         return
-    settings = core.load_user_settings(ctx)
-    settings["system_prompt"] = prompt_text
-    core.save_user_settings(ctx, settings)
+    ctx.settings["system_prompt"] = prompt_text
+    save_user_settings(ctx)
     await update.message.reply_text("✅ Okay, deal!")
 
 async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,7 +103,6 @@ async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Upd
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
-    settings = core.load_user_settings(ctx)
     text = update.message.text or ""
     intent = "chat"
     if not text and update.message.photo:
@@ -133,18 +131,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recognition_prompt = (
                "Describe the scene in first person and express how you feel in it."
             )
-            explained = await core.perform_prompt(
-               ctx,
-               settings,
-               instruction=(
+            response = await core.perform_prompt(
+                ctx,
+                instruction=(
                     "Recognize and describe the provided images. "
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
-               ),
-               message=recognition_prompt,
-               skip_history=True,
-               b64_image=b64_image,
-               chat="telegram"
+                ),
+                message=recognition_prompt,
+                skip_history=True,
+                b64_image=b64_image,
+                chat="telegram"
             )
+            explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)
             await update.message.reply_text(result, parse_mode="MarkdownV2")
             logging.info(f"Explained photo: {explained}")
@@ -166,18 +164,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recognition_prompt = (
                "Summarize briefly, what do you see on this photo and how do you feel about it"
             )
-            explained = await core.perform_prompt(
-               ctx,
-               settings,
-               instruction=(
+            response = await core.perform_prompt(
+                ctx,
+                instruction=(
                     "Recognize and describe the provided images. "
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
-               ),
-               message=recognition_prompt,
-               skip_history=True,
-               b64_image=b64_image,
-               chat="telegram"
+                ),
+                message=recognition_prompt,
+                skip_history=True,
+                b64_image=b64_image,
+                chat="telegram"
             )
+            explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)
             await update.message.reply_text(result, parse_mode="MarkdownV2")
             logging.info(f"Explained photo: {explained}")
@@ -187,7 +185,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instruction=(
             "Use the *Known facts* provided above. If no related facts provided, do not guess, say you do not know."
         )
-        result = await core.perform_prompt(ctx, settings, instruction, text, is_rag=True, chat="telegram")
+        response = await core.perform_prompt(ctx, instruction, text, is_rag=True, chat="telegram")
+        result = response.get("content") or "✅ done" 
+        links = response.get("sources")
+        if links:
+            result += "\n\n📎 *Sources:*\n" + links
         await update.message.reply_text(
             format_response_for_markdown_v2(result),
             parse_mode="MarkdownV2"
@@ -198,21 +200,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ":" in intent:
             img_source = intent.split(":", 1)[1]
         
-        b64_image = await get_image_from_request(ctx, img_source, settings.get("omd_key"), update)    
+        b64_image = await get_image_from_request(ctx, img_source, ctx.settings.get("omd_key"), update)    
 
         recognition_prompt = (
             "Recognize the image according to context."
         )
-        explained = await core.perform_prompt(
-               ctx,
-               settings,
-               instruction=(
-                    "Recognize and describe the provided images."
-               ),
-               message=recognition_prompt,
-               b64_image=b64_image,
-               chat="telegram"
-            )
+        response = await core.perform_prompt(
+            ctx,
+            instruction=(
+                "Recognize and describe the provided images."
+            ),
+            message=recognition_prompt,
+            b64_image=b64_image,
+            chat="telegram"
+        )
+        explained = response.get("content") or "✅ done" 
         result = format_response_for_markdown_v2(explained)
         await update.message.reply_text(result, parse_mode="MarkdownV2")    
 
@@ -220,9 +222,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
         )
-        result = await core.perform_prompt(ctx, settings, instruction=instruction, message=text, is_rag=False, chat="telegram")
-        if not result:
-           result = "✅ Done!" 
+        response = await core.perform_prompt(ctx, instruction=instruction, message=text, is_rag=False, chat="telegram")
+        result = response.get("content") or "✅ done"  
+        links = response.get("sources")
+        if links:
+            result += "\n\n📎 *Sources:*\n" + links
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 
@@ -237,12 +241,16 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.chat.send_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    settings = core.load_user_settings(ctx)
-    result = await core.perform_prompt(
-        ctx, settings,
+    response = await core.perform_prompt(
+        ctx,
         "Use the *Known facts* provided above. If no info, say you do not know.",
         query, is_rag=True, chat="telegram"
     )
+    result = response.get("content") or "✅ done"  
+    links = response.get("sources")
+    if links:
+        result += "\n\n📎 *Sources:*\n" + links
+
     await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,9 +260,8 @@ async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❗ Usage: /nsfw on | off")
         return
     nsfw_enabled = args[0].lower() == 'on'
-    settings = core.load_user_settings(ctx)
-    settings["nsfw"] = nsfw_enabled
-    core.save_user_settings(ctx, settings)
+    ctx.settings["nsfw"] = nsfw_enabled
+    save_user_settings(ctx)
     status = "enabled 🔞" if nsfw_enabled else "disabled ✅"
     await update.message.reply_text(f"NSFW mode {status}")
 
@@ -267,20 +274,18 @@ async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chosen_style not in core.STYLE_MODELS:
         await update.message.reply_text(f"❗ Unknown style. Supported: {', '.join(core.STYLE_MODELS.keys())}")
         return
-    settings = core.load_user_settings(ctx)
-    settings["style"] = chosen_style
-    core.save_user_settings(ctx, settings)
+    ctx.settings["style"] = chosen_style
+    save_user_settings(ctx)
     await update.message.reply_text(f"✅ Style set to *{chosen_style}*", parse_mode="Markdown")
 
 
 async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
-    settings = core.load_user_settings(ctx)
-    system_prompt = settings.get("system_prompt", "—")
-    nsfw = "enabled" if settings.get("nsfw", False) else "disabled"
-    knowledge = settings.get("kb_id", "")
-    style = settings.get("style", "realistic")
-    storage = settings.get("storage", "")
+    system_prompt = ctx.settings.get("system_prompt", "—")
+    nsfw = "enabled" if ctx.settings.get("nsfw", False) else "disabled"
+    knowledge = ctx.settings.get("kb_id", "")
+    style = ctx.settings.get("style", "realistic")
+    storage = ctx.settings.get("storage", "")
 
     msg = (
         f"*User settings:*\n"
@@ -290,6 +295,8 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Storage: `{storage}`\n"
         f"• System prompt:\n`{system_prompt}`"
     )
+    if nsfw == "enabled":
+        msg += "\n• NSFW: `{nsfw}`\n"
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -303,10 +310,9 @@ async def useknowledge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     kb_id = context.args[0]
-    settings = core.load_user_settings(ctx)
-
-    settings["kb_id"] = kb_id
-    core.save_user_settings(ctx, settings)
+    
+    ctx.settings["kb_id"] = kb_id
+    save_user_settings(ctx)
 
     await update.message.reply_text(f"✅ Switched to `{kb_id}` knowledge base.", parse_mode="Markdown")
 
@@ -321,10 +327,9 @@ async def setstorage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     storage = context.args[0]
-    settings = core.load_user_settings(ctx)
 
-    settings["storage"] = storage
-    core.save_user_settings(ctx, settings)
+    ctx.settings["storage"] = storage
+    save_user_settings(ctx)
 
     await update.message.reply_text(f"✅ Storage for your data: `{storage}`", parse_mode="Markdown")
 

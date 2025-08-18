@@ -3,8 +3,16 @@ import os
 import json
 import requests
 
+from config import USER_DATA_DIR
+from config import SETTINGS
+
+
+# Дефольные настройки пользователя
+DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
+DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
+
 # Файл для сохранения связей
-BINDINGS_FILE = "user_data/bindings.json"
+BINDINGS_FILE = f"{USER_DATA_DIR}/bindings.json"
 
 # Структура биндингов:
 # {
@@ -21,6 +29,37 @@ bindings = {
 class UserContext:
     type: str   # "omd" или "temp"
     user_id: str  # либо account_id/username, либо temp_id
+    settings: dict
+
+# === Настройки пользователя ===
+def get_default_system_prompt() -> str:
+    if os.path.exists(DEFAULT_SYSTEM_PROMPT_FILE):
+        with open(DEFAULT_SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    return "You are a helpful assistant."  # fallback, если default.txt не найден
+
+def load_user_settings(user_id) :
+    path = f"{USER_DATA_DIR}/{user_id}/settings.json"
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        return {
+            "nsfw": False,
+            "style": "realistic",
+            "system_prompt": get_default_system_prompt(),
+            "omd_key": "",
+            "storage": "",
+            "kb_id": DEFAULT_KB_ID
+        }
+
+
+def save_user_settings(ctx: UserContext):
+    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
+    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(ctx.settings, f, ensure_ascii=False, indent=2)
 
 
 def load_bindings():
@@ -58,9 +97,13 @@ def get_context(telegram_id: int) -> UserContext:
     """Вернуть контекст пользователя по его telegram_id."""
     if telegram_id in bindings["by_telegram"]:
         binding = bindings["by_telegram"][telegram_id]
-        return UserContext(type="omd", user_id=binding["username"])
+        settings = load_user_settings(binding["username"])
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
     else:
-        return UserContext(type="temp", user_id=str(telegram_id))
+        settings = load_user_settings(telegram_id)
+        ctx = UserContext(type="temp", user_id=str(telegram_id), settings=settings)
+    return  ctx
+
 
 
 def get_context_by_account(account_id: str) -> UserContext:
@@ -69,7 +112,9 @@ def get_context_by_account(account_id: str) -> UserContext:
     """
     if account_id in bindings["by_account"]:
         binding = bindings["by_account"][account_id]
-        return UserContext(type="omd", user_id=binding["username"])
+        settings = load_user_settings(binding["username"])
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
+        return ctx 
 
     # если не найден — пробуем запросить у OMD
     try:
@@ -83,15 +128,19 @@ def get_context_by_account(account_id: str) -> UserContext:
             # сохраняем в биндинги только в by_account (телеграма нет)
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
             save_bindings()
-            return UserContext(type="omd", user_id=username)
+            settings = load_user_settings(username)
+            ctx = UserContext(type="omd", user_id=username, settings=settings)
+            return ctx
     except Exception as e:
         print(f"[bindings] get_context_by_account fetch error: {e}")
 
     # если ничего не получилось — временный контекст
-    return UserContext(type="temp", user_id=f"temp_{account_id}")
+    settings = load_user_settings(account_id)
+    ctx = UserContext(type="temp", user_id=f"temp_{account_id}", settings=settings)
+    return ctx
 
 
-def bind(telegram_id: int, account_id: str) -> UserContext:
+def bind(ctx: UserContext, account_id: str) -> UserContext:
     """
     Привязать телеграм-аккаунт к OMD-аккаунту.
     """
@@ -104,11 +153,16 @@ def bind(telegram_id: int, account_id: str) -> UserContext:
     if not user_info.get("valid", False):
         raise ValueError("Invalid OMD account")
     username = user_info["user"]
+    telegram_id = int(ctx.user_id)
 
     bindings["by_telegram"][telegram_id] = {"account_id": account_id, "username": username}
     bindings["by_account"][account_id] = {"telegram_id": telegram_id, "username": username}
     save_bindings()
+    ctx.type="omd" 
+    ctx.user_id=username
+    ctx.settings["omd_key"] = account_id
+    save_user_settings(ctx)
+    return ctx
 
-    return UserContext(type="omd", user_id=username)
 
 

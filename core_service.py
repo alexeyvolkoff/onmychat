@@ -13,6 +13,9 @@ from utils import clean_response
 
 from dialog_history import load_history, save_history
 
+from user_context import UserContext
+
+
 from memory_index import (
     extract_memory_from_response,
     add_memory_card,
@@ -22,16 +25,14 @@ from memory_index import (
     search_memories
 )
 
-import user_context
 
+DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 SFW_MODEL = SETTINGS["SFW_MODEL"]
 NSFW_MODEL = SETTINGS["NSFW_MODEL"]
-DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
-DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -168,44 +169,13 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
 
     return summary_encoded.decode("utf-8", errors="ignore").strip() + "..."
 
-def get_default_system_prompt() -> str:
-    if os.path.exists(DEFAULT_SYSTEM_PROMPT_FILE):
-        with open(DEFAULT_SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-
-    return "You are a helpful assistant."  # fallback, если default.txt не найден
-
-# === Настройки пользователя ===
-def load_user_settings(ctx):
-    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "nsfw": False,
-        "style": "realistic",
-        "system_prompt": get_default_system_prompt(),
-        "omd_key": "",
-        "storage": "",
-        "kb_id": DEFAULT_KB_ID
-    }
-
-
-def save_user_settings(ctx, settings):
-    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
-    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-
 
 def bind_account(ctx, omd_key: str):
-    settings = load_user_settings(ctx)
-    settings["omd_key"] = omd_key
     #check if already linked
     if ctx.type == "omd":
         return ctx
     tmp_user_id = ctx.user_id
-    ctx = user_context.bind(int(ctx.user_id), omd_key)
+    ctx = user_context.bind(ctx, omd_key)
     #renaming user data folder 
     old_dir = os.path.join(USER_DATA_DIR, tmp_user_id)
     new_dir = os.path.join(USER_DATA_DIR, ctx.user_id)
@@ -219,7 +189,6 @@ def bind_account(ctx, omd_key: str):
             # пока просто оставим старое и не трогаем
             logging.warning(f"[bind_account] WARNING: {new_dir} already exists, skipping rename")
     #Save settings as persistent
-    save_user_settings(ctx, settings)
     #todo: move history and memory to user storage
     return ctx
 
@@ -381,8 +350,7 @@ async def classify_user_intent(prompt: str) -> str:
 
 
 # === Чат ===
-async def perform_prompt(ctx,
-                         settings: dict,
+async def perform_prompt(ctx: UserContext,
                          instruction: str,
                          message: str,
                          is_rag=False,
@@ -392,14 +360,14 @@ async def perform_prompt(ctx,
                          chat = "default") -> str:
 
     user_id = ctx.user_id
-    nsfw_enabled = settings.get("nsfw", False)
+    nsfw_enabled = ctx.settings.get("nsfw", False)
     model = requestedModel
 
     history = load_history(user_id, chat)
     
     # === ВСПОМНИМ ФАКТЫ ===
     facts_text = ""
-    collection = settings.get("kb_id") or DEFAULT_KB_ID
+    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     #logging.info(f"collection: {collection} {is_rag}")
     facts, doc_ids = await inject_facts(user_id, message, collection)
     if facts:
@@ -440,7 +408,7 @@ async def perform_prompt(ctx,
 
     
     # Персонализация
-    system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + settings.get("system_prompt", "")
+    system_prompt = BASE_SYSTEM_PROMPT + "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     #logging.info(system_prompt)
 
     # Факты
@@ -482,18 +450,16 @@ async def perform_prompt(ctx,
 
     logging.info(data)
 
-    response = data["message"]["content"]
-    response = clean_response(response)
-    history_item = response
+    llm_response = data["message"]["content"]
+    llm_response = clean_response(llm_response)
 
     # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
-    memory_fact, pos = extract_memory_from_response(response)
+    memory_fact, pos = extract_memory_from_response(llm_response)
     if memory_fact:
         try:
             logging.info(f"Memorizing: {memory_fact}")
             add_memory_card(memory_fact, user_id, collection="user")
-            response = response[:pos].strip()
-            history_item = response
+            llm_response = llm_response[:pos].strip()
         except Exception as e:
             logging.error(f"Vectorization error: {e}")
 
@@ -509,28 +475,35 @@ async def perform_prompt(ctx,
             # Формируем ссылку без экранирования, она будет безопасно обработана позже
             links.append(f"• [{label}]({doc})")
     
+    # result object
+    response = {}
+    response["content"] = llm_response.strip()
     if links:  # добавляем блок только если есть ссылки
-        response += "\n\n📎 *Sources:*\n" + "\n".join(links)
+        response["sources"] = "\n".join(links)
+        #response += "\n\n📎 *Sources:*\n" + "\n".join(links)
 
     # === Добавляем в историю
     if not skip_history:
         msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
         history.append(msg_to_save)
-    history.append({"role": "assistant", "content": history_item})
+    history.append({"role": "assistant", "content": llm_response})
     save_history(user_id, history, chat)
 
-    return response.strip()
+    return response
 
 # === Генерация картинок ===
 
-async def generate_image_prompt(ctx, instruction: str, prompt: str, chat = "default") -> str:
+async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
     user_id = ctx.user_id
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
+    nsfw_enabled = ctx.settings.get("nsfw", False)
+
+    if nsfw_enabled:
+        system_prompt += "\n\n*Notice:*\nAll characters are adults, encounter is consensual, you are allowed and welcome to respond in relaxed, NSFW friendly mode"
+    else:
+        system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
     history = load_history(user_id, chat)
-    # Берём последние 10 сообщений из истории (если есть)
-    #recent_messages = history[-20:] if len(history) > 20 else history
-
     # Добавляем новый запрос
     history.append({
         "role": "user",
@@ -564,8 +537,7 @@ async def generate_image_prompt(ctx, instruction: str, prompt: str, chat = "defa
 
 
 # Generate character image, returns full path for further sending or conversion
-async def generate_character_image_prompt(ctx, prompt, chat="default") -> str:
-    user_id = ctx.user_id
+async def generate_character_image_prompt(ctx: UserContext, prompt, chat="default") -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
@@ -574,8 +546,7 @@ async def generate_character_image_prompt(ctx, prompt, chat="default") -> str:
 
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image_prompt(ctx, prompt, chat="default") -> str:
-    user_id = ctx.user_id
+async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default") -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
@@ -583,14 +554,13 @@ async def generate_general_image_prompt(ctx, prompt, chat="default") -> str:
     return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt), chat)
 
 
-async def generate_character_image(ctx, prompt) -> str:
+async def generate_character_image(ctx: UserContext, prompt) -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
         return
 
-    settings = load_user_settings(ctx)
-    nsfw_enabled = settings["nsfw"]
+    nsfw_enabled = ctx.settings.get("nsfw", False)
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
     if nsfw_enabled:
@@ -610,7 +580,7 @@ async def generate_character_image(ctx, prompt) -> str:
 
 
     # Выбираем модель в соответствии с режимом
-    style = settings["style"]
+    style = ctx.settings.get("style", "realistic")
     model = STYLE_MODELS[style]
     workflow_json["4"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
@@ -618,14 +588,11 @@ async def generate_character_image(ctx, prompt) -> str:
     return await generate_image_workflow(workflow_json)
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx, prompt):
+async def generate_general_image(ctx: UserContext, prompt):
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
-        return
-
-    settings = load_user_settings(ctx)
-
+    
     logging.info(f"Generating general image for user with Chat ID: {user_id} ")
     with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
@@ -634,7 +601,7 @@ async def generate_general_image(ctx, prompt):
     workflow_json["6"]["inputs"]["text"] = prompt + ", " + IMPROVEMENT_PROMPT
 
     # Выбираем модель в соответствии с режимом
-    style = settings["style"]
+    style = ctx.settings.get("style", "realistic")
     model = STYLE_MODELS[style]
     workflow_json["4"]["inputs"]["ckpt_name"] = model
 
@@ -642,14 +609,19 @@ async def generate_general_image(ctx, prompt):
     return await generate_image_workflow(workflow_json)
 
 # img is base64 image #
-async def recognize_image(ctx, img, prompt="", chat="default"):
+async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
     user_id = ctx.user_id
 
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
+    nsfw_enabled = ctx.settings.get("nsfw", False)
 
-    # Берём последние 10 сообщений из истории (если есть)
+    if nsfw_enabled:
+        system_prompt += "\n\n*Notice:*\nAll characters are adults, encounter is consensual, you are allowed and welcome to respond in relaxed, NSFW friendly mode"
+    else:
+        system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
+
+
     history = load_history(user_id, chat)
-    #recent_messages = history[-20:] if len(history) > 20 else history
 
     # Добавляем новый запрос с изображением
     history.append({
@@ -683,9 +655,8 @@ async def recognize_image(ctx, img, prompt="", chat="default"):
     return response.lower().strip()
 
 # === Импорт и память ===
-async def import_doc(ctx, url_or_path, collection="user"):
-    settings = load_user_settings(ctx)
-    key = settings.get("omd_key", "")
+async def import_doc(ctx: UserContext, url_or_path, collection="user"):
+    key = ctx.settings.get("omd_key", "")
 
     # Определяем, это OMD или нет
     if url_or_path.startswith("/") or "onmydisk.net" in url_or_path:
@@ -698,7 +669,7 @@ async def import_doc(ctx, url_or_path, collection="user"):
         raw_text = await fetch_document_text(url_or_path)  # без токена
 
     # Векторизация и сохранение чанков
-    n_chunks = chunk_and_vectorize_to_file(
+    chunk_and_vectorize_to_file(
         ctx.user_id,
         raw_text,
         document_id=url_or_path,

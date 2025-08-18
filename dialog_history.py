@@ -22,7 +22,7 @@ def load_history(user_id: str, chat: str = "default") -> list:
         return []
 
 def save_history(user_id: str, history: list,  chat: str = "default"):
-    os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
+    os.makedirs(f"{USER_DATA_DIR}/{user_id}/chats", exist_ok=True)
     path = _get_path(user_id, chat)
     try:
         with open(path, "w", encoding="utf-8") as f:

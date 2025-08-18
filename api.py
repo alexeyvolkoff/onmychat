@@ -84,17 +84,20 @@ async def chats_endpoint(omd_key: str):
 async def chat_endpoint(data: ChatInput):
     ctx = get_ctx(data.omd_key)
     try:
-        settings = core_service.load_user_settings(ctx)
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
         )
-        result = await core_service.perform_prompt(
+        response = await core_service.perform_prompt(
             ctx,
-            settings,  # settings можно прокидывать из load_user_settings(ctx)
             instruction=instruction,
             message=data.prompt,
             chat=data.chat,
         )
+        result = response.get("content") or "✅ done"
+        links = response.get("sources")
+        if links:
+            result += "\n\n📎 *Sources:*\n" + links
+
         return {"response": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
