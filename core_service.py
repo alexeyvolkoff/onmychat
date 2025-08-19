@@ -9,7 +9,7 @@ import re
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response
+from utils import clean_response, upload_to_storage
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -65,7 +65,7 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
-        "Create a high-quality prompt for generating a realistic image depicting your character performing a requested "
+        "You are script writer assistant. Create a high-quality prompt for generating a realistic image of ciematographic scene depicting your character performing a requested "
         "action according to short user input, in the third person.\n "
         "Translate to English, add your character appearance, visual details, environment, style, outfit and emotions according to the "
         "conversation context. Put important features of appearance in parentheses. Respond with image generation prompt 'Image: prompt'. "
@@ -171,26 +171,58 @@ def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
     return summary_encoded.decode("utf-8", errors="ignore").strip() + "..."
 
 
-def bind_account(ctx, omd_key: str):
-    #check if already linked
-    if ctx.type == "omd":
-        return ctx
-    tmp_user_id = ctx.user_id
-    ctx = user_context.bind(ctx, omd_key)
-    #renaming user data folder 
-    old_dir = os.path.join(USER_DATA_DIR, tmp_user_id)
-    new_dir = os.path.join(USER_DATA_DIR, ctx.user_id)
 
-    if os.path.exists(old_dir):
-        # если у нового юзера ещё нет директории — просто переименуем
-        if not os.path.exists(new_dir):
-            os.rename(old_dir, new_dir)
-        else:
-            # если у нового юзера уже есть данные — можно смержить
-            # пока просто оставим старое и не трогаем
-            logging.warning(f"[bind_account] WARNING: {new_dir} already exists, skipping rename")
-    #Save settings as persistent
-    #todo: move history and memory to user storage
+# === Онбординг успешен - перенос песрональных данных ===
+def bind_account(ctx: UserContext, omd_key: str):
+    #check if already linked
+    #renaming user data folder 
+    if omd_key and not ctx.type == "omd" :
+        tmp_user_id = ctx.user_id
+        old_dir = os.path.join(USER_DATA_DIR, tmp_user_id)
+        ctx = user_context.bind(ctx, omd_key)
+        new_dir = os.path.join(USER_DATA_DIR, ctx.user_id)
+
+        if os.path.exists(old_dir):
+            # если у нового юзера ещё нет директории — просто переименуем
+            if not os.path.exists(new_dir):
+                os.rename(old_dir, new_dir)
+            else:
+                # если у нового юзера уже есть данные — можно смержить
+                # пока просто оставим старое и не трогаем
+                logging.warning(f"[bind_account] WARNING: {new_dir} already exists, skipping rename")
+
+    # === Проверяем storage и переносим данные ===
+    storage = ctx.settings.get("storage")
+    omd_key = ctx.settings.get("omd_key")
+    if ctx.type == "omd" and storage and omd_key:
+        headers = {"Authentication":f"token:{omd_key}"}
+
+        # 1. Переносим чаты
+        chats_dir = os.path.join(USER_DATA_DIR, ctx.user_id, "chats")
+        if os.path.exists(chats_dir):
+            for file in os.listdir(chats_dir):
+                if not file.endswith(".json"):
+                    continue
+                local_path = os.path.join(chats_dir, file)
+                #remote_url = f"https://onmydisk.net/{storage}/{ctx.user_id}/chats/{file}"
+                try:
+                    dest = f"{storage}/{ctx.user_id}/chats"
+                    upload_to_storage(omd_key, dest, file, local_path)
+                    logging.info(f"[bind_account] Chat {file} uploaded to {dest}")
+                except Exception as e:
+                    logging.error(f"[bind_account] Failed to upload chat {file}: {e}")
+
+        # 2. Персональная память
+        mem_path = os.path.join(USER_DATA_DIR, ctx.user_id,  "memory.jsonl")
+        if os.path.exists(mem_path):
+            #remote_url = f"https://onmydisk.net/{storage}/{ctx.user_id}/memory.jsonl"
+            try:
+                dest = f"{storage}/{ctx.user_id}"
+                upload_to_storage(omd_key, dest,"memory.jsonl", mem_path)
+                logging.info(f"[bind_account] Memory uploaded to {dest}")
+            except Exception as e:
+                logging.error(f"[bind_account] Failed to upload memory: {e}")
+
     return ctx
 
 
@@ -274,12 +306,12 @@ async def generate_image_workflow(workflow) -> str:
 
 
 # === RAG ===
-async def inject_facts(user_id: str, query: str, collection: str = "") -> tuple[list[str], list[str]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "") -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
 
     # Личные воспоминания
-    personal = search_memories(query, user_id, "user", top_k=3)
+    personal = search_memories(ctx, query, "user", top_k=3)
     for m in personal:
         facts.append(f"• {m['text']}")
         doc_id = m.get("document_id")
@@ -288,15 +320,12 @@ async def inject_facts(user_id: str, query: str, collection: str = "") -> tuple[
 
     # Общие знания — если есть collection
     if collection:
-        shared = search_memories(query, user_id, collection=collection, top_k=3)
+        shared = search_memories(ctx, query, collection=collection, top_k=3)
         for m in shared:
             facts.append(f"• {m['text']}")
             doc_id = m.get("document_id")
             if doc_id:
                 document_ids.append(doc_id)
-
-    #logging.info(f"{collection} MEMORIES: {facts} ")
-    #logging.info(f"{collection} DOC_IDS: {document_ids}")
 
     return facts, document_ids
 
@@ -454,13 +483,13 @@ async def perform_prompt(ctx: UserContext,
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model = requestedModel
 
-    history = load_history(user_id, chat)
+    history = load_history(ctx, chat)
     
     # === ВСПОМНИМ ФАКТЫ ===
     facts_text = ""
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     #logging.info(f"collection: {collection} {is_rag}")
-    facts, doc_ids = await inject_facts(user_id, message, collection)
+    facts, doc_ids = await inject_facts(ctx, message, collection)
     if facts:
         facts_text = "\n\n*Known facts and memories:*\n" + "\n".join(facts) if facts else ""
     if is_rag:
@@ -549,7 +578,7 @@ async def perform_prompt(ctx: UserContext,
     if memory_fact:
         try:
             logging.info(f"Memorizing: {memory_fact}")
-            add_memory_card(memory_fact, user_id, collection="user")
+            add_memory_card(ctx, memory_fact,  collection="user")
             llm_response = llm_response[:pos].strip()
         except Exception as e:
             logging.error(f"Vectorization error: {e}")
@@ -581,7 +610,7 @@ async def perform_prompt(ctx: UserContext,
 
     chat_info = await ensure_chat(user_id, chat, message)
     chat_name = chat_info.get("name", chat)
-    save_history(user_id, history, chat_name)
+    save_history(ctx, history, chat_name)
     response["chatinfo"] = chat_info
     return response
 
@@ -597,7 +626,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     else:
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
-    history = load_history(user_id, chat, 4)
+    history = load_history(ctx, chat, 4)
     # Добавляем новый запрос
     history.append({
         "role": "user",
@@ -715,7 +744,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
 
-    history = load_history(user_id, chat, 4)
+    history = load_history(ctx, chat, 4)
 
     # Добавляем новый запрос с изображением
     history.append({
@@ -753,6 +782,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     key = ctx.settings.get("omd_key", "")
 
     # Определяем, это OMD или нет
+    raw_text = ""
     if url_or_path.startswith("/") or "onmydisk.net" in url_or_path:
         if url_or_path.startswith("/"):
             url_or_path = f"https://onmydisk.net{url_or_path}"
@@ -764,16 +794,16 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
 
     # Векторизация и сохранение чанков
     chunk_and_vectorize_to_file(
-        ctx.user_id,
-        raw_text,
+        ctx,
+        text=raw_text,
         document_id=url_or_path,
         collection=collection
     )
 
     # Добавление краткой аннотации в память
     mem_id = add_memory_card(
+        ctx,
         text=summarize_for_memory(raw_text),
-        user_id=ctx.user_id,
         document_id=url_or_path,
         collection=collection
     )
@@ -781,7 +811,6 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     return mem_id
 
 def memorize(ctx, text):
-    user_id = ctx.user_id
     # Добавление краткой аннотации в память
-    return add_memory_card(text, user_id, collection="user", relevance="permanent")
+    return add_memory_card(ctx, text, collection="user", relevance="permanent")
 

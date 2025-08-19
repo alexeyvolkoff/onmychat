@@ -2,36 +2,56 @@
 
 import os
 import json
+import requests
 from config import SETTINGS
 from config import USER_DATA_DIR
+from user_context import UserContext
+from utils import  upload_data_to_storage
+
 
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используется в telegram-bot.py
 
 def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
-def load_history(user_id: str, chat: str = "default", limit: int | None = None) -> list:
-    path = _get_path(user_id, chat)
-    if not os.path.exists(path):
-        return []
+def load_history(ctx: UserContext, chat: str = "default", limit: int | None = None) -> list:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            history = json.load(f)
-            if limit is not None and limit > 0:
-                return history[-limit:]
-            return history
+        if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+            url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/chats/{chat}.json"
+            token = ctx.settings["omd_key"]
+            headers = {"Authorization": f"token:{token}"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200 and resp.text.strip():
+                history = resp.json()
+                return history[-limit:] if limit else history
+            return []
+        else:
+            # локальный fallback
+            path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
+            if not os.path.exists(path):
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+                return history[-limit:] if limit else history
     except Exception as e:
-        print(f"[history] Load error: {user_id} {e}")
+        print(f"[history] Load error: {ctx.user_id} {e}")
         return []
+    
 
-def save_history(user_id: str, history: list,  chat: str = "default"):
-    os.makedirs(f"{USER_DATA_DIR}/{user_id}/chats", exist_ok=True)
-    path = _get_path(user_id, chat)
+def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(history[-HISTORY_LIMIT:], f, ensure_ascii=False, indent=2)
+        trimmed = history[-HISTORY_LIMIT:]
+        if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+            dest = f"{ctx.settings['storage']}/{ctx.user_id}/chats"
+            upload_data_to_storage(ctx.settings['omd_key'], dest, f"{chat}.json", trimmed, "application/json")
+        else:
+            # локальный fallback
+            path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(trimmed, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"[history] Save error: {e}")
+        print(f"[history] Save error: {ctx.user_id} {e}")
 
 def reset_history(user_id: str):
     path = _get_path(user_id)

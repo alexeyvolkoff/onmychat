@@ -328,8 +328,13 @@ async def setstorage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ctx.settings["storage"] = storage
     save_user_settings(ctx)
-
     await update.message.reply_text(f"✅ Storage for your data: `{storage}`", parse_mode="Markdown")
+ 
+    #move personal data
+    if ctx.settings.get("omd_key"):
+        ctx = core.bind_account(ctx, ctx.settings["omd_key"])
+        await update.message.reply_text(f"✅ Personal data moved to storage: `{storage}`", parse_mode="Markdown")
+
 
 
 # ==== Main ====

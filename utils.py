@@ -1,9 +1,11 @@
 import base64
-import os
 from PIL import Image
 import re
 import io
 import logging
+import requests
+import mimetypes
+import json
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -117,3 +119,77 @@ def resize_and_base64encode(image_path: str) -> str:
     except Exception as e:
         logging.error(f"❌ Ошибка при обработке изображения: {e}")
         return ""
+
+
+### upload to OMD ###
+
+def upload_to_storage(omd_key: str, dest: str, filename: str, local_path: str):
+    """
+    Залить файл в OMD storage
+    dest — полный путь (например "storage/user123/history/chat1.json")
+    """
+    headers = {
+        "authorization": f"token:{omd_key}",
+        "Response": "json",
+        "Dest": requests.utils.quote(dest, safe="")  # полный путь, включая имя файла
+    }
+
+    mime, _ = mimetypes.guess_type(local_path)
+    headers["Content-Type"] = mime or "application/octet-stream"
+
+    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+
+    with open(local_path, "rb") as f:
+        resp = requests.put(url, headers=headers, data=f)
+        resp.raise_for_status()
+    return resp.json()
+
+
+def upload_data_to_storage(omd_key: str, dest: str, filename: str, data, mime: str=""):
+    """
+    Залить файл в OMD storage
+    dest — полный путь (например "storage/user123/history/chat1.json")
+    """
+    if mime == "application/json" and not isinstance(data, (bytes, str)):
+        body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    elif isinstance(data, str):
+        body = data.encode("utf-8")
+    else:
+        body = data
+
+    headers = {
+        "authorization": f"token:{omd_key}",
+        "Response": "json",
+        "Dest": requests.utils.quote(dest, safe=""),  # полный путь, включая имя файла
+        "Content-Type": mime
+    }
+
+    headers["Content-Type"] = mime or "application/octet-stream"
+
+    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+
+    resp = requests.put(url, headers=headers, data=body)
+    return resp.json()
+
+
+def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dict], mime: str=""):
+    """
+    Залить файл в OMD storage
+    dest — полный путь (например "storage/user123/history/chat1.json")
+    """
+    body = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in data).encode("utf-8")
+
+
+    headers = {
+        "authorization": f"token:{omd_key}",
+        "Response": "json",
+        "Dest": requests.utils.quote(dest, safe=""),  # полный путь, включая имя файла
+        "Content-Type": mime
+    }
+
+    headers["Content-Type"] = mime or "application/octet-stream"
+
+    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+
+    resp = requests.put(url, headers=headers, data=body)
+    return resp.json()
