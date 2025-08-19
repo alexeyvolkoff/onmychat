@@ -73,10 +73,9 @@ async def memory_endpoint(omd_key: str, collection: str = "user"):
 async def chats_endpoint(omd_key: str):
     ctx = get_ctx(omd_key)
     try:
-        # простая реализация через список директорий истории
-        from dialog_history import list_chats
-        chats = list_chats(ctx.user_id)
-        return {"chats": chats}
+        from dialog_history import load_chats_index
+        chats = load_chats_index(ctx.user_id)
+        return chats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -93,12 +92,7 @@ async def chat_endpoint(data: ChatInput):
             message=data.prompt,
             chat=data.chat,
         )
-        result = response.get("content") or "✅ done"
-        links = response.get("sources")
-        if links:
-            result += "\n\n📎 *Sources:*\n" + links
-
-        return {"response": result}
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

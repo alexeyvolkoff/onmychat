@@ -11,7 +11,7 @@ from config import USER_DATA_DIR
 
 from utils import clean_response
 
-from dialog_history import load_history, save_history
+from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
 from user_context import UserContext
 
@@ -193,6 +193,7 @@ def bind_account(ctx, omd_key: str):
     #todo: move history and memory to user storage
     return ctx
 
+
 # === Imaging and vision === #
 def get_user_avatar_path(user_id: str) -> str:
     """
@@ -312,6 +313,95 @@ async def llm_request(payload: dict, headers: dict = None) -> dict:
     except Exception as e:
         logging.error(f"LLM error: {e}")
         return None
+
+
+
+# === Chats naming ==== #
+async def generate_chat_title(message: str) -> str:
+    """
+    Спросить у LLM короткое имя для чата.
+    """
+    prompt = (
+        "You are asked to generate a short (2–4 words) title for a chat conversation "
+        "based on the following first message. "
+        "Return ONLY the title, no explanations.\n\n"
+        f"Message: {message}"
+    )
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a naming assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "model": SFW_MODEL, 
+        "stream": False,
+        "options": {"temperature": 0.3}
+    }
+
+    data = await llm_request(payload)
+    if not data:
+        return "New chat"
+    return data["message"]["content"].strip() or "New chat"
+
+
+async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dict:
+    """
+    Убедиться, что чат есть в chats.json и файлы подготовлены.
+    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
+    """
+    chats = load_chats_index(user_id)
+
+    if chat not in chats:
+        title = f"Chat {chat}"
+
+        if chat == "default" and first_message:
+            try:
+                title = await generate_chat_title(first_message)
+                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
+            except Exception as e:
+                print(f"[chats] Title generation error: {e}")
+
+        chats[chat] = {
+            "title": title,
+            "file": f"{chat}.json"
+        }
+        save_chats_index(user_id, chats)
+
+
+    return chats[chat]
+
+
+async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dict:
+    """
+    Убедиться, что чат есть в chats.json и файлы подготовлены.
+    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
+    """
+    chats = load_chats_index(user_id)
+
+    if chat not in chats:
+        title = f"Chat {chat}"
+
+        if chat == "default" and first_message:
+            try:
+                title = await generate_chat_title(first_message)
+                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
+            except Exception as e:
+                print(f"[chats] Title generation error: {e}")
+
+        chats[chat] = {
+            "title": title,
+            "file": f"{chat}.json",
+            "name": chat
+        }
+        save_chats_index(user_id, chats)
+
+        # Создаём пустую историю
+        chat_file = f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
+        if not os.path.exists(chat_file):
+            with open(chat_file, "w", encoding="utf-8") as f:
+                json.dump([], f)
+
+    return chats[chat]
 
 
 # === Intent ===
@@ -488,8 +578,11 @@ async def perform_prompt(ctx: UserContext,
         msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
         history.append(msg_to_save)
     history.append({"role": "assistant", "content": llm_response})
-    save_history(user_id, history, chat)
 
+    chat_info = await ensure_chat(user_id, chat, message)
+    chat_name = chat_info.get("name", chat)
+    save_history(user_id, history, chat_name)
+    response["chatinfo"] = chat_info
     return response
 
 # === Генерация картинок ===

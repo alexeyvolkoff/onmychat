@@ -42,13 +42,22 @@ def reset_history(user_id: str):
             print(f"[history] Remove errer: {e}")
 
 
+def _chats_index_path(user_id: str) -> str:
+    return f"{USER_DATA_DIR}/{user_id}/chats/chats.json"
 
-def list_chats(user_id: str) -> list[str]:
-    chats_dir = os.path.join(USER_DATA_DIR, user_id, "chats")
-    if not os.path.exists(chats_dir):
-        return []
-    chats = []
-    for name in os.listdir(chats_dir):
-        if name.endswith(".json"):
-            chats.append(name[:-5])  # убираем расширение
-    return chats
+def load_chats_index(user_id: str) -> dict:
+    path = _chats_index_path(user_id)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[chats] Load error: {e}")
+        return {}
+
+def save_chats_index(user_id: str, chats: dict):
+    os.makedirs(f"{USER_DATA_DIR}/{user_id}/chats", exist_ok=True)
+    path = _chats_index_path(user_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(chats, f, ensure_ascii=False, indent=2)
