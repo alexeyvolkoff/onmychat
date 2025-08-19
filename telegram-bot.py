@@ -129,8 +129,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Объясняем картинку
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             recognition_prompt = (
-               "Describe the scene in first person and express how you feel in it."
-            )
+               "scene: '{}' - describe the scene in first person and express how you feel in it" 
+            ).format(text)
             response = await core.perform_prompt(
                 ctx,
                 instruction=(
@@ -138,7 +138,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
                 ),
                 message=recognition_prompt,
-                skip_history=True,
                 b64_image=b64_image,
                 chat="telegram"
             )
@@ -162,8 +161,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             # Объясняем картинку
             recognition_prompt = (
-               "Summarize briefly, what do you see on this photo and how do you feel about it"
-            )
+               "view: '{}' - summarize briefly, what do you see on this photo and how do you feel about it"
+            ).format(text)
             response = await core.perform_prompt(
                 ctx,
                 instruction=(
@@ -171,7 +170,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
                 ),
                 message=recognition_prompt,
-                skip_history=True,
                 b64_image=b64_image,
                 chat="telegram"
             )
