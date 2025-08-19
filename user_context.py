@@ -84,7 +84,7 @@ def save_bindings():
     try:
         # Telegram ID конвертим обратно в строки
         data = {
-            "by_telegram": {str(k): v for k, v in bindings["by_telegram"].items()},
+            "by_telegram": bindings["by_telegram"],
             "by_account": bindings["by_account"]
         }
         with open(BINDINGS_FILE, "w", encoding="utf-8") as f:
@@ -96,7 +96,7 @@ def save_bindings():
 def get_context(telegram_id: int) -> UserContext:
     """Вернуть контекст пользователя по его telegram_id."""
     if telegram_id in bindings["by_telegram"]:
-        binding = bindings["by_telegram"][telegram_id]
+        binding = bindings["by_telegram"][str(telegram_id)]
         settings = load_user_settings(binding["username"])
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
     else:
@@ -153,7 +153,7 @@ def bind(ctx: UserContext, account_id: str) -> UserContext:
     if not user_info.get("valid", False):
         raise ValueError("Invalid OMD account")
     username = user_info["user"]
-    telegram_id = int(ctx.user_id)
+    telegram_id = ctx.user_id
 
     bindings["by_telegram"][telegram_id] = {"account_id": account_id, "username": username}
     bindings["by_account"][account_id] = {"telegram_id": telegram_id, "username": username}

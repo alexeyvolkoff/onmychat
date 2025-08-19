@@ -10,6 +10,11 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def startup_event():
+    user_context.load_bindings()
+    logging.info("[api] Bindings loaded")
+
 # ==== Модели ввода ====
 
 class ChatInput(BaseModel):
