@@ -10,13 +10,16 @@ HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используетс�
 def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
-def load_history(user_id: str, chat: str = "default") -> list:
+def load_history(user_id: str, chat: str = "default", limit: int | None = None) -> list:
     path = _get_path(user_id, chat)
     if not os.path.exists(path):
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            history = json.load(f)
+            if limit is not None and limit > 0:
+                return history[-limit:]
+            return history
     except Exception as e:
         print(f"[history] Load error: {user_id} {e}")
         return []

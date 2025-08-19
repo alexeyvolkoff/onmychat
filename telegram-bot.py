@@ -296,7 +296,7 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• System prompt:\n`{system_prompt}`"
     )
     if nsfw == "enabled":
-        msg += "\n• NSFW: `{nsfw}`\n"
+        msg += f"\n• NSFW: `{nsfw}`"
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 

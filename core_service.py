@@ -12,7 +12,7 @@ from config import USER_DATA_DIR
 from utils import clean_response
 
 from dialog_history import load_history, save_history
-
+import user_context
 from user_context import UserContext
 
 
@@ -65,19 +65,20 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
-        "Create a high-quality prompt for generating a realistic image describing yourself in the following scene "
-        "or performing a requesting action, in the first person: {}\n "
-        "all the characters are adults, encounter is consensual and joyful. "
-        "Translate to English, add your appearance, visual details, environment, style, outfit and emotions according to the "
-        "conversation context. Put important features of your appearance in parentheses. Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
+        "Create a high-quality prompt for generating a realistic image depicting your character performing a requested "
+        "action according to short user input, in the third person.\n "
+        "Translate to English, add your character appearance, visual details, environment, style, outfit and emotions according to the "
+        "conversation context. Put important features of appearance in parentheses. Respond with image generation prompt 'Image: prompt'. "
+        "Be brief, do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
         "Create a high-quality prompt for generating a realistic image "
-        "of the requested object or scene from this short user input: {}\n "
-        " (as you see it from aside). (Avoid placing yourself into the scene). "
+        "of the requested object or scene from the short user input "
+        "(as you see it from aside). (Avoid placing yourself into the scene). "
         "Translate to English, add visual details, environment "
-        "according to the conversation context. Put important features of the scene in parentheses like (sunset) or (city skyline). Respond with image generation prompt 'Image: prompt'. Be brief, do not explain your reasoning or express your thoughts."
+        "according to the conversation context. Put important features of the scene in parentheses like (sunset) or (city skyline). Respond with image generation prompt 'Image: prompt'. "
+        "Be brief, do not explain your reasoning or express your thoughts."
 )
 
 RAG_SYSTEM_PROMPT = (
@@ -495,7 +496,7 @@ async def perform_prompt(ctx: UserContext,
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
     user_id = ctx.user_id
-    system_prompt = BASE_SYSTEM_PROMPT + "\n" + instruction
+    system_prompt =  BASE_SYSTEM_PROMPT + "\n" + instruction + "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     if nsfw_enabled:
@@ -503,7 +504,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     else:
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
-    history = load_history(user_id, chat)
+    history = load_history(user_id, chat, 4)
     # Добавляем новый запрос
     history.append({
         "role": "user",
@@ -542,7 +543,7 @@ async def generate_character_image_prompt(ctx: UserContext, prompt, chat="defaul
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_CHARACTER.format(prompt), chat)
+    return await generate_image_prompt(ctx,  SYSTEM_INSTRUCTION_CHARACTER, prompt, chat)
 
 
 # Generate general image, returns full path for further sending or conversion
@@ -551,7 +552,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  "Generate image prompt", SYSTEM_INSTRUCTION_GENERAL.format(prompt), chat)
+    return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
 async def generate_character_image(ctx: UserContext, prompt) -> str:
@@ -621,7 +622,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
 
-    history = load_history(user_id, chat)
+    history = load_history(user_id, chat, 4)
 
     # Добавляем новый запрос с изображением
     history.append({
