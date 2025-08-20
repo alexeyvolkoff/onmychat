@@ -65,8 +65,8 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
-        "You are script writer assistant. Create a high-quality prompt for generating a realistic image of ciematographic scene depicting your character performing a requested "
-        "action according to short user input, in the third person.\n "
+        "You are a scriptwriting assistant. Craft a vivid and detailed prompt for generating a realistic, cinematic scene. The image should depict "
+        "your character performing the requested action, described in the third person, based on a short user input."
         "Translate to English, add your character appearance, visual details, environment, style, outfit and emotions according to the "
         "conversation context. Put important features of appearance in parentheses. Respond with image generation prompt 'Image: prompt'. "
         "Be brief, do not explain your reasoning or express your thoughts."
@@ -626,7 +626,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     else:
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
-    history = load_history(ctx, chat, 4)
+    history = load_history(ctx, chat, 20)
     # Добавляем новый запрос
     history.append({
         "role": "user",
@@ -744,7 +744,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
 
-    history = load_history(ctx, chat, 4)
+    history = load_history(ctx, chat, 20)
 
     # Добавляем новый запрос с изображением
     history.append({
