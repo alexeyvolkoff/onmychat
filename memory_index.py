@@ -169,7 +169,8 @@ def search_document_chunks(
     query: str,
     vec_path: str,
     vec_file: str,
-    top_k: int = 3,
+    collection: str,
+    top_k: int = 6,
     distance_threshold: float = 0.6
 ) -> list[dict]:
     """Ищет релевантные чанки в .vec-файле документа"""
@@ -179,7 +180,7 @@ def search_document_chunks(
     chunks = []
 
     try:
-        if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        if ctx.type == "omd" and collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             # Подгружаем vec из OMD
             url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/vecs/{vec_file}"
             token = ctx.settings["omd_key"]
@@ -287,7 +288,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", top_
                 if doc_id:
                     vec_file = make_file_name_from_document_id(doc_id) + ".vec"
                     # Adding relevant document chunks
-                    doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file)
+                    doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection)
                     contextual.extend(doc_chunks)
                 else:
                   # Adding memory card

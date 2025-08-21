@@ -181,7 +181,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif intent == "explain":
         instruction=(
-            "Use the *Known facts* provided above. If no related facts provided, do not guess, say you do not know."
+            "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
+            "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
+            "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
         )
         response = await core.perform_prompt(ctx, instruction, text, is_rag=True, chat="telegram")
         result = response.get("content") or "✅ done" 
@@ -218,7 +220,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         instruction=(
-            "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
+            "If Known facts are provided and they are relevant to user's query, be extreamly accurate and base your response only on them. "
+            "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, "
+            "and explicitly state the limitations."
+            "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
         )
         response = await core.perform_prompt(ctx, instruction=instruction, message=text, is_rag=False, chat="telegram")
         result = response.get("content") or "✅ done"  
