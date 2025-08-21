@@ -2,6 +2,7 @@ import os
 import json
 import aiohttp
 import numpy as np
+import uuid
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
 import logging
@@ -107,12 +108,34 @@ def add_memory_card(
     text: str,
     collection: str = "user",
     relevance: str = "contextual",
-    document_id: str | None = None
+    document_id: str | None = None,
+    mem_id: str | None = None
 ):
-    """Добавляет запись в указанный индекс памяти (локально или в OMD)"""
+    """
+    Добавляет или обновляет запись в указанном индексе памяти (локально или в OMD).
+    - Если передан mem_id → обновляем карточку с этим ID.
+    - Если передан document_id (и relevance == "document") → заменяем все записи документа.
+    - Если не указано — создаём новую карточку.
+    """
+
+    # Загружаем существующие карточки
+    memories = []
+    try:
+        memories = load_memories(ctx, collection)
+    except Exception as e:
+        print(f"[memory] Load error: {ctx.user_id} {collection} {e}")
+
+    # Если есть document_id и это документ — удаляем старые записи документа
+    if document_id:
+        memories = [m for m in memories if m.get("document_id") != document_id]
+
+    # Если есть mem_id — удаляем запись с этим ID
+    if mem_id:
+        memories = [m for m in memories if m.get("memory_id") != mem_id]
+    else:
+        mem_id = str(uuid.uuid4())  # UUID стабильнее, чем timestamp
 
     vec = embed_text(text)
-    mem_id = datetime.now().strftime("%Y%m%dT%H%M%S") + (f"_user_{ctx.user_id}" if ctx.user_id else "")
 
     entry = {
         "embedding": vec,
@@ -127,15 +150,69 @@ def add_memory_card(
     if document_id:
         entry["document_id"] = document_id
 
+    memories.append(entry)
+
     try:
-        # Загружаем существующие карточки
-        memories = load_memories(ctx, collection)
-        memories.append(entry)
         save_memories(ctx, memories, collection)
     except Exception as e:
-        print(f"[memory] Add error: {ctx.user_id} {collection} {e}")
+        print(f"[memory] Save error: {ctx.user_id} {collection} {e}")
 
     return mem_id
+
+def update_memory_card(
+    ctx: UserContext,
+    text: str,
+    collection: str = "user",
+    relevance: str = "contextual",
+    document_id: str | None = None,
+    mem_id: str | None = None
+):
+    """
+    Обновить существующую карточку памяти.
+    Если указан document_id — перезаписывается карточка документа.
+    Если указан mem_id — перезаписывается конкретная карточка.
+    Если ни то, ни другое не указано — создаётся новая карточка.
+    """
+    return add_memory_card(
+        ctx=ctx,
+        text=text,
+        collection=collection,
+        relevance=relevance,
+        document_id=document_id,
+        mem_id=mem_id,
+    )
+
+
+
+def delete_memory_card(
+    ctx: UserContext,
+    mem_id: str | None = None,
+    document_id: str | None = None,
+    collection: str = "user"
+) -> bool:
+    """
+    Удаляет карточку памяти по mem_id или document_id.
+    Если передан document_id — удаляется все карточки с этим document_id.
+    Если mem_id — удаляется только одна карточка.
+    Возвращает True, если что-то было удалено.
+    """
+    try:
+        memories = load_memories(ctx, collection)
+        before_count = len(memories)
+
+        if document_id:
+            memories = [m for m in memories if m.get("document_id") != document_id]
+        elif mem_id:
+            memories = [m for m in memories if m.get("memory_id") != mem_id]
+
+        if len(memories) < before_count:
+            save_memories(ctx, memories, collection)
+            return True
+        return False
+    except Exception as e:
+        print(f"[memory] Delete error: {ctx.user_id} {collection} {e}")
+        return False
+
 
 
 def extract_memory_from_response(response: str) -> tuple[str | None, int | None]:

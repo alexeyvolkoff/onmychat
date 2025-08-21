@@ -195,7 +195,6 @@ def bind_account(ctx: UserContext, omd_key: str):
     storage = ctx.settings.get("storage")
     omd_key = ctx.settings.get("omd_key")
     if ctx.type == "omd" and storage and omd_key:
-        headers = {"Authentication":f"token:{omd_key}"}
 
         # 1. Переносим чаты
         chats_dir = os.path.join(USER_DATA_DIR, ctx.user_id, "chats")
@@ -204,7 +203,6 @@ def bind_account(ctx: UserContext, omd_key: str):
                 if not file.endswith(".json"):
                     continue
                 local_path = os.path.join(chats_dir, file)
-                #remote_url = f"https://onmydisk.net/{storage}/{ctx.user_id}/chats/{file}"
                 try:
                     dest = f"{storage}/{ctx.user_id}/chats"
                     upload_to_storage(omd_key, dest, file, local_path)
@@ -215,7 +213,6 @@ def bind_account(ctx: UserContext, omd_key: str):
         # 2. Персональная память
         mem_path = os.path.join(USER_DATA_DIR, ctx.user_id,  "memory.jsonl")
         if os.path.exists(mem_path):
-            #remote_url = f"https://onmydisk.net/{storage}/{ctx.user_id}/memory.jsonl"
             try:
                 dest = f"{storage}/{ctx.user_id}"
                 upload_to_storage(omd_key, dest,"memory.jsonl", mem_path)
@@ -435,21 +432,7 @@ async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dic
 
 # === Intent ===
 async def classify_user_intent(prompt: str) -> str:
-
-    # На всякий случай сами проверим ссылку/путь
-    url_or_path = None
-    url_match = re.search(r'(https?://\S+)', prompt)
-    path_match = re.search(r'(/[^\s]+\.(?:jpg|jpeg|png|gif|webp))', prompt, re.IGNORECASE)
-
-    if url_match:
-        url_or_path = url_match.group(1)
-    elif path_match:
-        url_or_path = path_match.group(1)
-
-    # Если нашли путь сами — можно сразу вернуть без LLM
-    if url_or_path:
-        return f"recognize:{url_or_path}"
-
+       
     messages = [
         {"role": "system", "content": INTENT_PROMPT},
         {"role": "user", "content": prompt}
