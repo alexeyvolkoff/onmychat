@@ -36,6 +36,13 @@ class RecognizeInput(BaseModel):
     prompt: str = ""
     chat: str = "default"
 
+class MemoryUpdate(BaseModel):
+    text: str
+    collection: str = "user"
+    relevance: str = "contextual"
+    document_id: str | None = None
+
+
 class GenerateInput(BaseModel):
     omd_key: str
     prompt: str
@@ -68,10 +75,54 @@ async def history_endpoint(omd_key: str, chat: str = "default"):
 async def memory_endpoint(omd_key: str, collection: str = "user"):
     ctx = get_ctx(omd_key)
     try:
-        memories = memory_index.load_memories(ctx.user_id, collection=collection)
+        memories = memory_index.load_memories(ctx, collection=collection)
         return {"collection": collection, "memories": memories}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/memory/{mem_id}")
+async def update_memory(mem_id: str, data: MemoryUpdate):
+    ctx = get_ctx(data.omd_key)  # сюда нужно будет пробросить omd_key
+    try:
+        updated_id = memory_index.update_memory_card(
+            ctx=ctx,
+            text=data.text,
+            collection=data.collection,
+            relevance=data.relevance,
+            document_id=data.document_id,
+            mem_id=mem_id
+        )
+        if not updated_id:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return {"status": "ok", "memory_id": updated_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/memory/{mem_id}")
+async def delete_memory(omd_key: str, mem_id: str, collection: str = "user"):
+    ctx = get_ctx(omd_key)
+    try:
+        success = memory_index.delete_memory_card(ctx, mem_id, collection)
+        if not success:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return {"status": "deleted", "memory_id": mem_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/memory/{collection}/{mem_id}")
+async def get_memory(omd_key: str, collection: str, mem_id: str):
+    ctx = get_ctx(omd_key)
+    try:
+        memories = memory_index.load_memories(ctx, collection)
+        for m in memories:
+            if m["memory_id"] == mem_id:
+                return m
+        raise HTTPException(status_code=404, detail="Memory not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/chats")
