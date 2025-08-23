@@ -114,7 +114,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     if intent == "show":
-        prompt = await core.generate_character_image_prompt(ctx, text)
+        prompt = await core.generate_character_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
         # Отправляем фото
         path = await core.generate_character_image(ctx, prompt)
@@ -147,7 +147,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.info(f"Explained photo: {explained}")
 
     elif intent == "view":
-        prompt = await core.generate_general_image_prompt(ctx, text)
+        prompt = await core.generate_general_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
         path = await core.generate_general_image(ctx, prompt)
         b64_image = resize_and_base64encode(path)

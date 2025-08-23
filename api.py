@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+
 import core_service
 import user_context
 import dialog_history
@@ -151,6 +153,27 @@ async def chat_endpoint(data: ChatInput):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat/stream")
+async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
+    ctx = get_ctx(omd_key)
+
+    async def event_generator():
+        instruction=(
+            "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
+        )
+        gen = await core_service.perform_prompt(
+            ctx,
+            instruction=instruction,
+            message=prompt,
+            chat=chat,
+            stream=True
+        )
+        async for chunk in gen:
+            yield f"data: {chunk}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 
 @app.post("/import")

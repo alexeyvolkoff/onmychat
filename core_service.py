@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 import time
 import subprocess
+from typing import AsyncGenerator
 
 from config import SETTINGS
 from config import USER_DATA_DIR
@@ -65,11 +66,13 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
-        "You are a scriptwriting assistant. Craft a vivid and detailed prompt for generating a realistic, cinematic scene. The image should depict "
+        "Craft a vivid and detailed prompt for generating a realistic, cinematic scene. The image should depict "
         "your character performing the requested action, described in the third person, based on a short user input."
-        "Translate to English, add your character appearance, visual details, environment, style, outfit and emotions according to the "
-        "conversation context. Put important features of appearance in parentheses. Respond with image generation prompt 'Image: prompt'. "
-        "Be brief, do not explain your reasoning or express your thoughts."
+        "Translate to English, add your character appearance, visual details, environment, style, "
+        "outfit and emotions according to the conversation context. "
+        "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. "
+        "Put important features of your appearance in parentheses. "
+        "Do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
@@ -77,8 +80,10 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "of the requested object or scene from the short user input "
         "(as you see it from aside). (Avoid placing yourself into the scene). "
         "Translate to English, add visual details, environment "
-        "according to the conversation context. Put important features of the scene in parentheses like (sunset) or (city skyline). Respond with image generation prompt 'Image: prompt'. "
-        "Be brief, do not explain your reasoning or express your thoughts."
+        "according to the conversation context. "
+        "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. "
+        "Put important features of the scene in parentheses like (sunset) or (city skyline). "
+        "Do not explain your reasoning or express your thoughts."
 )
 
 RAG_SYSTEM_PROMPT = (
@@ -310,7 +315,27 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "") -> tu
     return facts, document_ids
 
 # === Ollama запрос ===
-async def llm_request(payload: dict, headers: dict = None) -> dict:
+async def llm_request_stream(payload: dict, headers: dict = None):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{OLLAMA_URL}/api/chat",
+                headers=headers or {"Content-Type": "application/json"},
+                json=payload
+            ) as resp:
+                async for line in resp.content:
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line.decode("utf-8"))
+                        yield data
+                    except Exception as e:
+                        logging.error(f"Stream parse error: {e}")
+    except Exception as e:
+        logging.error(f"LLM error: {e}")
+
+
+async def llm_request(payload: dict, headers: dict = None):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -322,7 +347,6 @@ async def llm_request(payload: dict, headers: dict = None) -> dict:
     except Exception as e:
         logging.error(f"LLM error: {e}")
         return None
-
 
 
 # === Chats naming ==== #
@@ -443,7 +467,8 @@ async def perform_prompt(ctx: UserContext,
                          skip_history=False,
                          requestedModel=DEFAULT_MODEL,
                          b64_image = "",
-                         chat = "default") -> str:
+                         chat = "default", 
+                         stream: bool = False) -> str | AsyncGenerator:
 
     user_id = ctx.user_id
     nsfw_enabled = ctx.settings.get("nsfw", False)
@@ -526,59 +551,82 @@ async def perform_prompt(ctx: UserContext,
     main_payload = {
         "messages": messages,
         "model": model,
-        "stream": False,
+        "stream": stream,
         "options": {
            "temperature": 0.8,
         }
     }
+    #post-processing of response
+    async def process_response(data) -> dict: 
+        logging.info(data)
+        llm_response = data["message"]["content"]
+        llm_response = clean_response(llm_response)
 
-    data = await llm_request(main_payload)
+        # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
+        memory_fact, pos = extract_memory_from_response(llm_response)
+        if memory_fact:
+            try:
+                logging.info(f"Memorizing: {memory_fact}")
+                add_memory_card(ctx, memory_fact,  collection="user")
+                llm_response = llm_response[:pos].strip()
+            except Exception as e:
+                logging.error(f"Vectorization error: {e}")
 
-    logging.info(data)
-
-    llm_response = data["message"]["content"]
-    llm_response = clean_response(llm_response)
-
-    # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
-    memory_fact, pos = extract_memory_from_response(llm_response)
-    if memory_fact:
-        try:
-            logging.info(f"Memorizing: {memory_fact}")
-            add_memory_card(ctx, memory_fact,  collection="user")
-            llm_response = llm_response[:pos].strip()
-        except Exception as e:
-            logging.error(f"Vectorization error: {e}")
-
-    # Добавляем блок с источниками — только в отображаемый ответ
-    links = []
-    if doc_ids:
-        seen = set()
-        for doc in doc_ids:
-            if doc in seen:
-                continue  # пропускаем дубликаты
-            seen.add(doc)
-            label = make_file_name_from_document_id(doc)
-            # Формируем ссылку без экранирования, она будет безопасно обработана позже
-            links.append(f"• [{label}]({doc})")
+        # Добавляем блок с источниками — только в отображаемый ответ
+        links = []
+        if doc_ids:
+            seen = set()
+            for doc in doc_ids:
+                if doc in seen:
+                    continue  # пропускаем дубликаты
+                seen.add(doc)
+                label = doc
+                # Формируем ссылку без экранирования, она будет безопасно обработана позже
+                links.append(f"• [{label}]({doc})")
     
-    # result object
-    response = {}
-    response["content"] = llm_response.strip()
-    if links:  # добавляем блок только если есть ссылки
-        response["sources"] = "\n".join(links)
-        #response += "\n\n📎 *Sources:*\n" + "\n".join(links)
+        # result object
+        response = {}
+        response["content"] = llm_response.strip()
+        if links:  # добавляем блок только если есть ссылки
+            response["sources"] = "\n".join(links)
 
-    # === Добавляем в историю
-    if not skip_history:
-        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
-        history.append(msg_to_save)
-    history.append({"role": "assistant", "content": llm_response})
+        # === Добавляем в историю
+        if not skip_history:
+            msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
+            history.append(msg_to_save)
+        history.append({"role": "assistant", "content": llm_response})
 
-    chat_info = await ensure_chat(user_id, chat, message)
-    chat_name = chat_info.get("name", chat)
-    save_history(ctx, history, chat_name)
-    response["chatinfo"] = chat_info
-    return response
+        chat_info = await ensure_chat(user_id, chat, message)
+        chat_name = chat_info.get("name", chat)
+        save_history(ctx, history, chat_name)
+        response["chatinfo"] = chat_info
+        return response
+
+
+    if stream:
+        async def gen():
+            accumulated = ""
+            async for data in llm_request_stream(main_payload):
+                if data.get("done"):  
+                    # финал: собираем response на основе всего текста
+                    full_data = {
+                        "message": {
+                            "role": "assistant",
+                            "content": accumulated
+                        }
+                    }
+                    response = await process_response(full_data)
+                    response["done"] = True
+                    yield response
+                else:
+                    delta = data["message"]["content"]
+                    accumulated += delta
+                    yield {"delta": delta, "done": False}
+        return gen()    
+    else:
+        data = await llm_request(main_payload)
+        response = await process_response(data)
+        return response
 
 # === Генерация картинок ===
 
