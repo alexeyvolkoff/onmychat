@@ -157,8 +157,11 @@ async def chat_endpoint(data: ChatInput):
 async def import_endpoint(data: ImportInput):
     ctx = get_ctx(data.omd_key)
     try:
-        await core_service.import_doc(ctx, data.url_or_path, data.collection)
-        return {"status": "ok"}
+        card = await core_service.import_doc(ctx, data.url_or_path, data.collection)
+        return {
+           "status": "ok",
+           "card": card
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

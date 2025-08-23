@@ -51,8 +51,8 @@ async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     ctx = get_context(update.effective_user.id)
     collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
-    result = await core.import_doc(ctx, context.args[0], collection)
-    await update.message.reply_text(f"✅ Document imported: `{result}`", parse_mode="Markdown")
+    card = await core.import_doc(ctx, context.args[0], collection)
+    await update.message.reply_text(f"✅ Document imported: `{card["id"]}`", parse_mode="Markdown")
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -217,6 +217,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         explained = response.get("content") or "✅ done" 
         result = format_response_for_markdown_v2(explained)
         await update.message.reply_text(result, parse_mode="MarkdownV2")    
+
+    elif intent.startswith("import") or update.message.photo:
+        doc_source = None
+        card = {}
+        if ":" in intent:
+            doc_source = intent.split(":", 1)[1]
+        if doc_source:
+            card = await core.import_doc(ctx, doc_source)    
+        if card.get("text"): 
+            logging.info(f"*New knowledge:*\n{card.get("text")}")
+
+        response = await core.perform_prompt(
+            ctx,
+            instruction=(
+                f"Summirize the *New knowledge* ONLY, if present.\n\n*New knowledge:*\n{card.get("text")}"
+            ),
+            message=text,
+            chat="telegram"
+        )
+        explained = response.get("content") or "✅ done" 
+        result = format_response_for_markdown_v2(explained)
+        await update.message.reply_text(result, parse_mode="MarkdownV2")    
+
 
     else:
         instruction=(

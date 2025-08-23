@@ -193,3 +193,67 @@ def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dic
 
     resp = requests.put(url, headers=headers, data=body)
     return resp.json()
+
+
+
+def generate_table_of_contents(text: str) -> str:
+    """
+    Generates a table of contents from the given text.
+    Includes both chapter headings and Markdown headings.
+    """
+    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")  # Regex for chapter headings
+    markdown_regex = re.compile(r"^#+\s.*")        # Regex for Markdown headings
+
+    toc_entries = []
+
+    for line in text.splitlines():
+        if chapter_regex.match(line) or markdown_regex.match(line):
+            toc_entries.append(line.strip())
+
+    return "\n".join(toc_entries)
+
+
+def summarize_for_memory(
+    text: str,
+    max_bytes: int = 2048,
+    max_leading_bytes: int = 512
+) -> str:
+    """
+    Summarizes text: returns full text if it's small,
+    otherwise returns a summary consisting of:
+      - Leading context (lines before the first heading, up to max_leading_bytes)
+      - Table of contents (headings up to 3 levels deep)
+    """
+    text_bytes = len(text.encode("utf-8"))
+
+    if text_bytes <= max_bytes:
+        return text  # return as-is if small enough
+
+    # --- extract leading context before the first heading ---
+    lines = text.splitlines()
+    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")
+    markdown_regex = re.compile(r"^#+\s.*")
+
+    leading_lines = []
+    for line in lines:
+        if chapter_regex.match(line) or markdown_regex.match(line):
+            break
+        if line.strip():
+            leading_lines.append(line.strip())
+
+    # truncate leading context if too large
+    leading_text = "\n".join(leading_lines)
+    if len(leading_text.encode("utf-8")) > max_leading_bytes:
+        leading_text = leading_text.encode("utf-8")[:max_leading_bytes].decode("utf-8", errors="ignore") + "..."
+
+    # --- build TOC ---
+    toc = generate_table_of_contents(text)
+
+    # --- final summary ---
+    if leading_text:
+        return f"{leading_text}\n\nTable of Contents:\n{toc}"
+    else:
+        return toc
+
+
+

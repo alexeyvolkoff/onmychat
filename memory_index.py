@@ -10,7 +10,10 @@ import warnings
 from config import USER_DATA_DIR
 from user_context import UserContext
 import requests
-from utils import  upload_data_to_storage, upload_vec_to_storage
+from urllib.parse import urlparse
+import hashlib
+import re
+from utils import   upload_vec_to_storage
 
 MEMORY_KEYWORDS = [
     "Запомнить:",        # 🇷🇺 Russian
@@ -229,17 +232,40 @@ def extract_memory_from_response(response: str) -> tuple[str | None, int | None]
 
 def make_file_name_from_document_id(document_id: str) -> str:
     """
-    Преобразует document_id (обычно это URL) в безопасное имя файла.
+    Преобразует URL или путь в "безопасное" имя файла.
+    Примеры:
+      https://www.geeksforgeeks.org/python/introduction-to-python/
+        → www.geeksforgeeks.org_python_introduction-to-python
+      https://example.com/
+        → example.com
+      https://weird.site/q?x=1&y=2
+        → weird.site
+      file:///home/user/doc.txt
+        → home_user_doc.txt
     """
-    import urllib.parse
-    import os
+    parsed = urlparse(document_id)
 
-    # Декодируем URL и берём имя файла
-    decoded = urllib.parse.unquote(document_id)
-    file_name = os.path.basename(decoded)
-    file_name = file_name.replace("/", "_").replace("\\", "_")
-    return file_name
+    if parsed.scheme in ("http", "https"):
+        # Берём домен
+        base = parsed.netloc
+        # Убираем query и fragment, заменяем / на _
+        path = re.sub(r"[?#].*", "", parsed.path).strip("/")
+        if path:
+            path = path.replace("/", "_")
+            return f"{base}_{path}"
+        else:
+            return base
 
+    elif parsed.scheme == "file":
+        # Для file:/// → берём путь, заменяем / и \
+        path = parsed.path.lstrip("/")
+        safe_path = path.replace("/", "_").replace("\\", "_")
+        return safe_path
+
+    else:
+        # Локальные document_id или fallback
+        return document_id.replace("/", "_").replace("\\", "_")
+    
 
 def search_document_chunks(
     ctx: UserContext,    
@@ -406,6 +432,7 @@ def chunk_and_vectorize_to_file(
     """Чанкает текст и сохраняет эмбеддинги в .vec файл (локально или в OMD)"""
 
     filename = make_file_name_from_document_id(document_id)
+    logging.info(f"[{collection}]: vectorizing {document_id} to {filename}")
     chunks = []
     words = text.split()
     i = 0
@@ -437,6 +464,7 @@ def chunk_and_vectorize_to_file(
         ):
             # --- Хранение в OMD ---
             dest = f"{ctx.settings['storage']}/{ctx.user_id}/vecs"
+            logging.info(f"[{collection}]: uploading to {dest}")
             upload_vec_to_storage(ctx.settings['omd_key'], dest, f"{filename}.vec", entries, "application/jsonl")
         else:
             # --- Локальное хранение ---

@@ -4,12 +4,12 @@ import logging
 import asyncio
 import aiohttp
 import time
-import re
+import subprocess
 
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage
+from utils import clean_response, upload_to_storage, summarize_for_memory
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -108,8 +108,8 @@ NEGATIVE_PROMPTS = {
 }
 
 INTENT_PROMPT = (
-    "Classify the user's intent. Possible intents are: show, view, explain, recognize, chat.\n"
-    "Respond with exactly one word or 'recognize:<path_or_url>'.\n"
+    "Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
+    "Respond with exactly one word or 'recognize:<path_or_url>' or import:<path_or_url>.\n"
     "\n"
     "\n"
     "Rules:\n"
@@ -142,33 +142,16 @@ INTENT_PROMPT = (
     "   - If the message contains a URL or file path, respond with 'recognize:<path_or_url>'.\n"
     "   - If no link or path is present, respond with 'recognize'.\n"
     "\n"
-    "6. In all other cases — respond with 'chat'.\n"
+    "6. If the user wants you to import, learn, read, or help to understand a document or web page:\n"
+    "   - If the message contains a URL or file path, respond with 'import:<path_or_url>'.\n"
+    "   - If no link or path is present, respond with 'import'.\n"
+    "   - Do not guess if path or url is ambiguous — default to 'chat'.\n"
+    "\n"
+    "7. In all other cases — respond with 'chat'.\n"
     "\n"
     "Do not guess the intent if the request is ambiguous — default to 'chat'.\n"
     "Return nothing except the classification."
 )
-
-
-# === Private functions ===
-def summarize_for_memory(text: str, max_bytes: int = 2048) -> str:
-    """Грубое суммари: первые 2048 байта нормализованного текста"""
-    # Убираем лишние пустые строки и пробелы
-    clean_lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    normalized = " ".join(clean_lines)
-
-    # Decode the string to Unicode first
-    unicode_text = normalized
-
-    # Get the maximum number of characters, not bytes
-    max_chars = min(max_bytes // 1, len(unicode_text)) # to prevent from slicing too much, max size is based on bytes
-
-    # Slice the Unicode string
-    summary_encoded = unicode_text[:max_chars]
-
-    # Encode the sliced Unicode string back to UTF-8
-    summary_encoded = summary_encoded.encode("utf-8", errors="ignore")
-
-    return summary_encoded.decode("utf-8", errors="ignore").strip() + "..."
 
 
 
@@ -773,7 +756,17 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
             raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
         raw_text = await fetch_document_text(url_or_path, key)
     else:
-        raw_text = await fetch_document_text(url_or_path)  # без токена
+
+        cmd = [
+            "pandoc",
+            "-f", "html",
+            "-t", "markdown",
+            "--request-header", "User-Agent:Mozilla/5.0",
+            url_or_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        raw_text = result.stdout
 
     # Векторизация и сохранение чанков
     chunk_and_vectorize_to_file(
@@ -784,14 +777,19 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     )
 
     # Добавление краткой аннотации в память
+    card_text = summarize_for_memory(raw_text)
     mem_id = add_memory_card(
         ctx,
-        text=summarize_for_memory(raw_text),
+        text=card_text,
         document_id=url_or_path,
         collection=collection
     )
 
-    return mem_id
+    mem_card = {
+        "id": mem_id,
+        "text": card_text
+    }
+    return mem_card
 
 def memorize(ctx, text):
     # Добавление краткой аннотации в память
