@@ -332,8 +332,9 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/memory.jsonl"
             headers = {"authorization": f"token:{ctx.settings['omd_key']}"}
             resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                return [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+            if resp.status_code == 200 and resp.content.strip():
+                text = resp.content.decode("utf-8")
+                return [json.loads(line) for line in text.splitlines() if line.strip()]
             return []
         else:
             # локальный fallback

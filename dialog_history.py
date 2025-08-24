@@ -22,7 +22,7 @@ def load_history(ctx: UserContext, chat: str = "default", limit: int | None = No
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
-                history = resp.json()
+                history = json.loads(resp.content.decode("utf-8"))
                 return history[-limit:] if limit else history
             return []
         else:
