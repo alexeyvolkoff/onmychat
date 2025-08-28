@@ -11,7 +11,6 @@ from config import USER_DATA_DIR
 from user_context import UserContext
 import requests
 from urllib.parse import urlparse
-import hashlib
 import re
 from utils import   upload_vec_to_storage
 

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 import core_service
 import user_context
@@ -11,6 +12,20 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
+
+
+origins = [
+    "http://localhost:8080",  
+    "http://localhost:8081",  
+    "*",  # Caution: Allow all origins (not recommended for production)
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def startup_event():
@@ -67,7 +82,7 @@ def get_ctx(omd_key: str):
 async def history_endpoint(omd_key: str, chat: str = "default"):
     ctx = get_ctx(omd_key)
     try:
-        history = dialog_history.load_history(ctx.user_id, chat=chat)
+        history = dialog_history.load_history(ctx, chat=chat)
         return {"chat": chat, "history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
