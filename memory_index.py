@@ -433,7 +433,6 @@ def chunk_and_vectorize_to_file(
     """Чанкает текст и сохраняет эмбеддинги в .vec файл (локально или в OMD)"""
 
     filename = make_file_name_from_document_id(document_id)
-    logging.info(f"[{collection}]: vectorizing {document_id} to {filename}")
     chunks = []
     words = text.split()
     i = 0
@@ -465,7 +464,6 @@ def chunk_and_vectorize_to_file(
         ):
             # --- Хранение в OMD ---
             dest = f"{ctx.settings['storage']}/{ctx.user_id}/vecs"
-            logging.info(f"[{collection}]: uploading to {dest}")
             upload_vec_to_storage(ctx.settings['omd_key'], dest, f"{filename}.vec", entries, "application/jsonl")
         else:
             # --- Локальное хранение ---

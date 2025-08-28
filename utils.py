@@ -195,42 +195,59 @@ def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dic
     return resp.json()
 
 
+def strip_html(text: str) -> str:
+    """Удаляет все HTML-теги и атрибуты, оставляет только текст."""
+    # Убираем <script> и <style> с содержимым
+    text = re.sub(r"<(script|style).*?>.*?</\1>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Убираем все остальные теги <...>
+    text = re.sub(r"<[^>]+>", "", text)
+    return text
 
-def generate_table_of_contents(text: str) -> str:
+
+def clean_text(text: str) -> str:
     """
-    Generates a table of contents from the given text.
-    Includes both chapter headings and Markdown headings.
+    Убирает HTML, Markdown-разметку, картинки, ссылки и лишний мусор только с помощью regex.
+    Сохраняет основной текст.
     """
-    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")  # Regex for chapter headings
-    markdown_regex = re.compile(r"^#+\s.*")        # Regex for Markdown headings
+    # Шаг 1: Удаляем HTML-теги (простой regex, не вложенные идеально, но для базовых случаев ок)
+    text = re.sub(r'<[^>]+>', '', text)
+    # Шаг 2: Обрабатываем Markdown
 
-    toc_entries = []
+    # Удаляем Markdown-ссылки [text](url) → text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
 
-    for line in text.splitlines():
-        if chapter_regex.match(line) or markdown_regex.match(line):
-            toc_entries.append(line.strip())
+    # Удаляем изображения ![alt](url) → ''
+    text = re.sub(r'!\[.*?\]\([^)]+\)', '', text)
 
-    return "\n".join(toc_entries)
+    # Удаляем горизонтальные линии (---, ***, ___)
+    text = re.sub(r'^\s*[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
 
+    # Удаляем символы списков (-, *, +, 1.) в начале строк
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
 
-def summarize_for_memory(
-    text: str,
-    max_bytes: int = 2048,
-    max_leading_bytes: int = 512
-) -> str:
+    # Удаляем блок-цитаты (> )
+    text = re.sub(r'^\s*>\s?', '', text, flags=re.MULTILINE)
+
+    # Удаляем форматирование таблиц (| и ---): заменяем | на пробелы, удаляем строки с ---
+    text = re.sub(r'^\s*[-:| ]+\s*$', '', text, flags=re.MULTILINE)  # Удаляем строки вроде |---|
+    text = re.sub(r'\s*\|\s*', ' ', text)  # Заменяем | на пробелы
+
+    # Удаляем чистые URL
+    text = re.sub(r'https?://\S+', '', text)
+
+    # Удаляем оставшиеся символы форматирования (#, *, _, `, >, ~, -, =, |)
+    text = re.sub(r'[#*_`>~=\-|]+', ' ', text)
+
+    # Схлопываем множественные пробелы и переносы строк
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+def extract_prologue(lines, max_leading_bytes=512) -> str:
     """
-    Summarizes text: returns full text if it's small,
-    otherwise returns a summary consisting of:
-      - Leading context (lines before the first heading, up to max_leading_bytes)
-      - Table of contents (headings up to 3 levels deep)
+    Берём строки до первого заголовка, чистим их и сохраняем переносы.
     """
-    text_bytes = len(text.encode("utf-8"))
-
-    if text_bytes <= max_bytes:
-        return text  # return as-is if small enough
-
-    # --- extract leading context before the first heading ---
-    lines = text.splitlines()
     chapter_regex = re.compile(r"^\d+(\.\d+)+.*")
     markdown_regex = re.compile(r"^#+\s.*")
 
@@ -238,22 +255,47 @@ def summarize_for_memory(
     for line in lines:
         if chapter_regex.match(line) or markdown_regex.match(line):
             break
-        if line.strip():
-            leading_lines.append(line.strip())
+        cleaned = clean_text(line)
+        if cleaned:
+            leading_lines.append(cleaned)
 
-    # truncate leading context if too large
-    leading_text = "\n".join(leading_lines)
+    leading_text = " ".join(leading_lines)
     if len(leading_text.encode("utf-8")) > max_leading_bytes:
         leading_text = leading_text.encode("utf-8")[:max_leading_bytes].decode("utf-8", errors="ignore") + "..."
+    return leading_text
 
-    # --- build TOC ---
+
+def generate_table_of_contents(text: str) -> str:
+    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")
+    markdown_regex = re.compile(r"^#+\s.*")
+
+    toc_entries = []
+    for line in text.splitlines():
+        if chapter_regex.match(line) or markdown_regex.match(line):
+            cleaned = clean_text(line)
+            if cleaned:
+                toc_entries.append(cleaned)
+
+    return "\n".join(toc_entries)
+
+
+def summarize_for_memory(text: str, max_bytes: int = 2048, max_leading_bytes: int = 512) -> str:
+
+    text = strip_html(text)
+    text_bytes = len(text.encode("utf-8"))
+
+    if text_bytes <= max_bytes:
+        return text  
+
+    lines = text.splitlines()
+    leading_text = extract_prologue(lines, max_leading_bytes)
     toc = generate_table_of_contents(text)
 
-    # --- final summary ---
     if leading_text:
-        return f"{leading_text}\n\nTable of Contents:\n{toc}"
+        return f"{leading_text}\n\n{toc}"
     else:
         return toc
+
 
 
 

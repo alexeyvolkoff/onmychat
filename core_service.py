@@ -808,7 +808,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         cmd = [
             "pandoc",
             "-f", "html",
-            "-t", "markdown",
+            "-t", "markdown_strict",
             "--request-header", "User-Agent:Mozilla/5.0",
             url_or_path
         ]
