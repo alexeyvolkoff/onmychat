@@ -77,6 +77,22 @@ def get_ctx(omd_key: str):
 
 # ==== Эндпоинты ====
 
+@app.get("/assistant")
+async def assistant_info(omd_key: str):
+    ctx = get_ctx(omd_key)
+    try:
+        avatar = core_service.get_assistant_avatar(ctx.user_id)
+        assistant = {
+            "avatar": avatar,
+            "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
+            "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
+        }
+        return assistant
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):
