@@ -226,7 +226,8 @@ def get_user_avatar_path(user_id: str) -> str:
 
 def get_assistant_avatar(user_id: str) -> str:
     avatar_path = get_user_avatar_path(user_id)
-    return resize_and_base64encode(avatar_path)
+    full_avatar_path = f"{COMFY_INPUT_DIR}/{avatar_path}"
+    return resize_and_base64encode(full_avatar_path)
 
 
 async def poll_for_result(prompt_id:  str,  timeout: int = 60):

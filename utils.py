@@ -117,7 +117,7 @@ def resize_and_base64encode(image_path: str) -> str:
         img.save(buf, format=fmt)
         return base64.b64encode(buf.getvalue()).decode('utf-8')
     except Exception as e:
-        logging.error(f"❌ Ошибка при обработке изображения: {e}")
+        logging.error(f"❌ Ошибка при обработке изображения: {e} {image_path}")
         return ""
 
 
