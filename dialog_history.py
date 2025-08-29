@@ -14,7 +14,7 @@ HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используетс�
 def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
-def load_history(ctx: UserContext, chat: str = "default", limit: int | None = None) -> list:
+def load_history(ctx: UserContext, chat: str = "default") -> list:
     try:
         if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/chats/{chat}.json"
@@ -23,7 +23,7 @@ def load_history(ctx: UserContext, chat: str = "default", limit: int | None = No
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
                 history = json.loads(resp.content.decode("utf-8"))
-                return history[-limit:] if limit else history
+                return  history
             return []
         else:
             # локальный fallback
@@ -32,7 +32,7 @@ def load_history(ctx: UserContext, chat: str = "default", limit: int | None = No
                 return []
             with open(path, "r", encoding="utf-8") as f:
                 history = json.load(f)
-                return history[-limit:] if limit else history
+                return  history
     except Exception as e:
         print(f"[history] Load error: {ctx.user_id} {e}")
         return []
@@ -40,16 +40,15 @@ def load_history(ctx: UserContext, chat: str = "default", limit: int | None = No
 
 def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
-        trimmed = history[-HISTORY_LIMIT:]
         if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             dest = f"{ctx.settings['storage']}/{ctx.user_id}/chats"
-            upload_data_to_storage(ctx.settings['omd_key'], dest, f"{chat}.json", trimmed, "application/json")
+            upload_data_to_storage(ctx.settings['omd_key'], dest, f"{chat}.json", history, "application/json")
         else:
             # локальный fallback
             path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(trimmed, f, ensure_ascii=False, indent=2)
+                json.dump(history, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[history] Save error: {ctx.user_id} {e}")
 

@@ -10,6 +10,8 @@ from config import SETTINGS
 # Дефольные настройки пользователя
 DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
+DEFAULT_ASSISTANT_NAME = SETTINGS["DEFAULT_ASSISTANT_NAME"]
+DEFAULT_ASSISTANT_TITLE = SETTINGS["DEFAULT_ASSISTANT_TITLE"]
 
 # Файл для сохранения связей
 BINDINGS_FILE = f"{USER_DATA_DIR}/bindings.json"
@@ -51,6 +53,8 @@ def load_user_settings(user_id) :
             "system_prompt": get_default_system_prompt(),
             "omd_key": "",
             "storage": "",
+            "assistant_name": DEFAULT_ASSISTANT_NAME,
+            "assistant_title": DEFAULT_ASSISTANT_TITLE,
             "kb_id": DEFAULT_KB_ID
         }
 

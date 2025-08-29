@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage, summarize_for_memory
+from utils import clean_response, upload_to_storage, summarize_for_memory, resize_and_base64encode
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -22,7 +22,6 @@ from memory_index import (
     add_memory_card,
     fetch_document_text,
     chunk_and_vectorize_to_file,
-    make_file_name_from_document_id,
     search_memories
 )
 
@@ -59,7 +58,6 @@ BASE_SYSTEM_PROMPT = (
     "• 'Well, that didn’t go as planned. Let me try again!'\n"
     "• '¯\\_(ツ)_/¯ I might've goofed a bit.'\n"
     "In Russian, you can say something like:\n"
-    "• 'Ой, всё. Опять глюканула. Попробуем снова?'\n"
     "• 'Ой, всё. Я потерялась. Перепроложить?'\n"
     "• 'Мой внутренний гений дал сбой. Попробуем ещё раз?'\n"
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
@@ -224,6 +222,12 @@ def get_user_avatar_path(user_id: str) -> str:
         return user_avatar_rel
     else:
         return f"{AVATAR_DIR}/default.png"
+    
+
+def get_assistant_avatar(user_id: str) -> str:
+    avatar_path = get_user_avatar_path(user_id)
+    return resize_and_base64encode(avatar_path)
+
 
 async def poll_for_result(prompt_id:  str,  timeout: int = 60):
     url = f"{COMFY_API_URL}/history/{prompt_id}"
@@ -535,7 +539,7 @@ async def perform_prompt(ctx: UserContext,
         system_prompt += "\n\n*Notice:*\n No NSFW content from this point!"
 
     # === ОСНОВНОЙ ЗАПРОС ===
-    messages = [{"role": "system", "content": system_prompt}] + history
+    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
     # Добавляем новый запрос
     user_message = {
@@ -631,7 +635,6 @@ async def perform_prompt(ctx: UserContext,
 # === Генерация картинок ===
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
-    user_id = ctx.user_id
     system_prompt =  BASE_SYSTEM_PROMPT + "\n" + instruction + "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
@@ -640,7 +643,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     else:
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
-    history = load_history(ctx, chat, 20)
+    history = load_history(ctx, chat)
     # Добавляем новый запрос
     history.append({
         "role": "user",
@@ -651,7 +654,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(history)
+    messages.extend(history[-HISTORY_LIMIT:])
 
     request_payload = {
         "messages": messages,
@@ -747,7 +750,6 @@ async def generate_general_image(ctx: UserContext, prompt):
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
-    user_id = ctx.user_id
 
     system_prompt = BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
     nsfw_enabled = ctx.settings.get("nsfw", False)
@@ -758,7 +760,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
         system_prompt += "\n\n*Notice:*\nNo NSFW content from this point!"
 
 
-    history = load_history(ctx, chat, 20)
+    history = load_history(ctx, chat)
 
     # Добавляем новый запрос с изображением
     history.append({
@@ -770,7 +772,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(history)
+    messages.extend(history[-HISTORY_LIMIT:])
 
     request_payload = {
         "messages": messages,
