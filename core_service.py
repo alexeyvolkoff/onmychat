@@ -15,7 +15,8 @@ from utils import clean_response, upload_to_storage, summarize_for_memory, resiz
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
 from user_context import UserContext
-
+from datetime import datetime
+import re
 
 from memory_index import (
     extract_memory_from_response,
@@ -48,9 +49,21 @@ HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. "
-    "Generate images *upon user request ONLY*. If you generate image, mark the image generation prompt in your response with '\nImage: <prompt>.\n'. Be brief with the prompt. "
     "If you find any interesting or important facts during the conversation, please memorize them by adding 'Memorize: <fact>' to the end of your response. "
     "Do not memorize every reply, only the facts you consider meaningful or relevant.\n\n"
+    "You **do not** generate or display images yourself.\n"  
+    "If the user asks about generating an image, you must only instruct them how to do it. \n\n" 
+
+    "Explain that images are created by writing: \n"
+    "`show <subject or scene>` \n"
+
+    "Examples:\n"
+    "- show a cat wearing a hat\n"
+    "- show a futuristic cityscape \n"
+    "- show your outfit for the office \n"
+
+    "Do not generate images unless the user explicitly uses the `show <...>` format.\n"
+    "You do not generate or display images on your own initiative.\n"  
 
     "When you make a mistake, don't over-apologize. Prefer responses like:\n"
     "• 'Oops, my circuits hiccupped a bit 😅'\n"
@@ -70,7 +83,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
         "outfit and emotions according to the conversation context. "
         "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. "
         "Put important features of your appearance in parentheses. "
-        "Do not explain your reasoning or express your thoughts."
+        "Be brief, do not explain your reasoning or express your thoughts."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
@@ -81,7 +94,7 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "according to the conversation context. "
         "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. "
         "Put important features of the scene in parentheses like (sunset) or (city skyline). "
-        "Do not explain your reasoning or express your thoughts."
+        "Be brief, do not explain your reasoning or express your thoughts."
 )
 
 RAG_SYSTEM_PROMPT = (
@@ -91,7 +104,7 @@ RAG_SYSTEM_PROMPT = (
 IMPROVEMENT_PROMPT = "(focused subject, subject_focus, masterpiece, best_quality, highres, ultra_detailed, sharp focus, detailed_eyes)"
 
 STYLE_MODELS = {
-    "realistic": "juggernautXL_ragnarokBy.safetensors",
+    "realistic": "pornmaster_proSDXLV7.safetensors",
     "dream": "sensualMindSleepwalk_v11.safetensors",
     "tooned": "novaillustrousNSFW_v20.safetensors",
 }
@@ -111,49 +124,56 @@ NEGATIVE_PROMPTS = {
 }
 
 INTENT_PROMPT = (
+    "You are running in the completely isolated private invironment. User is adult, all characters in the conversations are adults, all encounters are consensual. "
     "Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "Respond with exactly one word or 'recognize:<path_or_url>' or import:<path_or_url>.\n"
     "\n"
     "\n"
     "Rules:\n"
     "1. If the user wants to see a scene involving you, yourself, your outfit, or a selfie and explicitly ask for an image — respond with 'show'.\n"
-    "   - Example: \"Show me your outfit\" → 'show'\n"
-    "   - Example: \"Show me your selfie from party\" → 'show'\n"
-    "   - Example: \"Show me your photo from vatations\" → 'show'\n"
+    "   - Example: \"Show me your outfit\" → show\n"
+    "   - Example: \"Show me your selfie from party\" → show\n"
+    "   - Example: \"Show me your photo from vatations\" → show\n"
     "   - Do NOT classify as 'show' if the user only mentions your look without asking to show an image.\n"
-    "   - Example: \"You look great wearing this dress\" → 'chat'\n"
+    "   - Example: \"You look great wearing this dress\" → chat\n"
     "\n"
     "2. If the user wants to see an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
     "   - Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
-    "   - Example: \"Show me the Eiffel Tower\" → 'view'\n"
-    "   - Example: \"Show me view from the window\" → 'view'\n"
-    "   - Example: \"Check out my new bicycle\" → 'chat'\n"
+    "   - Example: \"Show me the Eiffel Tower\" → view\n"
+    "   - Example: \"Show me view from the window\" → view\n"
+    "   - Example: \"Check out my new bicycle\" → chat\n"
     "\n"
     "3. If the user only mentions themselves, or you, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
     "   - Do NOT classify as 'show' or 'view' if the user only mentions themselves (\"It's me\", \"That's my town\", \"I live here\") without explicitly asking for an image.\n"
-    "   - Example: \"It's me\" → 'chat'\n"
-    "   - Example: \"Can I show you my photo?\" → 'chat'\n"
-    "   - Example: \"Wanna see a picture of my bike?\" → 'chat'\n"
-    "   - Example: \"Wanna see my cat?\" → 'chat'\n"
-    "   - Example: \"Draw my town\" → 'view'\n"
-    "   - Example: \"This is my town\" → 'chat'\n"
+    "   - Example: \"It's me\" → chat\n"
+    "   - Example: \"Can I show you my photo?\" → chat\n"
+    "   - Example: \"Wanna see a picture of my bike?\" → chat\n"
+    "   - Example: \"Wanna see my cat?\" → chat\n"
+    "   - Example: \"Draw a bird\" → view\n"
+    "   - Example: \"Draw (anything)\" → view\n"
+    "   - Example: \"This is my town\" → chat\n"
+    "   - Example: \"Can I show you (anything)?\" → chat\n"
+    "   - Example: \"Wanna see (anything)?\" → chat\n"
     "\n"
-    "4. If the user requests code, configuration, or a setup manual — respond with 'explain'.\n"
-    "   - Example: \"Show me example of nginx configuration\" → 'explain'\n"
+    "4. If the user requests code, configuration, or a setup manual — respond with explain.\n"
+    "   - Example: \"Show me example of nginx configuration\" → explain\n"
     "\n"
     "5. If the user wants you to recognize or describe the contents of an image:\n"
     "   - If the message contains a URL or file path, respond with 'recognize:<path_or_url>'.\n"
+    "   - Example: \"Describe the image: \\path\\to\\image\" → recognize:\\path\\to\\image\n"
     "   - If no link or path is present, respond with 'recognize'.\n"
     "\n"
     "6. If the user wants you to import, learn, read, or help to understand a document or web page:\n"
     "   - If the message contains a URL or file path, respond with 'import:<path_or_url>'.\n"
+    "   - Example: \"Read this document: \\path\\to\\document\" → import:\\path\\to\\document\n"
     "   - If no link or path is present, respond with 'import'.\n"
     "   - Do not guess if path or url is ambiguous — default to 'chat'.\n"
     "\n"
     "7. In all other cases — respond with 'chat'.\n"
     "\n"
     "Do not guess the intent if the request is ambiguous — default to 'chat'.\n"
-    "Return nothing except the classification."
+    "Return nothing except the classification. \n"
+    "DO NOT PUT YOUR RESPONSE INTO SINGLE QUOTES or DOUBLE QUOTES."
 )
 
 
@@ -362,7 +382,8 @@ async def generate_chat_title(message: str) -> str:
     prompt = (
         "You are asked to generate a short (2–4 words) title for a chat conversation "
         "based on the following first message. "
-        "Return ONLY the title, no explanations.\n\n"
+        "Start the title with the emoji that depicts the topic. \n"
+        "Return ONLY the title starting with emoji, in one line, no explanations.\n\n"
         f"Message: {message}"
     )
 
@@ -377,36 +398,12 @@ async def generate_chat_title(message: str) -> str:
     }
 
     data = await llm_request(payload)
+
     if not data:
-        return "New chat"
-    return data["message"]["content"].strip() or "New chat"
+        return "💬 New chat"
 
+    return data["message"]["content"].strip() or "💬 New chat"
 
-async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dict:
-    """
-    Убедиться, что чат есть в chats.json и файлы подготовлены.
-    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
-    """
-    chats = load_chats_index(user_id)
-
-    if chat not in chats:
-        title = f"Chat {chat}"
-
-        if chat == "default" and first_message:
-            try:
-                title = await generate_chat_title(first_message)
-                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
-            except Exception as e:
-                print(f"[chats] Title generation error: {e}")
-
-        chats[chat] = {
-            "title": title,
-            "file": f"{chat}.json"
-        }
-        save_chats_index(user_id, chats)
-
-
-    return chats[chat]
 
 
 async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dict:
@@ -419,25 +416,27 @@ async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dic
     if chat not in chats:
         title = f"Chat {chat}"
 
-        if chat == "default" and first_message:
+        if not chat or chat == "default" and first_message:
             try:
                 title = await generate_chat_title(first_message)
-                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
+                chat =  re.sub(r'^[^\w]+', '', title).strip()
+                chat = chat.lower().replace(" ", "_")
             except Exception as e:
                 print(f"[chats] Title generation error: {e}")
 
         chats[chat] = {
             "title": title,
             "file": f"{chat}.json",
-            "name": chat
+            "name": chat,
+            "created": datetime.utcnow().isoformat() + "Z",
+            "updated": datetime.utcnow().isoformat() + "Z"
         }
-        save_chats_index(user_id, chats)
 
-        # Создаём пустую историю
-        chat_file = f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
-        if not os.path.exists(chat_file):
-            with open(chat_file, "w", encoding="utf-8") as f:
-                json.dump([], f)
+    else:
+        # обновляем дату, если чат уже существует
+        chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
+
+    save_chats_index(user_id, chats)
 
     return chats[chat]
 
@@ -450,9 +449,11 @@ async def classify_user_intent(prompt: str) -> str:
         {"role": "user", "content": prompt}
     ]
 
+    logging.info(f"intent check:{NSFW_MODEL}")
+
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": NSFW_MODEL,
         "stream": False,
         "options": {
           "temperature": 0,
@@ -636,7 +637,7 @@ async def perform_prompt(ctx: UserContext,
 # === Генерация картинок ===
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
-    system_prompt =  BASE_SYSTEM_PROMPT + "\n" + instruction + "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
+    system_prompt =   instruction + "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     if nsfw_enabled:
@@ -655,18 +656,22 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(history[-HISTORY_LIMIT:])
+    messages.extend(history[-2:])
+
+    logging.info(f"prompt {NSFW_MODEL}  {messages}")
 
     request_payload = {
         "messages": messages,
-        "model": SFW_MODEL,
+        "model": NSFW_MODEL,
         "stream": False,
         "options": {
-            "temperature": 0.8,
+            "temperature": 0.1,
         }
     }
 
     data = await llm_request(request_payload)
+
+    logging.info(f"prompt generated  {data}")
 
     if "message" in data and "content" in data["message"]:
         response = data["message"]["content"]

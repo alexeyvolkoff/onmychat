@@ -112,8 +112,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Intent: {intent}")
     chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
-    if intent == "show":
+    logging.info(f"Generating characted prompt {intent} ")
+ 
+    if intent == "show" or intent == "'show'":
+        logging.info(f"Generating characted prompt ")
         prompt = await core.generate_character_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
         # Отправляем фото
@@ -129,8 +131,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Объясняем картинку
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             recognition_prompt = (
-               "scene: '{}' - describe the scene in first person and express how you feel in it" 
-            ).format(text)
+               "describe the scene in first person and express how you feel in it" 
+            )
             response = await core.perform_prompt(
                 ctx,
                 instruction=(

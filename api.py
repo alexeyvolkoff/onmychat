@@ -8,6 +8,7 @@ import user_context
 import dialog_history
 import memory_index
 import logging
+import json
 
 logging.basicConfig(level=logging.INFO)
 
@@ -201,7 +202,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             stream=True
         )
         async for chunk in gen:
-            yield f"data: {chunk}\n\n"
+            yield f"data: {json.dumps(chunk)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

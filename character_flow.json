@@ -133,7 +133,7 @@
   },
   "19": {
     "inputs": {
-      "weight": 0.8,
+      "weight": 1.2,
       "weight_type": "ease in",
       "combine_embeds": "average",
       "start_at": 0,
