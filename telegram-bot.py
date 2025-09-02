@@ -123,7 +123,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         logging.info(f"Generating image for prompt {prompt} ")
         # Отправляем фото
         path = await core.generate_character_image(ctx, prompt)
-        b64_image = resize_and_base64encode(path)
         with open(path, "rb") as f:
             # Отправляем фото
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
@@ -134,15 +133,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
             # Объясняем картинку
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             recognition_prompt = (
-               "Continue conversation according the scene" 
-            )
+               "Continue conversation describing how you feel in this scene: {}" 
+            ).format(prompt)
             response = await core.perform_prompt(
                 ctx,
                 instruction=(
                     "Recognize and describe the provided image or scene description."
                 ),
                 message=recognition_prompt,
-                #b64_image=b64_image,
                 chat="telegram", 
                 skip_history=True
             )
@@ -155,9 +153,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         prompt = await core.generate_general_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
         path = await core.generate_general_image(ctx, prompt)
-        b64_image = resize_and_base64encode(path)
+        # Отправляем фото
         with open(path, "rb") as f:
-            # Отправляем фото
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
             caption = escape_markdown_v2(prompt)
             if len(caption) > MAX_CAPTION_LEN:
@@ -166,8 +163,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             # Объясняем картинку
             recognition_prompt = (
-               "Continue conversation according the view or the scenary"
-            )
+               "Continue conversation according the view or the scenary: {}"
+            ).format(prompt)
             response = await core.perform_prompt(
                 ctx,
                 instruction=(

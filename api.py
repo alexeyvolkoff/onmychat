@@ -189,22 +189,50 @@ async def chat_endpoint(data: ChatInput):
 @app.get("/chat/stream")
 async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
     ctx = get_ctx(omd_key)
+    root = "/home/alexey/"
 
     async def event_generator():
-        instruction=(
-            "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
-        )
+        if prompt.startswith("/show"):
+            # 1️⃣ статус
+            yield f"data: {json.dumps({'status': 'generating image'})}\n\n"
+
+            # 2️⃣ картинка
+            img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, "telegram")
+            logging.info(f"Generating image for prompt {prompt}")
+
+            path = await core_service.generate_character_image(ctx, img_prompt)
+            rel_path = path.replace(root, "/root/")
+            yield f"data: {json.dumps({'img_prompt': img_prompt, 'img_path': rel_path})}\n\n"
+
+            #Set specific instructions
+            skip_history = True
+            request = (
+                "Continue conversation describing how you feel in this scene: {}"
+            ).format(img_prompt)
+            instruction = (
+                "Recognize and describe the provided image or scene description."
+            )
+
+        # 3️⃣ основной стрим чата
+        else:
+            skip_history = False
+            request = prompt
+            instruction = (
+                "Respond to user. If user question relates to *Known facts*, be extremely accurate, do not guess."
+            )
         gen = await core_service.perform_prompt(
             ctx,
             instruction=instruction,
-            message=prompt,
+            message=request,
             chat=chat,
-            stream=True
+            stream=True,
+            skip_history=skip_history
         )
         async for chunk in gen:
             yield f"data: {json.dumps(chunk)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 
 
