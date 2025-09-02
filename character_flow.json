@@ -64,7 +64,7 @@
   },
   "7": {
     "inputs": {
-      "text": "((score_6, score_5, score_4, score_7)):1.5),asian,chinese,(watermark),((poorly lit model)), (bad teeth, bad mouth),(source_anime,source_cartoon,source pony,source furry,sourec_painting), missing fingers,  ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, censored, furry, , chibi, 3d,(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome,grayscale, extra fingers, extra hands, bad hands, extra eyebrows,(poor low details),ahegao, line art, low contrast,oversaturated, undersaturated, overexposed, underexposed, ,bad photo, bad photography,bad picture,face asymmetry, eyes asymmetry,negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, muscular, old, two phones,",
+      "text": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth),(source_anime,source_cartoon,source pony,source furry,sourec_painting), missing fingers,  ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, censored, furry, , chibi, 3d,(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome,grayscale, extra fingers, extra hands, bad hands, extra eyebrows,(poor low details),ahegao, line art, low contrast,oversaturated, undersaturated, overexposed, underexposed, ,bad photo, bad photography,bad picture,face asymmetry, eyes asymmetry,negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, muscular, old, two phones,",
       "clip": [
         "4",
         1
@@ -133,7 +133,7 @@
   },
   "19": {
     "inputs": {
-      "weight": 1.2,
+      "weight": 0.8,
       "weight_type": "ease in",
       "combine_embeds": "average",
       "start_at": 0,

@@ -108,16 +108,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text and update.message.photo:
         intent = "recognize"
     else:    
-        intent = await core.classify_user_intent(text)
+        intent = await core.classify_user_intent(ctx, text)
     logging.info(f"Intent: {intent}")
     chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    logging.info(f"Generating characted prompt {intent} ")
  
     if intent == "show" or intent == "'show'":
-        logging.info(f"Generating characted prompt ")
         prompt = await core.generate_character_image_prompt(ctx, text, "telegram")
+        logging.info(f"Generating character prompt {intent} ")
         await update.message.chat.send_action(action=ChatAction.TYPING)
+        logging.info(f"Generating image for prompt {prompt} ")
         # Отправляем фото
         path = await core.generate_character_image(ctx, prompt)
         b64_image = resize_and_base64encode(path)
@@ -131,17 +131,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Объясняем картинку
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             recognition_prompt = (
-               "describe the scene in first person and express how you feel in it" 
+               "Continue conversation according the scene" 
             )
             response = await core.perform_prompt(
                 ctx,
                 instruction=(
-                    "Recognize and describe the provided images. "
-                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+                    "Recognize and describe the provided image or scene description."
                 ),
                 message=recognition_prompt,
-                b64_image=b64_image,
-                chat="telegram"
+                #b64_image=b64_image,
+                chat="telegram", 
+                skip_history=True
             )
             explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)
@@ -163,17 +163,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             # Объясняем картинку
             recognition_prompt = (
-               "view: '{}' - summarize briefly, what do you see on this photo and how do you feel about it"
-            ).format(text)
+               "Continue conversation according the view or the scenary"
+            )
             response = await core.perform_prompt(
                 ctx,
                 instruction=(
-                    "Recognize and describe the provided images. "
-                    "If an image is provided, follow the user's request precisely, without adding unrelated details or commentary."
+                    "Describe the provided image or scenary."
                 ),
                 message=recognition_prompt,
-                b64_image=b64_image,
-                chat="telegram"
+                #b64_image=b64_image,
+                chat="telegram",
+                skip_history=False
             )
             explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)
