@@ -895,9 +895,12 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
             "--request-header", "User-Agent:Mozilla/5.0",
             url_or_path
         ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        raw_text = result.stdout
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            raw_text = result.stdout
+        except Exception as e:
+            logging.error(f"[import] dailed: {e}")    
+            return None 
 
     # Векторизация и сохранение чанков
     chunk_and_vectorize_to_file(

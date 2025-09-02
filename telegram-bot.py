@@ -52,7 +52,10 @@ async def import_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
     collection = context.args[1].strip().lower() if len(context.args) > 1 else "user"
     card = await core.import_doc(ctx, context.args[0], collection)
-    await update.message.reply_text(f"✅ Document imported: `{card["id"]}`", parse_mode="Markdown")
+    if card:
+        await update.message.reply_text(f"✅ Document imported: `{card["id"]}`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❗Failed to import")    
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -101,19 +104,19 @@ async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Upd
 
 # ==== Core Handlers ====
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, command = None):
     ctx = get_context(update.effective_user.id)
     text = update.message.text or ""
     intent = "chat"
     if not text and update.message.photo:
         intent = "recognize"
     else:    
-        intent = await core.classify_user_intent(ctx, text)
+        intent = command if command else await core.classify_user_intent(ctx, text)
     logging.info(f"Intent: {intent}")
     chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
  
-    if intent == "show" or intent == "'show'":
+    if intent == "show":
         prompt = await core.generate_character_image_prompt(ctx, text, "telegram")
         logging.info(f"Generating character prompt {intent} ")
         await update.message.chat.send_action(action=ChatAction.TYPING)
@@ -226,14 +229,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ":" in intent:
             doc_source = intent.split(":", 1)[1]
         if doc_source:
-            card = await core.import_doc(ctx, doc_source)    
-        if card.get("text"): 
-            logging.info(f"*New knowledge:*\n{card.get("text")}")
+            card = await core.import_doc(ctx, doc_source)   
+        new_knowledge = ""     
+        if card : 
+            new_knowledge = card.get("text")
+            logging.info(f"*New knowledge:*\n{new_knowledge}")
 
         response = await core.perform_prompt(
             ctx,
             instruction=(
-                f"Summirize the *New knowledge* ONLY, if present.\n\n*New knowledge:*\n{card.get("text")}"
+                f"Summirize the *New knowledge* ONLY, if present.\n\n*New knowledge:*\n{new_knowledge}"
             ),
             message=text,
             chat="telegram"
@@ -258,28 +263,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 
-async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def explain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
     args = context.args
     if not args:
-        await update.message.reply_text("❗ Usage: /ask <your questing>")
+        await update.message.reply_text("❗ Usage: /explain <your question>")
         return
+    await handle_text(update, context, "explain")
 
-    query = " ".join(args) if args else update.message.text.strip()
-    chat_id = update.effective_chat.id
-    await update.message.chat.send_action(chat_id=chat_id, action=ChatAction.TYPING)
+async def show_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = get_context(update.effective_user.id)
+    args = context.args
+    if not args:
+        await update.message.reply_text("❗ Usage: /show <your request>")
+        return
+    await handle_text(update, context, "show")
 
-    response = await core.perform_prompt(
-        ctx,
-        "Use the *Known facts* provided above. If no info, say you do not know.",
-        query, is_rag=True, chat="telegram"
-    )
-    result = response.get("content") or "✅ done"  
-    links = response.get("sources")
-    if links:
-        result += "\n\n📎 *Sources:*\n" + links
+async def show_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ctx = get_context(update.effective_user.id)
+    args = context.args
+    if not args:
+        await update.message.reply_text("❗ Usage: /image <your request>")
+        return
+    await handle_text(update, context, "view")
 
-    await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
@@ -379,7 +386,9 @@ def main():
     app.add_handler(CommandHandler("system", set_system_prompt))
     app.add_handler(CommandHandler("import", import_doc))
     app.add_handler(CommandHandler("remember", remember))
-    app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("explain", explain))
+    app.add_handler(CommandHandler("show", show_character))
+    app.add_handler(CommandHandler("image", show_image))
     app.add_handler(CommandHandler("recognize", handle_text))
     app.add_handler(CommandHandler("nsfw", nsfw_command))
     app.add_handler(CommandHandler("style", set_style))
