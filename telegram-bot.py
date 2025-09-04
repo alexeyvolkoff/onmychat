@@ -122,7 +122,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         await update.message.chat.send_action(action=ChatAction.TYPING)
         logging.info(f"Generating image for prompt {prompt} ")
         # Отправляем фото
-        path = await core.generate_character_image(ctx, prompt)
+        storage_path = await core.generate_character_image(ctx, prompt, "telegram")
+        path = f"{core.STORAGE_ROOT}/{storage_path}"
         with open(path, "rb") as f:
             # Отправляем фото
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
@@ -152,7 +153,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
     elif intent == "view":
         prompt = await core.generate_general_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
-        path = await core.generate_general_image(ctx, prompt)
+        storage_path = await core.generate_general_image(ctx, prompt, "telegram")
+        path = f"{core.STORAGE_ROOT}/{storage_path}"
         # Отправляем фото
         with open(path, "rb") as f:
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)

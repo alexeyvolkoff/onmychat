@@ -42,6 +42,7 @@ WORKFLOW_CHARACTER_PATH = SETTINGS["WORKFLOW_CHARACTER_PATH"]
 COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
+STORAGE_ROOT = SETTINGS["STORAGE_ROOT"]
 
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 
@@ -673,6 +674,8 @@ async def perform_prompt(ctx: UserContext,
             msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
             history.append(msg_to_save)
         history.append({"role": "assistant", "content": llm_response})
+        if links:  # добавляем ссылки в историю
+            history.append({"role": "assistant", "sources": links})
 
         chat_info = await ensure_chat(user_id, chat, message)
         chat_name = chat_info.get("name", chat)
@@ -743,8 +746,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     data = await llm_request(request_payload)
 
-    logging.info(f"prompt generated  {data}")
-
     if "message" in data and "content" in data["message"]:
         response = data["message"]["content"]
     else:
@@ -752,7 +753,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         response = data.get("content") or str(data)
 
     history.append({"role": "user", "content": prompt })
-    history.append({"role": "assistant", "content": response}) 
+    #history.append({"role": "assistant", "content": response}) 
     save_history(ctx, history, chat)       
 
     return response.strip()
@@ -776,7 +777,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_character_image(ctx: UserContext, prompt) -> str:
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -808,11 +809,15 @@ async def generate_character_image(ctx: UserContext, prompt) -> str:
     model = STYLE_MODELS[style]
     workflow_json["4"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
-
-    return await generate_image_workflow(workflow_json)
+    img_path = await generate_image_workflow(workflow_json)
+    img_path = img_path.replace(STORAGE_ROOT, "")
+    history = load_history(ctx, chat)
+    history.append({"role": "assistant", "image": {"prompt": prompt, "path": img_path}})
+    save_history(ctx, history, chat)
+    return img_path
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx: UserContext, prompt):
+async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'):
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -830,7 +835,12 @@ async def generate_general_image(ctx: UserContext, prompt):
     workflow_json["4"]["inputs"]["ckpt_name"] = model
 
     #logging.info(f"json: {workflow_json}")
-    return await generate_image_workflow(workflow_json)
+    img_path = await generate_image_workflow(workflow_json)
+    img_path = img_path.replace(STORAGE_ROOT, "")
+    history = load_history(ctx, chat)
+    history.append({"role": "assistant", "image": {"prompt": prompt, "path": img_path}})
+    save_history(ctx, history, chat)
+    return img_path
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
@@ -846,17 +856,16 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
     history = load_history(ctx, chat)
 
+    # Добавляем system-инструкцию
+    messages = [{"role": "system", "content": system_prompt}]
+    # Добавляем историю
+    messages.extend(history[-HISTORY_LIMIT:])
     # Добавляем новый запрос с изображением
-    history.append({
+    messages.append({
         "role": "user",
         "content": prompt,
         "images": [img]
     })
-    # Добавляем system-инструкцию
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Добавляем историю
-    messages.extend(history[-HISTORY_LIMIT:])
 
     request_payload = {
         "messages": messages,
@@ -874,6 +883,9 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
     else:
         # на случай, если ответ в другом формате
         response = data.get("content") or str(data)
+
+    history.append({"role": "assistant", "content": response})
+    save_history(ctx, history, chat)
 
     return response.lower().strip()
 

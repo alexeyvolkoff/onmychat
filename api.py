@@ -197,10 +197,10 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             yield f"data: {json.dumps({'status': 'generating image'})}\n\n"
 
             # 2️⃣ картинка
-            img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, "telegram")
+            img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
-            path = await core_service.generate_character_image(ctx, img_prompt)
+            path = await core_service.generate_character_image(ctx, img_prompt, chat)
             rel_path = path.replace(root, "/root/")
             yield f"data: {json.dumps({'img_prompt': img_prompt, 'img_path': rel_path})}\n\n"
 
