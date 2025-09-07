@@ -2,10 +2,12 @@ import base64
 from PIL import Image
 import re
 import io
+import os
 import logging
 import requests
 import mimetypes
 import json
+import aiohttp
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -119,6 +121,32 @@ def resize_and_base64encode(image_path: str) -> str:
     except Exception as e:
         logging.error(f"❌ Ошибка при обработке изображения: {e} {image_path}")
         return ""
+
+
+async def get_image_from_source(ctx, img_source: str):
+    b64_image = None
+    omd_key = ctx.settings.get("omd_key")
+    if img_source:
+        if re.match(r"^https?://", img_source):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(img_source) as resp:
+                    data = await resp.read()
+                    b64_image = base64.b64encode(data).decode("utf-8")
+        elif os.path.exists(img_source):
+            b64_image = resize_and_base64encode(img_source)
+        elif img_source.startswith("/") and omd_key:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://onmydisk.net{img_source}?resize=true&width=512&height=512",
+                    headers={"Authorization": f"token:{omd_key}"}
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        b64_image = base64.b64encode(data).decode("utf-8")
+                    else:
+                        logging.error(f"OMD access failed: {resp.status}")
+                        return None
+    return b64_image                
 
 
 ### upload to OMD ###

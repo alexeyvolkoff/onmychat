@@ -1,9 +1,5 @@
 import logging
 import os
-import re
-import base64
-import aiohttp
-from io import BytesIO
 from telegram import Update
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
@@ -12,7 +8,7 @@ from telegram.ext import (
 from config import SETTINGS
 from config import USER_DATA_DIR
 import core_service as core
-from utils import resize_and_base64encode, format_response_for_markdown_v2, escape_markdown_v2
+from utils import resize_and_base64encode, get_image_from_source, format_response_for_markdown_v2, escape_markdown_v2
 from user_context import (load_bindings, get_context, save_user_settings)
 
 TOKEN = SETTINGS["TELEGRAM_BOT_TOKEN"]
@@ -67,8 +63,9 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==== Image recognition helper ====
 
-async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Update):
+async def get_image_from_request(ctx, img_source: str,  update: Update):
     photos = update.message.photo
+    omd_key = ctx.settings.get("omd_key")
     b64_image = None
 
     if photos:
@@ -79,25 +76,7 @@ async def get_image_from_request(ctx, img_source: str, omd_key: str, update: Upd
         await photo_file.download_to_drive(file_path)
         b64_image = resize_and_base64encode(file_path)
     elif img_source:
-        if re.match(r"^https?://", img_source):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(img_source) as resp:
-                    data = await resp.read()
-                    b64_image = base64.b64encode(data).decode("utf-8")
-        elif os.path.exists(img_source):
-            b64_image = resize_and_base64encode(img_source)
-        elif img_source.startswith("/") and omd_key:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"https://onmydisk.net{img_source}?resize=true&width=512&height=512",
-                    headers={"Authorization": f"token:{omd_key}"}
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        b64_image = base64.b64encode(data).decode("utf-8")
-                    else:
-                        logging.error(f"OMD access failed: {resp.status}")
-                        return None
+        b64_image = await get_image_from_source(ctc, img_source)
     return b64_image                
 
     
@@ -204,7 +183,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         if ":" in intent:
             img_source = intent.split(":", 1)[1]
         
-        b64_image = await get_image_from_request(ctx, img_source, ctx.settings.get("omd_key"), update)    
+        b64_image = await get_image_from_request(ctx, img_source, update)    
 
         recognition_prompt = (
             "Recognize the image according to context."
@@ -222,7 +201,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         result = format_response_for_markdown_v2(explained)
         await update.message.reply_text(result, parse_mode="MarkdownV2")    
 
-    elif intent.startswith("import") or update.message.photo:
+    elif intent.startswith("import"):
         doc_source = None
         card = {}
         if ":" in intent:
@@ -256,7 +235,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         )
         response = await core.perform_prompt(ctx, instruction=instruction, message=text, is_rag=False, chat="telegram")
         result = response.get("content") or "✅ done"  
-        links = response.get("sources")
+        links = []
+        doc_ids = response.get("sources")
+        for doc in doc_ids:
+                label = doc
+                # Формируем ссылку без экранирования, она будет безопасно обработана позже
+                links.append(f"• [{label}]({doc})")
         if links:
             result += "\n\n📎 *Sources:*\n" + links
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")

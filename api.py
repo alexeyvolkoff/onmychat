@@ -9,6 +9,7 @@ import dialog_history
 import memory_index
 import logging
 import json
+from utils import get_image_from_source 
 
 logging.basicConfig(level=logging.INFO)
 
@@ -82,9 +83,9 @@ def get_ctx(omd_key: str):
 async def assistant_info(omd_key: str):
     ctx = get_ctx(omd_key)
     try:
-        avatar = core_service.get_assistant_avatar(ctx.user_id)
+        avatarPath = core_service.get_assistant_avatar_path(ctx.user_id)
         assistant = {
-            "avatar": avatar,
+            "avatarPath": avatarPath,
             "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
             "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
         }
@@ -189,29 +190,107 @@ async def chat_endpoint(data: ChatInput):
 @app.get("/chat/stream")
 async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
     ctx = get_ctx(omd_key)
-    root = "/home/alexey/"
 
     async def event_generator():
+        # defaults
+        intent = "chat"
+        skip_history = False
+        is_rag = False
+        b64_image = None
+        # check intent
+
         if prompt.startswith("/show"):
+            intent = "show"
+        elif prompt.startswith("/view") or prompt.startswith("/imagine"): 
+            intent = "view"   
+        elif prompt.startswith("/import") or prompt.startswith("/learn"):  
+            intent = "import"   
+        elif prompt.startswith("/think") or prompt.startswith("/explain"):  
+            intent = "explain"   
+        else:    
+            intent = await core_service.classify_user_intent(ctx, prompt)
+
+        logging.info(f"Intent detected: {intent}")
+        if intent == "show":
             # 1️⃣ статус
-            yield f"data: {json.dumps({'status': 'generating image'})}\n\n"
+            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
             # 2️⃣ картинка
             img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
             path = await core_service.generate_character_image(ctx, img_prompt, chat)
-            rel_path = path.replace(root, "/root/")
-            yield f"data: {json.dumps({'img_prompt': img_prompt, 'img_path': rel_path})}\n\n"
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
 
             #Set specific instructions
             skip_history = True
             request = (
-                "Continue conversation describing how you feel in this scene: {}"
+                "Continue conversation describing how you feel in this scene: {}\n\n"
+                "*'Me' refers to you in the provided scene description*"
             ).format(img_prompt)
             instruction = (
                 "Recognize and describe the provided image or scene description."
             )
+        elif intent == "view":
+            # 1️⃣ статус
+            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+
+            # 2️⃣ картинка
+            img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
+            logging.info(f"Generating image for prompt {prompt}")
+
+            path = await core_service.generate_general_image(ctx, img_prompt, chat)
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
+
+            #Set specific instructions
+            skip_history = True
+            request = (
+                "Continue conversation describing this scene: {}\n\n"
+                "*'Me', if present, refers to you in the provided scene description*"
+            ).format(img_prompt)
+            instruction = (
+                "Recognize and describe the provided image or scene description."
+            )
+        elif intent == "explain":    
+            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+    
+            instruction=(
+                "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
+                "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
+                "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
+            )
+            request = prompt
+            is_rag = True
+        elif intent.startswith("recognize"): 
+            yield f"data: {json.dumps({'status': 'recognizing'})}\n\n"
+
+            img_source = None
+            if ":" in intent:
+                img_source = intent.split(":", 1)[1]
+        
+            b64_image = await get_image_from_source(ctx, img_source)    
+
+            instruction = (
+                "Recognize the image according to context."
+            )
+            request = prompt
+        elif intent.startswith("import"):
+            yield f"data: {json.dumps({'status': 'importing'})}\n\n"
+            doc_source = None
+            card = {}
+            if ":" in intent:
+                doc_source = intent.split(":", 1)[1]
+            if doc_source:
+                card = await core_service.import_doc(ctx, doc_source)   
+            new_knowledge = ""     
+            if card : 
+                new_knowledge = card.get("text")
+            logging.info(f"*New knowledge:*\n{new_knowledge}")
+            instruction=(
+                f"Base your answer on *New knowledge* ONLY, if present.\n\n*New knowledge:*\n{new_knowledge}"
+            )
+            request = prompt
+            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
         # 3️⃣ основной стрим чата
         else:
@@ -226,7 +305,9 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             message=request,
             chat=chat,
             stream=True,
-            skip_history=skip_history
+            skip_history=skip_history,
+            is_rag = is_rag,
+            b64_image=b64_image
         )
         async for chunk in gen:
             yield f"data: {json.dumps(chunk)}\n\n"
