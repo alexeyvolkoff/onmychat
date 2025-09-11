@@ -90,8 +90,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
     if not text and update.message.photo:
         intent = "recognize"
     else:    
-        intent = command if command else await core.classify_user_intent(ctx, text)
+        raw_intent = command if command else await core.classify_user_intent(ctx, text)
+        lines = raw_intent.strip().split("\n", 1)
+        intent = lines[0].strip()
+        if len(lines) > 1:
+            logging.info(f"Intent explanation: {lines[1].strip()}")
+
     logging.info(f"Intent: {intent}")
+
     chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
  

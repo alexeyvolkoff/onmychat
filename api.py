@@ -207,8 +207,12 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             intent = "import"   
         elif prompt.startswith("/think") or prompt.startswith("/explain"):  
             intent = "explain"   
-        else:    
-            intent = await core_service.classify_user_intent(ctx, prompt)
+        else:
+            raw_intent = await core_service.classify_user_intent(ctx, prompt)
+            lines = raw_intent.strip().split("\n", 1)
+            intent = lines[0].strip()
+            if len(lines) > 1:
+                logging.info(f"Intent explanation: {lines[1].strip()}")    
 
         logging.info(f"Intent detected: {intent}")
         if intent == "show":
