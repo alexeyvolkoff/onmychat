@@ -167,7 +167,7 @@ NEGATIVE_PROMPTS = {
 }
 
 INTENT_PROMPT = (
-    "You are intent checker AI assistant. Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
+    "You are intent checker. Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "Respond with exactly one word or 'recognize:<path_or_url>' or import:<path_or_url>.\n"
     "\n"
     "\n"
@@ -181,11 +181,10 @@ INTENT_PROMPT = (
     "   - Example: \"Show me your outfit\" → show\n"
     "   - Example: \"Show me your selfie from the party\" → show\n"
     "   - Example: \"Show me your photo from vatations\" → show\n"
-    "   - Example: \"Show me how you brush your hair\" → show\n"
-    "   - Example: \"Show me how you dance\" → show\n"
+    "   - Example: \"Show me how <you do something>\" → show\n"
     "   Do NOT classify as 'show' if the user only complements your look without asking to show an image.\n"
     "   - Example: \"You look great wearing this dress\" → chat\n"
-    "   Do NOT classify as 'show' if user discusses a hypotetical, future scenario, not an event that happened.\n"
+    "   Do NOT classify as 'show' if user discusses a hypotetical, future scenario, or past event without explicit request for image with 'show'.\n"
     "   - Example: \"What if we go to the club?\" → chat\n"
     "   - Example: \"It whould be nice to see you again!\" → chat\n"
     "   - Example: \"Can't wait to see you at the party!\" → chat\n"
@@ -193,13 +192,24 @@ INTENT_PROMPT = (
     "   - Example: \"I will watch <you doing something>\" → chat\n"
     "   - Example: \"I would like to see you tomorrow → chat\n"
     "   BUT: \"I would like to see/watch <you doing something>\" → show\n"
-    
     "\n"
-    "2. If the user asks you to perform an action, such as taking a pose, or changing your position, or changing your clothes - respond with 'show'.\n"
-    "   - Example: \"Stand by this wall and smile, I'l take a photo\" → show\n"
-    "   - Example: \"Dance for me\" → show\n"
-    "   - Example: \"Put on a sundress\" → show\n"
+    "2. Classify as 'show' ONLY if action verb starts with slash \"/\" and the user explicitly requests a change of your visual appearance "
+    "(pose, outfit, body position, facial expression, visible action inside a scene) .\n"
+    "   - Example: \"/Stand by this wall and smile\" → show\n"
+    "   - Example: \"/Dance for me\" → show\n"
+    "   - Example: \"/Put on a sundress\" → show\n"
+    "   - Example: \"/Lie down on the sofa\"→ show\n"
+    "   - Example: \"/Cross your arms\"→ show\n"
+    "   - Example: \"we took a sit \"→ chat\n"
+    " DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
+    " Do NOT classify as 'show' if the user asks for an action that is: \n"
+    " - purely conversational (\"Tell me a story\", \"Answer my question\") \n"
+    " - abstract or non-visual (\"Remind me tomorrow\", \"Help me with code\")\n"
+    " - about feelings or thoughts (\"Think about me\", \"Just imagine if <something>\")\n"
+    " - about the future or hypothetical (\"What if you <do something>?\", \"One day we will go to Paris\")\n"
+    " Do NOT classify as 'show' if there is NO REQUEST FOR ACTION.\n"
 
+    "\n"
     "3. If the user wants to see an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
     "   - Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
@@ -218,22 +228,27 @@ INTENT_PROMPT = (
     "   - Example: \"Can I show you (anything)?\" → chat\n"
     "   - Example: \"Wanna see (anything)?\" → chat\n"
     "\n"
-    "5. If the user requests code, configuration, or a setup manual — respond with explain.\n"
+    "5. If the user wants you to explain something — respond with explain.\n"
+    "   - Example: \"Explain how <something> works\" → explain\n"
+    "   - Example: \"How to make <something>?\" → explain\n"
+    "   - Example: \"How <something> is related to <something else>?\" → explain\n"
+    "\n"
+    "6. If the user requests code, configuration, or a setup manual — respond with explain.\n"
     "   - Example: \"Show me example of nginx configuration\" → explain\n"
     "\n"
-    "6. If the user wants you to recognize or describe the contents of an image:\n"
+    "7. If the user wants you to recognize or describe the contents of an image:\n"
     "   - If the message contains a URL or file path, respond with 'recognize:<path_or_url>'.\n"
     "   - Example: \"Describe the image: \\path\\to\\image\" → recognize:\\path\\to\\image\n"
     "\n"
-    "7. If the user wants you to import, learn, read, or help to understand a document or web page:\n"
+    "8. If the user wants you to import, learn, read, or help to understand a document or web page:\n"
     "   - If the message contains a URL or file path, respond with 'import:<path_or_url>'.\n"
     "   - Example: \"Read this document: \\path\\to\\document\" → import:\\path\\to\\document\n"
     "   - Do not guess if path or url is ambiguous — default to 'chat'.\n"
     "\n"
-    "8. In all other cases — respond with 'chat'.\n"
-    "   - Example: \"Yes, please\" → chat\n"
-    "   - Example: \"Sure, babe\" → chat\n"
-    "   - Example: \"How are you?\" → chat\n"
+    "9. In all other cases — respond with 'chat'.\n"
+    "   - Example: \"Let's go!\" → chat\n"
+    "   - Example: \"Great!\" → chat\n"
+    "   - Example: \"How are you today?\" → chat\n"
     "\n"
     "Do not guess the intent if the request is ambiguous — default to 'chat'.\n"
     "Return nothing except the classification. \n"
@@ -680,7 +695,7 @@ async def perform_prompt(ctx: UserContext,
         response = {}
         response["content"] = llm_response.strip()
         if links:  # добавляем блок только если есть ссылки
-            response["sources"] = "\n".join(links)
+            response["sources"] = links
 
         # === Добавляем в историю
         if not skip_history:
@@ -692,7 +707,7 @@ async def perform_prompt(ctx: UserContext,
         }     
         history.append(histiry_entry)
         if links:
-            history["sources"] = links
+            histiry_entry["sources"] = links
 
         chat_info = await ensure_chat(user_id, chat, message)
         chat_name = chat_info.get("name", chat)

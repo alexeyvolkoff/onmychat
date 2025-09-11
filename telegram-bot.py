@@ -170,9 +170,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         )
         response = await core.perform_prompt(ctx, instruction, text, is_rag=True, chat="telegram")
         result = response.get("content") or "✅ done" 
-        links = response.get("sources")
+        links = []
+        doc_ids = response.get("sources")
+        if doc_ids:
+            for doc in doc_ids:
+                label = doc
+                # Формируем ссылку без экранирования, она будет безопасно обработана позже
+                links.append(f"• [{label}]({doc})")
         if links:
-            result += "\n\n📎 *Sources:*\n" + links
+            result += "\n\n📎 *Sources:*\n" + '\n'.join(links)
         await update.message.reply_text(
             format_response_for_markdown_v2(result),
             parse_mode="MarkdownV2"
@@ -222,6 +228,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
             chat="telegram"
         )
         explained = response.get("content") or "✅ done" 
+        links = []
+        doc_ids = response.get("sources")
+        if doc_ids:
+            for doc in doc_ids:
+                label = doc
+                # Формируем ссылку без экранирования, она будет безопасно обработана позже
+                links.append(f"• [{label}]({doc})")
+        if links:
+            explained += "\n\n📎 *Sources:*\n" + '\n'.join(links)
+
         result = format_response_for_markdown_v2(explained)
         await update.message.reply_text(result, parse_mode="MarkdownV2")    
 
@@ -237,12 +253,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         result = response.get("content") or "✅ done"  
         links = []
         doc_ids = response.get("sources")
-        for doc in doc_ids:
+        if doc_ids:
+            for doc in doc_ids:
                 label = doc
                 # Формируем ссылку без экранирования, она будет безопасно обработана позже
                 links.append(f"• [{label}]({doc})")
         if links:
-            result += "\n\n📎 *Sources:*\n" + links
+            result += "\n\n📎 *Sources:*\n" + '\n'.join(links)
         await update.message.reply_text(format_response_for_markdown_v2(result), parse_mode="MarkdownV2")
 
 
