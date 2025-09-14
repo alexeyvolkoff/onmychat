@@ -1,7 +1,14 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response, RedirectResponse
+
+import mimetypes
+import os
+import hashlib
+import email.utils
+import datetime
 
 import core_service
 import user_context
@@ -10,6 +17,7 @@ import memory_index
 import logging
 import json
 from utils import get_image_from_source 
+from config import USER_DATA_DIR
 
 logging.basicConfig(level=logging.INFO)
 
@@ -77,6 +85,51 @@ def get_ctx(omd_key: str):
     return ctx
 
 
+def serve_file(filepath: str, request: Request) -> FileResponse: 
+    if not filepath or not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="Avatar not found")
+
+    # MIME-тип
+    mime_type, _ = mimetypes.guess_type(filepath)
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    # Данные о файле
+    stat = os.stat(filepath)
+    mtime = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc)
+    last_modified = email.utils.format_datetime(mtime, usegmt=True)
+
+    # ETag на основе размера и времени модификации файла
+    etag_raw = f"{stat.st_mtime}-{stat.st_size}".encode()
+    etag = hashlib.md5(etag_raw).hexdigest()
+
+    # Проверка If-None-Match (ETag)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+
+    # Проверка If-Modified-Since
+    if_modified_since = request.headers.get("if-modified-since")
+    if if_modified_since:
+        try:
+            ims_time = email.utils.parsedate_to_datetime(if_modified_since)
+            if ims_time >= mtime.replace(microsecond=0):
+                return Response(status_code=304)
+        except Exception:
+            pass  # игнорируем неверный формат заголовка
+
+    headers = {
+        "Cache-Control": "public, max-age=86400",  # кэш на 24 часа
+        "ETag": etag,
+        "Last-Modified": last_modified,
+    }
+
+    return FileResponse(
+        filepath,
+        media_type=mime_type,
+        filename=os.path.basename(filepath),
+        headers=headers
+    )
+
 # ==== Эндпоинты ====
 
 @app.get("/assistant")
@@ -95,6 +148,32 @@ async def assistant_info(omd_key: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/assistant/avatar")
+async def assistant_avatar(omd_key: str, request: Request):
+    ctx = get_ctx(omd_key)
+    try:
+        storage_path = core_service.get_assistant_avatar_path(ctx.user_id)
+        avatarPath = f"{core_service.STORAGE_ROOT}/{storage_path}"
+        return serve_file(avatarPath, request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/generated/{filename}")
+async def get_generated_file(request: Request, filename: str, omd_key: str = Query(...)):
+    ctx = get_ctx(omd_key)
+    storage = ctx.settings.get("storage")
+    storage_enabled = False #not uploaded for now
+
+    if not storage or not storage_enabled:
+        # Локальный файл
+        user_folder = f"{core_service.APP_ROOT_DIR}/{USER_DATA_DIR}/{ctx.user_id}/generated"
+        file_path = os.path.join(user_folder, filename)
+        return serve_file(file_path, request)
+    else:
+        # Редирект на storage
+        redirect_url = f"/{storage}/generated/{filename}?token={omd_key}"
+        return RedirectResponse(url=redirect_url)
 
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):

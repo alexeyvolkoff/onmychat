@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 import time
 import subprocess
+import shutil
 from typing import AsyncGenerator
 
 from config import SETTINGS
@@ -43,7 +44,7 @@ COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 STORAGE_ROOT = SETTINGS["STORAGE_ROOT"]
-
+APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 
 # Default system prompts
@@ -175,12 +176,13 @@ INTENT_PROMPT = (
     "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or action verb starting with slash \"/\""
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
-    "1. In general conversation respond with 'chat'.\n"
+    "-Do NOT CLASSIFY AS 'view' or 'show' if user just states your or their action in the role play or scenario without explicit request for image.\n"
+    "1. Respond with 'chat' in general conversation.\n"
     "   - Example: \"Yes, please\" → chat\n"
     "   - Example: \"Sure, babe\" → chat\n"
     "   - Example: \"What are our plans?\" → chat\n"
     "\n"
-    "2. If the user *EXPLICITLY* asks you to demontrate your appearance, or your outfit, or to take a selfie by using the verb 'show' or '/show' — respond with 'show'.\n"
+    "2. If the user isk to depict your appearance, or your outfit, or to take a selfie by using the verb 'show' or '/show' — respond with 'show'.\n"
     "   - Example: \"Show me your outfit\" → show\n"
     "   - Example: \"Show me your selfie from the party\" → show\n"
     "   - Example: \"Show me your photo from vatations\" → show\n"
@@ -210,7 +212,7 @@ INTENT_PROMPT = (
     " DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
     " Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.\n"
     "\n"
-    "4. If the user wants you to depict or show an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
+    "4. Classify as 'view' if user asks to show an object. If the user wants you to depict or show an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
     "  User may use command verbs '/generate', '/show', '/image', '/view', '/imagine' <object, landscape or scene which does not involve you> to express 'view' intent.\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
     "   - Example: \"Show me a cat wearing a hat\" → view\n"
@@ -218,6 +220,8 @@ INTENT_PROMPT = (
     " Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
     "   - Example: \"Check out my new bicycle\" → chat\n"
     "   - Example: \"This is my new car.\" → chat\n"
+    " Do NOT classify as 'view' user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
+    "   - Example: \"I come up and shake your hand\" → chat\n"
     "\n"
     "5. If the user only mentions themselves, or you, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
     "   - Do NOT classify as 'show' or 'view' if the user only mentions themselves (\"It's me\", \"That's my town\", \"I live here\") without explicitly asking for an image.\n"
@@ -816,7 +820,6 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
-        return
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
@@ -836,7 +839,6 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     workflow_json["7"]["inputs"]["text"] = negative_prompt
     workflow_json["11"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
 
-
     # Выбираем модель в соответствии с режимом
     style = ctx.settings.get("style", "realistic")
     if nsfw_enabled:
@@ -845,11 +847,21 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     workflow_json["4"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
     img_path = await generate_image_workflow(workflow_json)
-    img_path = img_path.replace(STORAGE_ROOT, "")
+    # Папка для пользователя
+    user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
+    os.makedirs(user_folder, exist_ok=True)
+
+    # Имя файла без пути
+    filename = os.path.basename(img_path)
+    # Новый путь в user_data
+    dest_path = os.path.join(user_folder, filename)
+    # Копируем файл
+    shutil.copy2(img_path, dest_path)
+
     history = load_history(ctx, chat)
-    history.append({"role": "assistant", "image": {"prompt": prompt, "path": img_path}})
+    history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
     save_history(ctx, history, chat)
-    return img_path
+    return filename
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'):
@@ -871,11 +883,21 @@ async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'
 
     #logging.info(f"json: {workflow_json}")
     img_path = await generate_image_workflow(workflow_json)
-    img_path = img_path.replace(STORAGE_ROOT, "")
+    # Папка для пользователя
+    user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
+    os.makedirs(user_folder, exist_ok=True)
+
+    # Имя файла без пути
+    filename = os.path.basename(img_path)
+    # Новый путь в user_data
+    dest_path = os.path.join(user_folder, filename)
+    # Копируем файл
+    shutil.copy2(img_path, dest_path)
+
     history = load_history(ctx, chat)
-    history.append({"role": "assistant", "image": {"prompt": prompt, "path": img_path}})
+    history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
     save_history(ctx, history, chat)
-    return img_path
+    return filename
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
