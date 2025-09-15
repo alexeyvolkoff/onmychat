@@ -124,7 +124,7 @@ def get_context_by_account(account_id: str) -> UserContext:
 
     # если не найден — пробуем запросить у OMD
     try:
-        url = "https://onmydisk.net/userinfo"
+        url = "https://staging.onmydisk.net/userinfo"
         data = {"action": "getUserInfo", "session_id": account_id}
         response = requests.post(url, json=data, timeout=5)
         response.raise_for_status()

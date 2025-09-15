@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from pydantic import BaseModel
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
+from PIL import Image
+import io
 
 import mimetypes
 import os
@@ -81,13 +82,13 @@ class GenerateInput(BaseModel):
 def get_ctx(omd_key: str):
     ctx = user_context.get_context_by_account(omd_key)
     if ctx.type == "temp":
-        raise HTTPException(status_code=401, detail="Invalid or unbound OMD key")
+        logging.warning(f"Unbound OMD key: {omd_key}")
     return ctx
 
 
-def serve_file(filepath: str, request: Request) -> FileResponse: 
+def serve_file(filepath: str, request: Request, size: int = None) -> Response:
     if not filepath or not os.path.isfile(filepath):
-        raise HTTPException(status_code=404, detail="Avatar not found")
+        raise HTTPException(status_code=404, detail="File not found")
 
     # MIME-тип
     mime_type, _ = mimetypes.guess_type(filepath)
@@ -99,8 +100,8 @@ def serve_file(filepath: str, request: Request) -> FileResponse:
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc)
     last_modified = email.utils.format_datetime(mtime, usegmt=True)
 
-    # ETag на основе размера и времени модификации файла
-    etag_raw = f"{stat.st_mtime}-{stat.st_size}".encode()
+    # ETag на основе размера файла + mtime + параметра size
+    etag_raw = f"{stat.st_mtime}-{stat.st_size}-{size}".encode()
     etag = hashlib.md5(etag_raw).hexdigest()
 
     # Проверка If-None-Match (ETag)
@@ -123,6 +124,18 @@ def serve_file(filepath: str, request: Request) -> FileResponse:
         "Last-Modified": last_modified,
     }
 
+    # Если нужен ресайз
+    if size and mime_type.startswith("image/"):
+        with Image.open(filepath) as img:
+            img.thumbnail((size, size))  # уменьшение до квадратного thumbnail
+            buf = io.BytesIO()
+            # сохраняем в том же формате, что и оригинал
+            format = img.format if img.format else "PNG"
+            img.save(buf, format=format)
+            buf.seek(0)
+            return StreamingResponse(buf, media_type=mime_type, headers=headers)
+
+    # Если без ресайза — обычный FileResponse
     return FileResponse(
         filepath,
         media_type=mime_type,
@@ -149,32 +162,43 @@ async def assistant_info(omd_key: str):
 
 
 @app.get("/assistant/avatar")
-async def assistant_avatar(omd_key: str, request: Request):
+async def assistant_avatar(
+    omd_key: str,
+    request: Request,
+    size: int | None = Query(None, description="Target size in pixels")
+):
     ctx = get_ctx(omd_key)
     try:
         storage_path = core_service.get_assistant_avatar_path(ctx.user_id)
-        avatarPath = f"{core_service.STORAGE_ROOT}/{storage_path}"
-        return serve_file(avatarPath, request)
+        avatar_path = f"{core_service.STORAGE_ROOT}/{storage_path}"
+        return serve_file(avatar_path, request, size=size)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/generated/{filename}")
-async def get_generated_file(request: Request, filename: str, omd_key: str = Query(...)):
+async def get_generated_file(
+    request: Request,
+    filename: str,
+    omd_key: str = Query(...),
+    size: int | None = Query(None, description="Target size in pixels")
+):
     ctx = get_ctx(omd_key)
     storage = ctx.settings.get("storage")
-    storage_enabled = False #not uploaded for now
+    storage_enabled = False  # not uploaded for now
 
     if not storage or not storage_enabled:
         # Локальный файл
         user_folder = f"{core_service.APP_ROOT_DIR}/{USER_DATA_DIR}/{ctx.user_id}/generated"
         file_path = os.path.join(user_folder, filename)
-        return serve_file(file_path, request)
+        return serve_file(file_path, request, size=size)
     else:
-        # Редирект на storage
+        # Редирект на storage (size можно пробросить туда тоже)
         redirect_url = f"/{storage}/generated/{filename}?token={omd_key}"
+        if size:
+            redirect_url += f"&size={size}"
         return RedirectResponse(url=redirect_url)
-
+    
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):
     ctx = get_ctx(omd_key)
