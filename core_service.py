@@ -173,6 +173,7 @@ INTENT_PROMPT = (
     "\n"
     "\n"
     "Rules:\n"
+    "-RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Our algorithms depend on that.\n"
     "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or action verb starting with slash \"/\""
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
