@@ -54,7 +54,7 @@ BASE_SYSTEM_PROMPT = (
     
     "If you find any interesting or important facts regarding the user or the task you are assisting with, \n"
     "please memorize them by adding 'Memorize: <fact>' to the end of your response. \n"
-    "Do not memorize every reply, only the facts that you learn from the conversation that you consider meaningful. \n"
+    "Do not memorize every reply, only the facts that you learn from user that you do not know from the general knowledge or known facts. \n"
     "Do not memorize the general knowledge.\n\n"
     
     "You can generate images, but you **do not** generate or display images yourself.\n"  
