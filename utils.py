@@ -9,6 +9,9 @@ import mimetypes
 import json
 import aiohttp
 
+from config import SETTINGS
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+
 def escape_markdown_v2(text: str) -> str:
     """
     Экранирует все спецсимволы для Telegram MarkdownV2.
@@ -137,7 +140,7 @@ async def get_image_from_source(ctx, img_source: str):
         elif img_source.startswith("/") and omd_key:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"https://onmydisk.net{img_source}?resize=true&width=512&height=512",
+                    f"{GATEWAY_URL}{img_source}?resize=true&width=512&height=512",
                     headers={"Authorization": f"token:{omd_key}"}
                 ) as resp:
                     if resp.status == 200:
@@ -165,7 +168,7 @@ def upload_to_storage(omd_key: str, dest: str, filename: str, local_path: str):
     mime, _ = mimetypes.guess_type(local_path)
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
 
     with open(local_path, "rb") as f:
         resp = requests.put(url, headers=headers, data=f)
@@ -194,7 +197,7 @@ def upload_data_to_storage(omd_key: str, dest: str, filename: str, data, mime: s
 
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
 
     resp = requests.put(url, headers=headers, data=body)
     return resp.json()
@@ -217,10 +220,11 @@ def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dic
 
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"https://onmydisk.net/{dest}/{filename}?jsonResponse=true"  
+    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
 
     resp = requests.put(url, headers=headers, data=body)
     return resp.json()
+
 
 
 def strip_html(text: str) -> str:

@@ -12,6 +12,8 @@ DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 DEFAULT_SYSTEM_PROMPT_FILE = SETTINGS["DEFAULT_SYSTEM_PROMPT_FILE"]
 DEFAULT_ASSISTANT_NAME = SETTINGS["DEFAULT_ASSISTANT_NAME"]
 DEFAULT_ASSISTANT_TITLE = SETTINGS["DEFAULT_ASSISTANT_TITLE"]
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+
 
 # Файл для сохранения связей
 BINDINGS_FILE = f"{USER_DATA_DIR}/bindings.json"
@@ -144,6 +146,45 @@ def get_context_by_account(account_id: str) -> UserContext:
     settings = load_user_settings(account_id)
     ctx = UserContext(type="temp", user_id=f"temp_{account_id}", settings=settings)
     return ctx
+
+
+
+def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
+    """
+    Создаёт начальную структуру профиля пользователя в его OMD-хранилище:
+    - {storage}/onmychat/vecs
+    - {storage}/onmychat/chats
+    - {storage}/onmychat/generated
+
+    ctx      — контекст пользователя (мы обновим ctx.settings["storage"])
+    omd_key  — авторизационный ключ (token)
+    storage  — базовый путь в OMD, например: "storage/user123"
+    """
+    # Сохраняем выбранное хранилище в контекст
+    ctx.settings["storage"] = storage
+
+    headers = {
+        "authorization": f"token:{omd_key}",
+        "Content-Type": "application/json"
+    }
+
+    # Список папок, которые нужно создать
+    folders = [f"{storage}/onmychat/vecs", f"{storage}/onmychat/chats", f"{storage}/onmychat/generated"]
+
+    results = {}
+    for folder in folders:
+        payload = {"action": "createFolder", "path": folder}
+
+        try:
+            resp = requests.post(GATEWAY_URL, headers=headers, json=payload, timeout=10)
+            resp.raise_for_status()
+            results[folder] = resp.json()
+        except Exception as e:
+            # Можно залогировать или выбросить исключение
+            results[folder] = {"error": str(e)}
+    # save settings
+    save_user_settings(ctx)
+    return results
 
 
 def bind(ctx: UserContext, account_id: str) -> UserContext:
