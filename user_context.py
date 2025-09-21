@@ -2,10 +2,12 @@ from dataclasses import dataclass
 import os
 import json
 import requests
+import logging
 
 from config import USER_DATA_DIR
 from config import SETTINGS
 
+logging.basicConfig(level=logging.INFO)
 
 # Дефольные настройки пользователя
 DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
@@ -123,10 +125,10 @@ def get_context_by_account(account_id: str) -> UserContext:
         settings = load_user_settings(binding["username"])
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
         return ctx 
-
+    
     # если не найден — пробуем запросить у OMD
     try:
-        url = "https://staging.onmydisk.net/userinfo"
+        url = f"{GATEWAY_URL}/userinfo"
         data = {"action": "getUserInfo", "session_id": account_id}
         response = requests.post(url, json=data, timeout=5)
         response.raise_for_status()
@@ -140,11 +142,12 @@ def get_context_by_account(account_id: str) -> UserContext:
             ctx = UserContext(type="omd", user_id=username, settings=settings)
             return ctx
     except Exception as e:
-        print(f"[bindings] get_context_by_account fetch error: {e}")
+        logging.warning(f"Unbound OMD key: {account_id}")
 
     # если ничего не получилось — временный контекст
-    settings = load_user_settings(account_id)
-    ctx = UserContext(type="temp", user_id=f"temp_{account_id}", settings=settings)
+    user_id=f"temp_{account_id}"
+    settings = load_user_settings(user_id)
+    ctx = UserContext(type="temp", user_id=user_id, settings=settings)
     return ctx
 
 
@@ -169,20 +172,24 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
     }
 
     # Список папок, которые нужно создать
-    folders = [f"{storage}/onmychat/vecs", f"{storage}/onmychat/chats", f"{storage}/onmychat/generated"]
+    folders = [f"{storage}/vecs", f"{storage}/chats", f"{storage}/generated"]
 
     results = {}
     for folder in folders:
-        payload = {"action": "createFolder", "path": folder}
+        payload = {"action": "createFolder", "newPath": folder}
+        logging.info(f"Creating profile dir: {folder}")
 
         try:
-            resp = requests.post(GATEWAY_URL, headers=headers, json=payload, timeout=10)
+            resp = requests.post(f"{GATEWAY_URL}/{folder}", headers=headers, json=payload, timeout=10)
             resp.raise_for_status()
+            logging.info(f"Dir info: {resp.json()}")
             results[folder] = resp.json()
         except Exception as e:
             # Можно залогировать или выбросить исключение
+            logging.warning(f"Error while creating profile dir: {e}")
             results[folder] = {"error": str(e)}
     # save settings
+    ctx.settings["omd_key"] = omd_key
     save_user_settings(ctx)
     return results
 

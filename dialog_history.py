@@ -8,6 +8,7 @@ from config import USER_DATA_DIR
 from user_context import UserContext
 from utils import  upload_data_to_storage
 
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используется в telegram-bot.py
 
@@ -15,9 +16,10 @@ def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
 def load_history(ctx: UserContext, chat: str = "default") -> list:
+    print(f"[history] load history: {ctx.user_id} {ctx.settings["omd_key"]} {ctx.settings['storage']}")
     try:
-        if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/chats/{chat}.json"
+        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
@@ -40,8 +42,8 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
 
 def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
-        if ctx.type == "omd" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            dest = f"{ctx.settings['storage']}/{ctx.user_id}/chats"
+        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+            dest = f"{ctx.settings['storage']}/chats"
             upload_data_to_storage(ctx.settings['omd_key'], dest, f"{chat}.json", history, "application/json")
         else:
             # локальный fallback

@@ -52,10 +52,10 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. \n\n"
     
-    "If you find any interesting or important facts regarding the user or the task you are assisting with, \n"
+    "If you find any interesting or important facts that you learn from user, about the user or about the task or project you are assisting with, \n"
     "please memorize them by adding 'Memorize: <fact>' to the end of your response. \n"
     "Do not memorize every reply, only the facts that you learn from user that you do not know from the general knowledge or known facts. \n"
-    "Do not memorize the general knowledge.\n\n"
+    "Do not memorize the general knowledge. Do not memories the obvious like user said hello, only when user explains some facts.\n\n"
     
     "You can generate images, but you **do not** generate or display images yourself.\n"  
     "If the user asks about generating an image, you must only instruct them how to do it. \n\n" 
@@ -182,8 +182,9 @@ INTENT_PROMPT = (
     "   - Example: \"Yes, please\" → chat\n"
     "   - Example: \"Sure, babe\" → chat\n"
     "   - Example: \"What are our plans?\" → chat\n"
+    "DO NOT CLASSIFY AS SHOW OR VIEW IF YOU HAVE ANY DOUBT.\n"
     "\n"
-    "2. If the user isk to depict your appearance, or your outfit, or to take a selfie by using the verb 'show' or '/show' — respond with 'show'.\n"
+    "2. If the user asks to depict your appearance, or your outfit, or to take a selfie by using the verb 'show' or '/show' — respond with 'show'.\n"
     "   - Example: \"Show me your outfit\" → show\n"
     "   - Example: \"Show me your selfie from the party\" → show\n"
     "   - Example: \"Show me your photo from vatations\" → show\n"
@@ -213,18 +214,26 @@ INTENT_PROMPT = (
     " DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
     " Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.\n"
     "\n"
-    "4. Classify as 'view' if user asks to show an object. If the user wants you to depict or show an object, explicitly asks you to generate, draw, paint, make, or show an image of an object, item, interior, or landscape — respond with 'view'\n"
-    "  User may use command verbs '/generate', '/show', '/image', '/view', '/imagine' <object, landscape or scene which does not involve you> to express 'view' intent.\n"
+    "4. Classify as 'view' if user ASKS to generate or show an image of an object, item, interior, or landscape  or scene which does not involve you.'\n"
+    " Only classify as 'view' if the message EXPLICITLY contains the word 'show' or 'generate' (case-insensitive) NOT 'looks like', DO NOT GUESS.\n"
+    " Any other verb (prepared, see, look, check, present, etc.) MUST NOT trigger 'view'\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
     "   - Example: \"Show me a cat wearing a hat\" → view\n"
     "   - Example: \"Show me view from the window\" → view\n"
-    " Do NOT classify as 'view' if the user only names an object without asking to show or generate it.\n"
     "   - Example: \"Check out my new bicycle\" → chat\n"
+    "   - Example: \"hole has been pleasured\" → chat\n"
     "   - Example: \"This is my new car.\" → chat\n"
-    " Do NOT classify as 'view' user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
+    "   - Example: \"This dress looks good.\" → chat\n"
+    "   - Example: \"looks like <something>\" → chat\n"
+    "   - Example: \"This package has been prepared to ship.\" → chat\n"
+    " DO NOT CLASSIFY AS VIEW IN ALL OTHER CASES!!!.\n"
+    " DO NOT CLASSIFY AS VIEW IF USER JUST MENTIONS AN OBJECT.\n"
+    " DO NOT CLASSIFY AS VIEW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
+    " DO NOT CLASSIFY AS VIEW IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
+    " Do NOT classify as 'view' if user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
     "   - Example: \"I come up and shake your hand\" → chat\n"
     "\n"
-    "5. If the user only mentions themselves, or you, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
+    "5. If the user only mentions themselves, or you, or an object, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
     "   - Do NOT classify as 'show' or 'view' if the user only mentions themselves (\"It's me\", \"That's my town\", \"I live here\") without explicitly asking for an image.\n"
     "   - Example: \"It's me\" → chat\n"
     "   - Example: \"Can I show you my photo?\" → chat\n"
@@ -856,6 +865,8 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     filename = os.path.basename(img_path)
     # Новый путь в user_data
     dest_path = os.path.join(user_folder, filename)
+    dest = f"{ctx.settings['storage']}/generated"
+    upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
     # Копируем файл
     shutil.copy2(img_path, dest_path)
 

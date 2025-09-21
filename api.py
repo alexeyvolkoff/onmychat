@@ -81,8 +81,6 @@ class GenerateInput(BaseModel):
 
 def get_ctx(omd_key: str):
     ctx = user_context.get_context_by_account(omd_key)
-    if ctx.type == "temp":
-        logging.warning(f"Unbound OMD key: {omd_key}")
     return ctx
 
 
@@ -264,9 +262,13 @@ async def get_memory(omd_key: str, collection: str, mem_id: str):
 
 
 @app.get("/chats")
-async def chats_endpoint(omd_key: str):
+async def chats_endpoint(omd_key: str, storage: str = ""):
     ctx = get_ctx(omd_key)
     try:
+        if not ctx.settings.get("storage") and storage:
+            logging.info(f"Creating profile for user {ctx.user_id}, {ctx.type}, storage: {storage}")    
+            user_context.create_profile(ctx, omd_key, storage)
+
         from dialog_history import load_chats_index
         chats = load_chats_index(ctx.user_id)
         return chats

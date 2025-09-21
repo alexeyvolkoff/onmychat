@@ -7,12 +7,16 @@ from datetime import datetime
 from sentence_transformers import SentenceTransformer
 import logging
 import warnings
+from config import SETTINGS
 from config import USER_DATA_DIR
 from user_context import UserContext
 import requests
 from urllib.parse import urlparse
 import re
 from utils import   upload_vec_to_storage
+
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+
 
 MEMORY_KEYWORDS = [
     "Запомнить:",        # 🇷🇺 Russian
@@ -60,12 +64,11 @@ def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
 def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
     try:
         if (
-            ctx.type == "omd"
-            and ctx.settings.get("storage")
+            ctx.settings.get("storage")
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
-            url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/memory.jsonl"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
@@ -87,12 +90,11 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
 def save_memories(ctx: UserContext, memories: list[dict], collection: str = "user"):
     try:
         if (
-            ctx.type == "omd"
-            and ctx.settings.get("storage")
+            ctx.settings.get("storage")
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
-            dest = f"{ctx.settings['storage']}/{ctx.user_id}"
+            dest = f"{ctx.settings['storage']}"
             upload_vec_to_storage(ctx.settings['omd_key'], dest, "memory.jsonl", memories, "application/jsonl")
         else:
             # локальный fallback
@@ -275,22 +277,21 @@ def search_document_chunks(
     top_k: int = 6,
     distance_threshold: float = 0.6
 ) -> list[dict]:
-    """Ищет релевантные чанки в .vec-файле документа"""
-    if not os.path.exists(vec_path):
-        return []
     
     chunks = []
 
     try:
-        if ctx.type == "omd" and collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        if collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             # Подгружаем vec из OMD
-            url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/vecs/{vec_file}"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/vecs/{vec_file}"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
                 chunks = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
         else:
+            if not os.path.exists(vec_path):
+                return []
             vec_file_path = f"{vec_path}/{vec_file}"
             with open(vec_file_path, "r", encoding="utf-8") as f:
                 chunks = [json.loads(line) for line in f if line.strip()]
@@ -328,7 +329,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
-            url = f"https://onmydisk.net/{ctx.settings['storage']}/{ctx.user_id}/memory.jsonl"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl"
             headers = {"authorization": f"token:{ctx.settings['omd_key']}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
@@ -361,9 +362,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", top_
     memories = load_memories(ctx, collection)
     vec_path = ""
 
-    if collection == "user":
-        vec_path = f"{USER_DATA_DIR}/{ctx.user_id}/vec"
-    else:
+    if not collection == "user":
         vec_path = f"{BASE_INDEX_DIR}/{collection}"
     
     if not memories:
@@ -456,13 +455,12 @@ def chunk_and_vectorize_to_file(
 
     try:
         if (
-            ctx.type == "omd"
-            and ctx.settings.get("storage")
+            ctx.settings.get("storage")
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
             # --- Хранение в OMD ---
-            dest = f"{ctx.settings['storage']}/{ctx.user_id}/vecs"
+            dest = f"{ctx.settings['storage']}/vecs"
             upload_vec_to_storage(ctx.settings['omd_key'], dest, f"{filename}.vec", entries, "application/jsonl")
         else:
             # --- Локальное хранение ---
