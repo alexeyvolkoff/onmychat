@@ -19,6 +19,9 @@ import logging
 import json
 from utils import get_image_from_source 
 from config import USER_DATA_DIR
+from config import SETTINGS
+
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -183,18 +186,17 @@ async def get_generated_file(
 ):
     ctx = get_ctx(omd_key)
     storage = ctx.settings.get("storage")
-    storage_enabled = False  # not uploaded for now
 
-    if not storage or not storage_enabled:
+    if not storage:
         # Локальный файл
         user_folder = f"{core_service.APP_ROOT_DIR}/{USER_DATA_DIR}/{ctx.user_id}/generated"
         file_path = os.path.join(user_folder, filename)
         return serve_file(file_path, request, size=size)
     else:
         # Редирект на storage (size можно пробросить туда тоже)
-        redirect_url = f"/{storage}/generated/{filename}?token={omd_key}"
+        redirect_url = f"{GATEWAY_URL}/{storage}/generated/{filename}?token={omd_key}"
         if size:
-            redirect_url += f"&size={size}"
+            redirect_url += f"&resize=true&height={size}&width={size}"
         return RedirectResponse(url=redirect_url)
     
 @app.get("/history")

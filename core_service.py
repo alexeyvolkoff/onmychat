@@ -863,12 +863,14 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
 
     # Имя файла без пути
     filename = os.path.basename(img_path)
-    # Новый путь в user_data
-    dest_path = os.path.join(user_folder, filename)
-    dest = f"{ctx.settings['storage']}/generated"
-    upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
-    # Копируем файл
-    shutil.copy2(img_path, dest_path)
+    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        # Копируем файл юзеру на устройство
+        dest = f"{ctx.settings['storage']}/generated"
+        upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
+    else:    
+        # Копируем файл в user_data
+        dest_path = os.path.join(user_folder, filename)
+        shutil.copy2(img_path, dest_path)
 
     history = load_history(ctx, chat)
     history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
@@ -901,10 +903,14 @@ async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'
 
     # Имя файла без пути
     filename = os.path.basename(img_path)
-    # Новый путь в user_data
-    dest_path = os.path.join(user_folder, filename)
-    # Копируем файл
-    shutil.copy2(img_path, dest_path)
+    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        # Копируем файл юзеру на устройство
+        dest = f"{ctx.settings['storage']}/generated"
+        upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
+    else:    
+        # Копируем файл в user_data
+        dest_path = os.path.join(user_folder, filename)
+        shutil.copy2(img_path, dest_path)
 
     history = load_history(ctx, chat)
     history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
