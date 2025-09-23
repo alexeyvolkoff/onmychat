@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
 from PIL import Image
 import io
-
+import re
 import mimetypes
 import os
 import hashlib
@@ -311,7 +311,15 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         elif prompt.startswith("/view") or prompt.startswith("/imagine"): 
             intent = "view"   
         elif prompt.startswith("/import") or prompt.startswith("/learn"):  
-            intent = "import"   
+            m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+            file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+            if file_path_or_url:
+                intent = f"import:{file_path_or_url}"
+        elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
+            m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+            file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+            if file_path_or_url:
+                intent = f"recognize:{file_path_or_url}"
         elif prompt.startswith("/think") or prompt.startswith("/explain"):  
             intent = "explain"   
         else:

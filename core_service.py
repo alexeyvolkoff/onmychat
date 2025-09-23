@@ -46,6 +46,7 @@ AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 STORAGE_ROOT = SETTINGS["STORAGE_ROOT"]
 APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
+GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
 # Default system prompts
 BASE_SYSTEM_PROMPT = (
@@ -971,7 +972,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     raw_text = ""
     if url_or_path.startswith("/") or "onmydisk.net" in url_or_path:
         if url_or_path.startswith("/"):
-            url_or_path = f"https://onmydisk.net{url_or_path}"
+            url_or_path = f"{GATEWAY_URL}{url_or_path}"
         if not key:
             raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
         raw_text = await fetch_document_text(url_or_path, key)

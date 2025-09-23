@@ -324,8 +324,7 @@ def search_document_chunks(
 def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
     try:
         if (
-            ctx.type == "omd"
-            and ctx.settings.get("storage")
+            ctx.settings.get("storage")
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
@@ -416,7 +415,7 @@ async def fetch_document_text(url: str, token: str = None) -> str:
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             if response.status != 200:
-                raise ValueError(f"Failed to fetch document: HTTP {response.status}")
+                raise ValueError(f"Failed to fetch document: {url} {token} HTTP {response.status}")
             return await response.text()
 
 
