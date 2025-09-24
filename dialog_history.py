@@ -16,7 +16,6 @@ def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
 def load_history(ctx: UserContext, chat: str = "default") -> list:
-    print(f"[history] load history: {ctx.user_id} {ctx.settings["omd_key"]} {ctx.settings['storage']}")
     try:
         if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json"
@@ -66,19 +65,62 @@ def reset_history(user_id: str):
 def _chats_index_path(user_id: str) -> str:
     return f"{USER_DATA_DIR}/{user_id}/chats/chats.json"
 
-def load_chats_index(user_id: str) -> dict:
-    path = _chats_index_path(user_id)
-    if not os.path.exists(path):
-        return {}
+def load_chats_index(ctx: UserContext) -> dict:
+    """
+    Загрузить список чатов пользователя (индекс).
+    Если настроено облачное хранилище – грузим оттуда,
+    иначе используем локальный fallback.
+    """
     try:
+        storage = ctx.settings.get("storage")
+        omd_key = ctx.settings.get("omd_key")
+
+        if storage and omd_key:
+            url = f"{GATEWAY_URL}/{storage}/chats/chats.json"
+            headers = {"Authorization": f"token:{omd_key}"}
+            resp = requests.get(url, headers=headers, timeout=10)
+
+            if resp.status_code == 200 and resp.text.strip():
+                return json.loads(resp.content.decode("utf-8"))
+            return {}
+
+        # --- локальный fallback ---
+        path = _chats_index_path(ctx.user_id)
+        if not os.path.exists(path):
+            return {}
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
+
     except Exception as e:
-        print(f"[chats] Load error: {e}")
+        print(f"[chats] Load error: {ctx.user_id} {e}")
         return {}
 
-def save_chats_index(user_id: str, chats: dict):
-    os.makedirs(f"{USER_DATA_DIR}/{user_id}/chats", exist_ok=True)
-    path = _chats_index_path(user_id)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(chats, f, ensure_ascii=False, indent=2)
+
+def save_chats_index(ctx: UserContext, chats: dict):
+    """
+    Сохранить список чатов пользователя (индекс).
+    Если настроено облачное хранилище – сохраняем туда,
+    иначе локальный fallback.
+    """
+    try:
+        storage = ctx.settings.get("storage")
+        omd_key = ctx.settings.get("omd_key")
+
+        if storage and omd_key:
+            dest = f"{storage}/chats"
+            upload_data_to_storage(
+                omd_key,
+                dest,
+                "chats.json",
+                chats,
+                "application/json"
+            )
+        else:
+            # --- локальный fallback ---
+            path = _chats_index_path(ctx.user_id)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(chats, f, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        print(f"[chats] Save error: {ctx.user_id} {e}")

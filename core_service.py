@@ -518,12 +518,12 @@ async def generate_chat_title(message: str) -> str:
 
 
 
-async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dict:
+async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
     """
     Убедиться, что чат есть в chats.json и файлы подготовлены.
     Если чат = default → сгенерировать нормальное название на основе первого сообщения.
     """
-    chats = load_chats_index(user_id)
+    chats = load_chats_index(ctx)
 
     if chat not in chats:
         title = f"Chat {chat}"
@@ -548,7 +548,7 @@ async def ensure_chat(user_id: str, chat: str, first_message: str = None) -> dic
         # обновляем дату, если чат уже существует
         chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
 
-    save_chats_index(user_id, chats)
+    save_chats_index(ctx, chats)
 
     return chats[chat]
 
@@ -727,7 +727,7 @@ async def perform_prompt(ctx: UserContext,
         if links:
             histiry_entry["sources"] = links
 
-        chat_info = await ensure_chat(user_id, chat, message)
+        chat_info = await ensure_chat(ctx, chat, message)
         chat_name = chat_info.get("name", chat)
         save_history(ctx, history, chat_name)
         response["chatinfo"] = chat_info
