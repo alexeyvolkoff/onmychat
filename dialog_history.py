@@ -35,7 +35,7 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                 history = json.load(f)
                 return  history
     except Exception as e:
-        print(f"[history] Load error: {ctx.user_id} {e}")
+        print(f"[history] Load error: {ctx.user_id} {ctx.settings.get("storage") } {e}")
         return []
     
 
@@ -74,6 +74,7 @@ def load_chats_index(ctx: UserContext) -> dict:
     try:
         storage = ctx.settings.get("storage")
         omd_key = ctx.settings.get("omd_key")
+        print(f"[history] Load indes: {ctx.user_id} {storage}")
 
         if storage and omd_key:
             url = f"{GATEWAY_URL}/{storage}/chats/chats.json"

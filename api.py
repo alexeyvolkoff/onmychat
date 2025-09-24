@@ -272,7 +272,7 @@ async def chats_endpoint(omd_key: str, storage: str = ""):
             user_context.create_profile(ctx, omd_key, storage)
 
         from dialog_history import load_chats_index
-        chats = load_chats_index(ctx.user_id)
+        chats = load_chats_index(ctx)
         return chats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
