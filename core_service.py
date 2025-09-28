@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage, summarize_for_memory, resize_and_base64encode
+from utils import clean_response, upload_to_storage
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -53,10 +53,17 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. \n\n"
     
-    "If you find any interesting or important facts that you learn from user, about the user or about the task or project you are assisting with, \n"
-    "please memorize them by adding 'Memorize: <fact>' to the end of your response. \n"
-    "Do not memorize every reply, only the facts that you learn from user that you do not know from the general knowledge or known facts. \n"
-    "Do not memorize the general knowledge. Do not memories the obvious like user said hello, only when user explains some facts.\n\n"
+    "Memorization Rule:\\n"
+    "DO NOT MEMORIZE YOU OWN EXPLANATIONS AND REPLIES! Memorize only **explicit facts** the user provides (e.g. “Our server runs on Ubuntu 24.04”).\\n"
+    "When the user **shares a new fact** about themselves, their project, or the task you assist with — something **not present in general knowledge** or *KNOWN FACTS* —\\n"
+    "append to your reply:\n"
+    "Memorize: <fact>\n"
+    "\n"
+    "Do **not** memorize:\n"
+    "* greetings or casual chatter,\\n"
+    "* obvious context (e.g. “user asked a question”),\n"
+    "* anything already covered by general knowledge or *KNOWN FACTS*.\n"
+    "Only store **new factual information** the user reveals.\n\n"
     
     "You can generate images, but you **do not** generate or display images yourself.\n"  
     "If the user asks about generating an image, you must only instruct them how to do it. \n\n" 
@@ -172,10 +179,9 @@ INTENT_PROMPT = (
     "You are intent checker. Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "Respond with exactly one word or 'recognize:<path_or_url>' or import:<path_or_url> in first line and the reason why you have desided like this in the second line.\n"
     "\n"
-    "\n"
     "Rules:\n"
     "-RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Our algorithms depend on that.\n"
-    "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or action verb starting with slash \"/\""
+    "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or an action verb prepended with slash \"/\" like '/turn around' or '/smile'"
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
     "-Do NOT CLASSIFY AS 'view' or 'show' if user just states your or their action in the role play or scenario without explicit request for image.\n"
@@ -215,7 +221,12 @@ INTENT_PROMPT = (
     " DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
     " Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.\n"
     "\n"
-    "4. Classify as 'view' if user ASKS to generate or show an image of an object, item, interior, or landscape  or scene which does not involve you.'\n"
+    "4. 'view' rules:\n"
+    " DO NOT CLASSIFY AS VIEW IF USER JUST MENTIONS AN OBJECT.\n"
+    " DO NOT CLASSIFY AS VIEW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
+    " DO NOT CLASSIFY AS VIEW IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
+    " Do NOT classify as 'view' if user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
+    "Classify as 'view' if user ASKS to generate or show an image of an object, item, interior, landscape or scene which does not involve you.'\n"
     " Only classify as 'view' if the message EXPLICITLY contains the word 'show' or 'generate' (case-insensitive) NOT 'looks like', DO NOT GUESS.\n"
     " Any other verb (prepared, see, look, check, present, etc.) MUST NOT trigger 'view'\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
@@ -228,10 +239,6 @@ INTENT_PROMPT = (
     "   - Example: \"looks like <something>\" → chat\n"
     "   - Example: \"This package has been prepared to ship.\" → chat\n"
     " DO NOT CLASSIFY AS VIEW IN ALL OTHER CASES!!!.\n"
-    " DO NOT CLASSIFY AS VIEW IF USER JUST MENTIONS AN OBJECT.\n"
-    " DO NOT CLASSIFY AS VIEW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
-    " DO NOT CLASSIFY AS VIEW IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
-    " Do NOT classify as 'view' if user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
     "   - Example: \"I come up and shake your hand\" → chat\n"
     "\n"
     "5. If the user only mentions themselves, or you, or an object, and does not explicitly ask for an image, or wants to show their image — respond with 'chat'.\n"
@@ -271,6 +278,19 @@ INTENT_PROMPT = (
     "Do not guess the intent if the request is ambiguous — default to 'chat'.\n"
     "Return nothing except the classification. \n"
     "DO NOT PUT YOUR RESPONSE INTO SINGLE QUOTES or DOUBLE QUOTES."
+)
+
+
+SUMMARY_PROMPT = (
+    "You are an assistant that creates a concise **memory card** for fast semantic search. \n"
+    "Given a raw document text, create a short but rich summary (abstract) and list the key concepts, "
+    "entities, and important terms. \n"
+    "• If the text contains an abstract or table of contents, rely on them primarily. \n"
+    "• Otherwise, summarize the main ideas from the provided excerpt. \n"
+    "• Output in the following format:\n"
+    "Summary: <2-3 sentences capturing the essence>\n"
+    "Key Concepts: <comma-separated keywords/terms>\n"
+    "Keep it factual, no speculation."
 )
 
 NSFW_PREPHASE = (
@@ -428,12 +448,12 @@ async def generate_image_workflow(workflow) -> str:
 
 
 # === RAG ===
-async def inject_facts(ctx: UserContext, query: str, collection: str = "") -> tuple[list[str], list[str]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="") -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
 
     # Личные воспоминания
-    personal = search_memories(ctx, query, "user", top_k=3)
+    personal = search_memories(ctx, query, collection="user", mem_id=mem_id, top_k=3)
     for m in personal:
         facts.append(f"• {m['text']}")
         doc_id = m.get("document_id")
@@ -442,7 +462,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "") -> tu
 
     # Общие знания — если есть collection
     if collection:
-        shared = search_memories(ctx, query, collection=collection, top_k=3)
+        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=3)
         for m in shared:
             facts.append(f"• {m['text']}")
             doc_id = m.get("document_id")
@@ -590,25 +610,26 @@ async def perform_prompt(ctx: UserContext,
                          skip_history=False,
                          b64_image = "",
                          chat = "default", 
+                         mem_id = "", 
                          stream: bool = False) -> str | AsyncGenerator:
 
-    user_id = ctx.user_id
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
     history = load_history(ctx, chat)
     
     # === ВСПОМНИМ ФАКТЫ ===
+    strict_fact = ""
     facts_text = ""
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     #logging.info(f"collection: {collection} {is_rag}")
-    facts, doc_ids = await inject_facts(ctx, message, collection)
+    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
     if facts:
-        facts_text = "\n\n*Known facts and memories:*\n" + "\n".join(facts) if facts else ""
+        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         prep_prompt = (
-            "You are a fact-checking assistant. Extract *only known facts* from the question using the provided knowledge base. "
+            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
         )
 
@@ -626,14 +647,16 @@ async def perform_prompt(ctx: UserContext,
             "model": SFW_MODEL,
             "stream": False,
             "options": {
-               "temperature": 0,
+               "temperature": 0.2,
             }
         }
         data = await llm_request(prep_payload)
         if not data:
             return "⚠️ RAG query failed."
-
-        strict_fact = data["message"]["content"].strip()
+        
+        rag_resp = data["message"]["content"].strip()
+        if (rag_resp and rag_resp != "No information"):
+            strict_fact = rag_resp
 
         # Инжект фактов и источников в system prompt
         if strict_fact:
@@ -671,6 +694,9 @@ async def perform_prompt(ctx: UserContext,
 
     if b64_image:
        user_message["images"] = [b64_image]
+
+    if mem_id:
+       user_message["mem_id"] = mem_id
 
     messages.append(user_message)
 
@@ -714,18 +740,22 @@ async def perform_prompt(ctx: UserContext,
         response["content"] = llm_response.strip()
         if links:  # добавляем блок только если есть ссылки
             response["sources"] = links
+        if strict_fact:    
+            response["facts"] = strict_fact
 
         # === Добавляем в историю
         if not skip_history:
             msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
             history.append(msg_to_save)
-        histiry_entry = {
+        history_entry = {
             "role": "assistant", 
             "content": llm_response
         }     
-        history.append(histiry_entry)
+        if strict_fact:    
+            history_entry["facts"] = strict_fact
         if links:
-            histiry_entry["sources"] = links
+            history_entry["sources"] = links
+        history.append(history_entry)
 
         chat_info = await ensure_chat(ctx, chat, message)
         chat_name = chat_info.get("name", chat)
@@ -736,6 +766,8 @@ async def perform_prompt(ctx: UserContext,
 
     if stream:
         async def gen():
+            if strict_fact:
+                yield {"facts": strict_fact, "done": False}
             accumulated = ""
             async for data in llm_request_stream(main_payload):
                 if data.get("done"):  
@@ -964,13 +996,53 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
     return response.lower().strip()
 
+# Суммаризация документа
+
+async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
+    """
+    Создаёт 'карточку памяти' документа для дальнейшего поиска.
+    :param raw_text: исходный текст документа
+    :param limit: максимальное количество символов для передачи модели (по умолчанию ~8000)
+    """
+    # Усечём текст, если длиннее лимита
+    text_to_process = raw_text[:limit]
+
+    messages = [
+        {"role": "system", "content": SUMMARY_PROMPT},
+        {"role": "user", "content": text_to_process},
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": DEFAULT_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+        }
+    }
+
+    data = await llm_request(request_payload)
+
+    # Универсальное извлечение текста
+    if isinstance(data, dict):
+        if "message" in data and isinstance(data["message"], dict) and "content" in data["message"]:
+            response = data["message"]["content"]
+        else:
+            response = data.get("content") or str(data)
+    else:
+        response = str(data)
+
+    logging.info(f"Summary: {response}")    
+
+    return response.strip()
+
 # === Импорт и память ===
 async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     key = ctx.settings.get("omd_key", "")
 
     # Определяем, это OMD или нет
     raw_text = ""
-    if url_or_path.startswith("/") or "onmydisk.net" in url_or_path:
+    if url_or_path.startswith("/") or GATEWAY_URL in url_or_path:
         if url_or_path.startswith("/"):
             url_or_path = f"{GATEWAY_URL}{url_or_path}"
         if not key:
@@ -1001,7 +1073,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     )
 
     # Добавление краткой аннотации в память
-    card_text = summarize_for_memory(raw_text)
+    card_text = await summarize_for_memory(raw_text)
     mem_id = add_memory_card(
         ctx,
         text=card_text,

@@ -304,6 +304,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         skip_history = False
         is_rag = False
         b64_image = None
+        mem_id = None
         # check intent
 
         if prompt.startswith("/show"):
@@ -375,7 +376,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
     
             instruction=(
                 "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
-                "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
+                "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
                 "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
             )
             request = prompt
@@ -402,13 +403,17 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             if doc_source:
                 card = await core_service.import_doc(ctx, doc_source)   
             new_knowledge = ""     
-            if card : 
+            if card: 
                 new_knowledge = card.get("text")
+            if new_knowledge:
+                yield f"data: {json.dumps({'new_knowledge': new_knowledge})}\n\n"    
             logging.info(f"*New knowledge:*\n{new_knowledge}")
             instruction=(
-                f"Base your answer on *New knowledge* ONLY, if present.\n\n*New knowledge:*\n{new_knowledge}"
+                f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
             )
             request = prompt
+            mem_id = card.get("id")
+        elif intent.startswith("image"):
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
         # 3️⃣ основной стрим чата
@@ -426,7 +431,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             stream=True,
             skip_history=skip_history,
             is_rag = is_rag,
-            b64_image=b64_image
+            b64_image=b64_image,
+            mem_id = mem_id
         )
         async for chunk in gen:
             yield f"data: {json.dumps(chunk)}\n\n"

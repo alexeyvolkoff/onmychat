@@ -35,7 +35,7 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                 history = json.load(f)
                 return  history
     except Exception as e:
-        print(f"[history] Load error: {ctx.user_id} {ctx.settings.get("storage") } {e}")
+        print(f"[history] Empty history: {ctx.user_id} {ctx.settings.get("storage")} {chat} {e}")
         return []
     
 

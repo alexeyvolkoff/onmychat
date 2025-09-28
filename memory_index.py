@@ -83,7 +83,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             with open(path, "r", encoding="utf-8") as f:
                 return [json.loads(line) for line in f if line.strip()]
     except Exception as e:
-        print(f"[memory] Load error: {ctx.user_id} {collection} {e}")
+        print(f"[memory] No memories: {ctx.user_id} {collection} {e}")
         return []
 
 
@@ -267,6 +267,23 @@ def make_file_name_from_document_id(document_id: str) -> str:
         # Локальные document_id или fallback
         return document_id.replace("/", "_").replace("\\", "_")
     
+def escape_text_field(line: str) -> dict:
+    """
+    Исправляет все кавычки, экранирует специальные символы и обрабатывает переносы строк в поле text.
+    """
+    # Проверяем, есть ли незакрытое поле text
+    partial_text_match = re.search(r'("text"\s*:\s*)"((?:\\.|[^"])*)$', line)
+    if partial_text_match:
+        print("Найден разорванный блок 'text':")
+        print(f"Содержимое: {partial_text_match.group(2)[:100]}...")
+    
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError as e:
+        print(f"JSON error: {e}")
+        print(f"Problematic line (first 100 chars): {line[:100]}...")
+        raise
+
 
 def search_document_chunks(
     ctx: UserContext,    
@@ -279,6 +296,7 @@ def search_document_chunks(
 ) -> list[dict]:
     
     chunks = []
+    logging.info(f"Loading document: {vec_file}")
 
     try:
         if collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
@@ -288,7 +306,17 @@ def search_document_chunks(
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
-                chunks = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+                lines = resp.text.splitlines()
+                #logging.info(f"Loaded document: {len(lines)}")
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk_obj = json.loads(line)
+                        chunks.append(chunk_obj)
+                    except json.JSONDecodeError as e:
+                        print("JSON error:", e)
         else:
             if not os.path.exists(vec_path):
                 return []
@@ -302,13 +330,14 @@ def search_document_chunks(
     if not chunks:
         return []
 
+
     query_emb = np.array(_model.encode([query], show_progress_bar=False)[0])
 
     results = []
     for chunk in chunks:
         distance = cosine_distance(query_emb, chunk["embedding"])
         if distance <= distance_threshold:
-            logging.info(f"Relevant chunk: {distance}")
+            #logging.info(f"Relevant chunk: {distance}")
             results.append({
                 "text": chunk.get("text", "").strip(),
                 "distance": distance,
@@ -356,7 +385,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
         print(f"[memory] Load error: {ctx.user_id} {collection} {e}")
         return []
 
-def search_memories(ctx: UserContext, query: str, collection: str = "user", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     # Load memories
     memories = load_memories(ctx, collection)
     vec_path = ""
@@ -376,10 +405,22 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", top_
         relevance = m.get("relevance", "contextual")
 
         if relevance == "permanent":
-            permanent.append(m)
+            doc_id = m.get("document_id")
+            if doc_id:
+                vec_file = make_file_name_from_document_id(doc_id) + ".vec"
+                # Adding relevant document chunks
+                doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection)
+                permanent.extend(doc_chunks)
+            else:
+                # Adding memory card
+                permanent.append(m)
         elif relevance == "contextual":
-            distance = cosine_distance(query_emb, m["embedding"])
             memory_id = m.get("memory_id")
+            if mem_id and mem_id == memory_id:
+                #direct reference
+                distance = 0
+            else:
+                distance = cosine_distance(query_emb, m["embedding"])    
             doc_id = m.get("document_id")
             #logging.info(f"Checking memory: {collection} {memory_id} {distance} {doc_id}")
             if distance <= distance_threshold:
@@ -409,15 +450,30 @@ async def fetch_document_text(url: str, token: str = None) -> str:
         elif ext in SUPPORTED_PLAIN_EXTS:
            pass
         else:
-           raise ValueError(f"Unsupported file type: .{ext}")
+           return f"Unsupported file type: .{ext}"
         headers["Authorization"] = f"token:{token}"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             if response.status != 200:
-                raise ValueError(f"Failed to fetch document: {url} {token} HTTP {response.status}")
+                return f"Failed to fetch document: {url} {token} HTTP {response.status}"
             return await response.text()
 
+
+def escape_chunk_text(text: str) -> str:
+    """
+    Экранирует кавычки, переносы строк и обратные слэши внутри текста,
+    чтобы JSONL можно было безопасно читать.
+    """
+    # заменяем нестандартные кавычки на стандартные
+    text = text.replace('“', '"').replace('”', '"').replace('„', '"')
+    # экранируем обратные слэши
+    text = text.replace('\\', '\\\\')
+    # экранируем двойные кавычки
+    text = text.replace('"', '\\"')
+    # экранируем переносы строк и табуляции
+    text = text.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+    return text
 
 def chunk_and_vectorize_to_file(
     ctx: UserContext,
@@ -445,7 +501,7 @@ def chunk_and_vectorize_to_file(
         vec = embed_text(chunk)
         entry = {
             "embedding": vec,
-            "text": chunk,
+            "text": escape_chunk_text(chunk),
             "chunk_id": str(idx),
             "document_id": document_id,
             "timestamp": datetime.now().isoformat(timespec="seconds"),

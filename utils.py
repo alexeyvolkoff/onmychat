@@ -276,57 +276,6 @@ def clean_text(text: str) -> str:
 
     return text
 
-def extract_prologue(lines, max_leading_bytes=512) -> str:
-    """
-    Берём строки до первого заголовка, чистим их и сохраняем переносы.
-    """
-    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")
-    markdown_regex = re.compile(r"^#+\s.*")
-
-    leading_lines = []
-    for line in lines:
-        if chapter_regex.match(line) or markdown_regex.match(line):
-            break
-        cleaned = clean_text(line)
-        if cleaned:
-            leading_lines.append(cleaned)
-
-    leading_text = " ".join(leading_lines)
-    if len(leading_text.encode("utf-8")) > max_leading_bytes:
-        leading_text = leading_text.encode("utf-8")[:max_leading_bytes].decode("utf-8", errors="ignore") + "..."
-    return leading_text
-
-
-def generate_table_of_contents(text: str) -> str:
-    chapter_regex = re.compile(r"^\d+(\.\d+)+.*")
-    markdown_regex = re.compile(r"^#+\s.*")
-
-    toc_entries = []
-    for line in text.splitlines():
-        if chapter_regex.match(line) or markdown_regex.match(line):
-            cleaned = clean_text(line)
-            if cleaned:
-                toc_entries.append(cleaned)
-
-    return "\n".join(toc_entries)
-
-
-def summarize_for_memory(text: str, max_bytes: int = 2048, max_leading_bytes: int = 512) -> str:
-
-    text = strip_html(text)
-    text_bytes = len(text.encode("utf-8"))
-
-    if text_bytes <= max_bytes:
-        return text  
-
-    lines = text.splitlines()
-    leading_text = extract_prologue(lines, max_leading_bytes)
-    toc = generate_table_of_contents(text)
-
-    if leading_text:
-        return f"{leading_text}\n\n{toc}"
-    else:
-        return toc
 
 
 
