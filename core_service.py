@@ -606,12 +606,13 @@ async def classify_user_intent(ctx:user_context, prompt: str) -> str:
 async def perform_prompt(ctx: UserContext,
                          instruction: str,
                          message: str,
-                         is_rag=False,
-                         skip_history=False,
-                         b64_image = "",
-                         chat = "default", 
-                         mem_id = "", 
-                         stream: bool = False) -> str | AsyncGenerator:
+                         is_rag: bool=False,
+                         skip_history: bool=False,
+                         b64_image: str = "",
+                         chat: str = "default", 
+                         mem_id: str = "", 
+                         stream: bool = False,
+                         think: bool = False) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -704,15 +705,17 @@ async def perform_prompt(ctx: UserContext,
         "messages": messages,
         "model": model,
         "stream": stream,
+        "think": think,
         "options": {
            "temperature": 0.8,
         }
     }
     #post-processing of response
     async def process_response(data) -> dict: 
-        logging.info(data)
+        #logging.info(data)
         llm_response = data["message"]["content"]
         llm_response = clean_response(llm_response)
+        llm_think_response = data["message"]["thinking"]
 
         # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
         memory_fact, pos = extract_memory_from_response(llm_response)
@@ -742,7 +745,8 @@ async def perform_prompt(ctx: UserContext,
             response["sources"] = links
         if strict_fact:    
             response["facts"] = strict_fact
-
+        if llm_think_response:    
+            response["thinking"] = llm_think_response
         # === Добавляем в историю
         if not skip_history:
             msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
@@ -755,6 +759,9 @@ async def perform_prompt(ctx: UserContext,
             history_entry["facts"] = strict_fact
         if links:
             history_entry["sources"] = links
+        if llm_think_response:    
+            history_entry["thinking"] = llm_think_response
+
         history.append(history_entry)
 
         chat_info = await ensure_chat(ctx, chat, message)
@@ -768,23 +775,39 @@ async def perform_prompt(ctx: UserContext,
         async def gen():
             if strict_fact:
                 yield {"facts": strict_fact, "done": False}
-            accumulated = ""
+            accumulated_response = ""
+            accumulated_thinking = ""
+            thinking = False
             async for data in llm_request_stream(main_payload):
                 if data.get("done"):  
                     # финал: собираем response на основе всего текста
                     full_data = {
                         "message": {
                             "role": "assistant",
-                            "content": accumulated
+                            "content": accumulated_response
                         }
                     }
+                    if accumulated_thinking:
+                        full_data["message"]["thinking"] = accumulated_thinking
                     response = await process_response(full_data)
                     response["done"] = True
                     yield response
+                elif data.get("message"):   
+                    if data["message"].get("thinking"):
+                        delta = data["message"]["thinking"]
+                        thinking = True
+                        accumulated_thinking += delta
+                    else:        
+                        delta = data["message"]["content"]
+                        thinking = False
+                        accumulated_response += delta
+                    yield {"delta": delta, "done": False, "thinking": thinking}
+                elif data.get("error"):    
+                    logging.warning(f"{data["error"]}")
+                    yield {"error": data["error"], "done": True}
                 else:
-                    delta = data["message"]["content"]
-                    accumulated += delta
-                    yield {"delta": delta, "done": False}
+                    logging.warning("Empty response")
+                    yield {"error": "Empty response", "done": True}
         return gen()    
     else:
         data = await llm_request(main_payload)

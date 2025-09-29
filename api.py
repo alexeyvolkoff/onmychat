@@ -305,6 +305,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         is_rag = False
         b64_image = None
         mem_id = None
+        think = False
         # check intent
 
         if prompt.startswith("/show"):
@@ -323,6 +324,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
                 intent = f"recognize:{file_path_or_url}"
         elif prompt.startswith("/think") or prompt.startswith("/explain"):  
             intent = "explain"   
+            think = prompt.startswith("/think")
         else:
             raw_intent = await core_service.classify_user_intent(ctx, prompt)
             lines = raw_intent.strip().split("\n", 1)
@@ -432,7 +434,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             skip_history=skip_history,
             is_rag = is_rag,
             b64_image=b64_image,
-            mem_id = mem_id
+            mem_id = mem_id,
+            think=think
         )
         async for chunk in gen:
             yield f"data: {json.dumps(chunk)}\n\n"
