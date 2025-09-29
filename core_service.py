@@ -656,7 +656,7 @@ async def perform_prompt(ctx: UserContext,
             return "⚠️ RAG query failed."
         
         rag_resp = data["message"]["content"].strip()
-        if (rag_resp and rag_resp != "No information"):
+        if rag_resp and not rag_resp.startswith("No information"):
             strict_fact = rag_resp
 
         # Инжект фактов и источников в system prompt
@@ -715,7 +715,9 @@ async def perform_prompt(ctx: UserContext,
         #logging.info(data)
         llm_response = data["message"]["content"]
         llm_response = clean_response(llm_response)
-        llm_think_response = data["message"]["thinking"]
+        llm_think_response = None
+        if data["message"].get("thinking"):
+            llm_think_response = data["message"]["thinking"]
 
         # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
         memory_fact, pos = extract_memory_from_response(llm_response)
