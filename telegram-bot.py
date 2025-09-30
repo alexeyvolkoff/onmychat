@@ -195,18 +195,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         if ":" in intent:
             img_source = intent.split(":", 1)[1]
         
-        b64_image = await get_image_from_request(ctx, img_source, update)    
-
         recognition_prompt = (
             "Recognize the image according to context."
         )
+
         response = await core.perform_prompt(
             ctx,
             instruction=(
                 "Recognize and describe the provided images."
             ),
             message=recognition_prompt,
-            b64_image=b64_image,
+            img_source=img_source,
             chat="telegram"
         )
         explained = response.get("content") or "✅ done" 

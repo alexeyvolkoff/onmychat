@@ -306,6 +306,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         b64_image = None
         mem_id = None
         think = False
+        img_source = None
         # check intent
 
         if prompt.startswith("/show"):
@@ -386,12 +387,9 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         elif intent.startswith("recognize"): 
             yield f"data: {json.dumps({'status': 'recognizing'})}\n\n"
 
-            img_source = None
             if ":" in intent:
                 img_source = intent.split(":", 1)[1]
         
-            b64_image = await get_image_from_source(ctx, img_source)    
-
             instruction = (
                 "Recognize the image according to context."
             )
@@ -433,7 +431,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             stream=True,
             skip_history=skip_history,
             is_rag = is_rag,
-            b64_image=b64_image,
+            img_source=img_source,
             mem_id = mem_id,
             think=think
         )

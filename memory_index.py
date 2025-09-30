@@ -127,7 +127,7 @@ def add_memory_card(
     try:
         memories = load_memories(ctx, collection)
     except Exception as e:
-        print(f"[memory] Load error: {ctx.user_id} {collection} {e}")
+        print(f"[memory] Empty memory: {ctx.user_id} {collection} {e}")
 
     # Если есть document_id и это документ — удаляем старые записи документа
     if document_id:

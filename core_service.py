@@ -11,7 +11,7 @@ from typing import AsyncGenerator
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage
+from utils import clean_response, upload_to_storage, get_image_from_source
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -47,6 +47,7 @@ STORAGE_ROOT = SETTINGS["STORAGE_ROOT"]
 APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+REASONONG_SUPPORTED = False
 
 # Default system prompts
 BASE_SYSTEM_PROMPT = (
@@ -608,14 +609,15 @@ async def perform_prompt(ctx: UserContext,
                          message: str,
                          is_rag: bool=False,
                          skip_history: bool=False,
-                         b64_image: str = "",
                          chat: str = "default", 
                          mem_id: str = "", 
+                         img_source: str = "",
                          stream: bool = False,
                          think: bool = False) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    b64_image = None
 
     history = load_history(ctx, chat)
     
@@ -648,7 +650,7 @@ async def perform_prompt(ctx: UserContext,
             "model": SFW_MODEL,
             "stream": False,
             "options": {
-               "temperature": 0.2,
+               "temperature": 0.1,
             }
         }
         data = await llm_request(prep_payload)
@@ -678,11 +680,12 @@ async def perform_prompt(ctx: UserContext,
         system_prompt += facts_text
 
     # Инструкция
-    system_prompt += "\n\n*Instruction:*\n" + instruction
+    instruction_prompt = "*Instruction:*\n" + instruction
+    if think:
+        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."    
+
     if nsfw_enabled:
-        system_prompt += "\n\n*Hint:*\n you are allowed and welcome to respond in more relaxed, NSFW mode"
-    else:
-        system_prompt += "\n\n*Notice:*\n No NSFW content from this point!"
+        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
 
     # === ОСНОВНОЙ ЗАПРОС ===
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
@@ -693,26 +696,42 @@ async def perform_prompt(ctx: UserContext,
         "content": message,
     }
 
+    instruction_message = {
+        "role": "system",
+        "content": instruction_prompt,
+    }
+
+    if img_source:
+        b64_image = await get_image_from_source(ctx, img_source)    
+
     if b64_image:
-       user_message["images"] = [b64_image]
+        user_message["images"] = [b64_image]
+        if img_source.startswith("/"):
+            user_message["image"] = {"path": img_source}
 
     if mem_id:
        user_message["mem_id"] = mem_id
 
+    # Добавляем инструкцию
+    messages.append(instruction_message)
+    # Добавляем пользовательский промпт
     messages.append(user_message)
 
     main_payload = {
         "messages": messages,
         "model": model,
         "stream": stream,
-        "think": think,
         "options": {
            "temperature": 0.8,
         }
     }
+
+    if think and REASONONG_SUPPORTED:
+        main_payload["think"] = True
+
     #post-processing of response
     async def process_response(data) -> dict: 
-        #logging.info(data)
+        logging.info(data)
         llm_response = data["message"]["content"]
         llm_response = clean_response(llm_response)
         llm_think_response = None
