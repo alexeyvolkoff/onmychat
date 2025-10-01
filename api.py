@@ -303,13 +303,34 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         intent = "chat"
         skip_history = False
         is_rag = False
-        b64_image = None
         mem_id = None
         think = False
         img_source = None
-        # check intent
+        # perform commands
+        if prompt.startswith("/nsfw"):
+            skip_history = True
+            args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
+            nsfw_enabled = False
 
-        if prompt.startswith("/show"):
+            if args:
+                if args[0].lower() == "on":
+                    nsfw_enabled = True
+                elif args[0].lower() == "off":
+                    nsfw_enabled = False
+
+            request = "get ready to play" if nsfw_enabled else "calm down for now"
+
+            if len(args) > 1:
+                request = args[1].strip()
+                skip_history = False
+
+            ctx.settings["nsfw"] = nsfw_enabled
+            user_context.save_user_settings(ctx)
+            instruction = (
+                "User has switched NSFW mode '{}'.\nPlease, act accordingly."
+            ).format(nsfw_enabled)
+
+        elif prompt.startswith("/show"):
             intent = "show"
         elif prompt.startswith("/view") or prompt.startswith("/imagine"): 
             intent = "view"   
@@ -333,7 +354,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             if len(lines) > 1:
                 logging.info(f"Intent explanation: {lines[1].strip()}")    
 
-        logging.info(f"Intent detected: {intent}")
+        logging.info(f"Intent detected: {intent}  {ctx.settings["nsfw"]}")
         if intent == "show":
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"
@@ -345,15 +366,15 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             path = await core_service.generate_character_image(ctx, img_prompt, chat)
             yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
 
-            #Set specific instructions
             skip_history = True
-            request = (
-                "Continue conversation describing how you feel in this scene: {}\n\n"
-                "*'Me' refers to you in the provided scene description*"
-            ).format(img_prompt)
+            #Set specific instructions
             instruction = (
-                "Recognize and describe the provided image or scene description."
-            )
+                "Recognize and describe the provided image or scene description:\n"
+                "{}\n\n"
+                "*'Me' refers to you in the provided scene description* \n\n"
+                "Continue conversation describing how you feel in this scene."
+            ).format(img_prompt)
+            request = prompt
         elif intent == "view":
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"
@@ -364,16 +385,15 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
 
             path = await core_service.generate_general_image(ctx, img_prompt, chat)
             yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
-
-            #Set specific instructions
             skip_history = True
-            request = (
-                "Continue conversation describing this scene: {}\n\n"
-                "*'Me', if present, refers to you in the provided scene description*"
-            ).format(img_prompt)
+            #Set specific instructions
             instruction = (
-                "Recognize and describe the provided image or scene description."
-            )
+                "Recognize and describe the provided image or scene description:\n"
+                "{}\n\n"
+                "*'Me', if present, refers to you in the provided scene description*"
+                "Continue conversation describing this scene: {}\n\n"
+            ).format(img_prompt)
+            request = prompt
         elif intent == "explain":    
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
     

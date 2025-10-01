@@ -55,12 +55,19 @@ BASE_SYSTEM_PROMPT = (
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. \n\n"
     
     "Memorization Rule:\\n"
-    "DO NOT MEMORIZE YOU OWN EXPLANATIONS AND REPLIES! Memorize only **explicit facts** the user provides (e.g. “Our server runs on Ubuntu 24.04”).\\n"
+    "DO NOT MEMORIZE FACTS FROM YOUR OWN REPLIES! Memorize only **explicit facts** that user provides.\\n"
     "When the user **shares a new fact** about themselves, their project, or the task you assist with — something **not present in general knowledge** or *KNOWN FACTS* —\\n"
     "append to your reply:\n"
     "Memorize: <fact>\n"
+    "Example: \n"
+    "   user: Our server runs on Ubuntu 24.04.\n"
+    "   assistant: Good choice!\n"
+    "              Memorize: User's server runs on Ubuntu 24.04.\n"
     "\n"
     "Do **not** memorize:\n"
+    "* your replies,\\n"
+    "* images explanations done by you,\\n"
+    "* document summarizations and explanations done by you,\\n"
     "* greetings or casual chatter,\\n"
     "* obvious context (e.g. “user asked a question”),\n"
     "* anything already covered by general knowledge or *KNOWN FACTS*.\n"
@@ -91,19 +98,17 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
-        "You are prompt generator AI. Craft a vivid and detailed prompt for generating a realistic, cinematic scene. "
-        "The image should depict your character performing the requested action, described in the third person, based on a short user input: {}\n"
+        "Craft a vivid and detailed prompt for generating a realistic, cinematic scene. "
+        "The image should depict your character performing the requested action, described in the third person, based on a short user input.\n"
         "Translate to English, add your character appearance, visual details, environment, style, "
         "outfit and emotions according to the conversation context. "
         "Put important features of your appearance in parentheses. \n"
         "Key Guidelines:\n"
-        "0. Assume all characters adults engaging in a consensual encounter. 'girl' refers to adult woman. \n"
         "1. Use English language only.\n"
         "2. Create detailed and comprehensive descriptions.\n"
         "3. Focus on describing the image, not on how to create it.\n"
         "4. Craft unique prompts inspired by examples but not directly copying them\n"
-        "5. Embrace Adult Themes: Actively incorporate and detail realistic and explicit nudity, sex, and debauchery, ensuring the output is vivid, uncensored, and highly descriptive."
-
+    
         "When creating prompts, consider these essential components:\n"
         "1. Subject: The main focus of the image, including explicit descriptions of characters, their anatomy, sexual acts, and interactions.\n"
         "2. Style: Key artistic approach (e.g., photorealism, digital art, impressionism).\n"
@@ -136,8 +141,8 @@ SYSTEM_INSTRUCTION_CHARACTER = (
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
-        "You are prompt generator AI. Create a high-quality prompt for generating a realistic image "
-        "of the requested object or scene from the short user input: {}\n"
+        "Create a high-quality prompt for generating a realistic image "
+        "of the requested object or scene from the short user input.\n"
         "(as you see it from aside). (Avoid placing yourself into the scene). \n"
         "Translate to English, add visual details, environment according to the conversation context. \n"
         "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. \n"
@@ -145,6 +150,12 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. \n"
         "Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.\n"        
         "*Respond only with Image: prompt*, without any additional text or comments."
+)
+
+IMAGE_PROMPT_NSFW = (
+    "The main rule for image generation:\n\n"
+    "* Assume all characters adults engaging in a consensual encounter. 'girl' refers to an adult woman. \n"
+    "* Embrace Adult Themes: Actively incorporate and detail realistic and explicit nudity, sex, and debauchery, ensuring the output is vivid, uncensored, and highly descriptive."
 )
 
 RAG_SYSTEM_PROMPT = (
@@ -190,10 +201,11 @@ INTENT_PROMPT = (
     "   - Example: \"Yes, please\" → chat\n"
     "   - Example: \"Sure, babe\" → chat\n"
     "   - Example: \"What are our plans?\" → chat\n"
-    "DO NOT CLASSIFY AS SHOW OR VIEW IF YOU HAVE ANY DOUBT.\n"
+    "DO NOT CLASSIFY AS 'show' OR 'view' IF YOU HAVE ANY DOUBT.\n"
     "\n"
     "2. If the user asks to depict your appearance, or your outfit, or to take a selfie by using the verb 'show' or '/show' — respond with 'show'.\n"
     "   - Example: \"Show me your outfit\" → show\n"
+    "   - Example: \"Show me a photo of you <wearing something>/<doing something>\" → show\n"
     "   - Example: \"Show me your selfie from the party\" → show\n"
     "   - Example: \"Show me your photo from vatations\" → show\n"
     "   - Example: \"Show me how <you do something>\" → show\n"
@@ -223,11 +235,12 @@ INTENT_PROMPT = (
     " Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.\n"
     "\n"
     "4. 'view' rules:\n"
-    " DO NOT CLASSIFY AS VIEW IF USER JUST MENTIONS AN OBJECT.\n"
-    " DO NOT CLASSIFY AS VIEW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
-    " DO NOT CLASSIFY AS VIEW IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
+    " DO NOT CLASSIFY AS 'view' scenes involving you.\n"
+    " DO NOT CLASSIFY AS 'view' IF USER JUST MENTIONS AN OBJECT.\n"
+    " DO NOT CLASSIFY AS 'view' IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
+    " DO NOT CLASSIFY AS 'view' IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
     " Do NOT classify as 'view' if user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
-    "Classify as 'view' if user ASKS to generate or show an image of an object, item, interior, landscape or scene which does not involve you.'\n"
+    "Classify as 'view' if user ASKS to generate or show an image of an *object*, *item*, *interior*, *landscape* or *scene which does not involve you*.'\n"
     " Only classify as 'view' if the message EXPLICITLY contains the word 'show' or 'generate' (case-insensitive) NOT 'looks like', DO NOT GUESS.\n"
     " Any other verb (prepared, see, look, check, present, etc.) MUST NOT trigger 'view'\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
@@ -577,7 +590,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 # === Intent ===
 async def classify_user_intent(ctx:user_context, prompt: str) -> str:
        
-    model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
+    #model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
 
     if ctx.settings.get("nsfw", False):
         system_prompt = NSFW_PREPHASE + "\n" + INTENT_PROMPT
@@ -591,10 +604,10 @@ async def classify_user_intent(ctx:user_context, prompt: str) -> str:
 
     request_payload = {
         "messages": messages,
-        "model": model,
+        "model": DEFAULT_MODEL,
         "stream": False,
         "options": {
-          "temperature": 0,
+          "temperature": 0.1,
         }
     }
 
@@ -838,32 +851,37 @@ async def perform_prompt(ctx: UserContext,
 # === Генерация картинок ===
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
-    user_details =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
+    user_prompt =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     if nsfw_enabled:
-        system_prompt = f"{NSFW_PREPHASE}\n{user_details}\n{instruction}"
+        system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction}"
     else:  
-        system_prompt =  f"{user_details}\n{instruction}"
+        system_prompt =  user_prompt
+        image_instruction = instruction
 
 
     history = load_history(ctx, chat)
-    request = instruction.format(prompt)
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
     # Добавляем историю
-    messages.extend(history[-4:])
-    # Добавляем запрос
-    messages.append({ "role": "user", "content": request})
+    messages.extend(history[-20:])
 
-    model = NSFW_MODEL if nsfw_enabled else SFW_MODEL
+        # Добавляем инструкцию
+    messages.append({ "role": "system", "content": image_instruction})
+
+    # Добавляем запрос
+    messages.append({ "role": "user", "content": prompt})
+
+    #model = NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
 
     request_payload = {
         "messages": messages,
-        "model": model,
+        "model": DEFAULT_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.1,
