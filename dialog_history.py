@@ -5,7 +5,7 @@ import json
 import requests
 from config import SETTINGS
 from config import USER_DATA_DIR
-from user_context import UserContext
+from user_context import UserContext, create_profile
 from utils import  upload_data_to_storage
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
@@ -94,6 +94,8 @@ def load_chats_index(ctx: UserContext) -> dict:
 
     except Exception as e:
         print(f"[chats] Empty index: {ctx.user_id} {e}")
+        if storage and omd_key:
+            create_profile(ctx, omd_key, storage)
         return {}
 
 

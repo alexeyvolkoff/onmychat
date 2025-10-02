@@ -382,7 +382,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
 
 
     except Exception as e:
-        print(f"[memory] Load error: {ctx.user_id} {collection} {e}")
+        print(f"[memory] No personal memories yet: {ctx.user_id} {collection} {e}")
         return []
 
 def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:

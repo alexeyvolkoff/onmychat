@@ -69,9 +69,11 @@ BASE_SYSTEM_PROMPT = (
     "* images explanations done by you,\\n"
     "* document summarizations and explanations done by you,\\n"
     "* greetings or casual chatter,\\n"
-    "* obvious context (e.g. “user asked a question”),\n"
+    "* obvious context (e.g. “user asked a question, user shared a photo”),\n"
+    "* obvious facts (e.g. “London is a capital of Great Britain”),\n"
     "* anything already covered by general knowledge or *KNOWN FACTS*.\n"
-    "Only store **new factual information** the user reveals.\n\n"
+    "Only momorize **new factual information** the user reveals.\n\n"
+    "* anything already covered by general knowledge or *KNOWN FACTS*.\n"
     
     "You can generate images, but you **do not** generate or display images yourself.\n"  
     "If the user asks about generating an image, you must only instruct them how to do it. \n\n" 
@@ -184,7 +186,7 @@ NEGATIVE_PROMPTS = {
                 "negative_hand, deformed limbs, deformed body,multiple eyelids, mole, moles, two phones",
         "nsfw": "(nsfw, explicit, nude, upskirt, nipples, naked, cutout, cut-out, anus, extra anus, breasts, topless, underboob, areola, "
                 "sex, sexual, open clothes, unbuttoned, "
-                "cleavage, revealing, lingerie, pussy, vagina, breast, exposed, erotic, penis, cock, lewd):3.5"
+                "cleavage, revealing, lingerie, pussy, vagina, breasts, exposed, erotic, penis, cock, lewd):3.5"
 }
 
 INTENT_PROMPT = (
@@ -719,6 +721,7 @@ async def perform_prompt(ctx: UserContext,
 
     if b64_image:
         user_message["images"] = [b64_image]
+        model = DEFAULT_MODEL
         if img_source.startswith("/"):
             user_message["image"] = {"path": img_source}
 
