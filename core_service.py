@@ -199,6 +199,8 @@ INTENT_PROMPT = (
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
     "-Do NOT CLASSIFY AS 'view' or 'show' if user just states your or their action in the role play or scenario without explicit request for image.\n"
+    "-Do NOT CLASSIFY AS 'view' or 'show' if user mentions a past event without explicit request for image.\n"
+    "-Do NOT CLASSIFY AS 'view' or 'show' if user discusses any depiction without explicit request for a new one.\n"
     "1. Respond with 'chat' in general conversation.\n"
     "   - Example: \"Yes, please\" → chat\n"
     "   - Example: \"Sure, babe\" → chat\n"
