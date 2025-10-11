@@ -30,14 +30,15 @@ app = FastAPI()
 
 origins = [
     "http://localhost:8080",  
-    "http://localhost:8081",  
+    "http://localhost:8081", 
+    f"{GATEWAY_URL}",
     "*",  # Caution: Allow all origins (not recommended for production)
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -209,6 +210,46 @@ async def history_endpoint(omd_key: str, chat: str = "default"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.delete("/history/{chat}/{number:int}")
+def delete_history(chat: str, number: int, omd_key: str = Query(...)):
+    """
+    Удаляет сообщение по индексу (0-based) из истории указанного чата пользователя.
+    """
+    ctx = get_ctx(omd_key)
+
+    try:
+        # Загружаем историю чата
+        history = dialog_history.load_history(ctx, chat=chat)
+
+        if not history:
+            raise HTTPException(status_code=404, detail=f"Chat '{chat}' is empty or not found")
+
+        # Проверка диапазона индекса
+        if number < -len(history) or number >= len(history):
+            raise HTTPException(status_code=404, detail="Message index out of range")
+
+        # Удаляем сообщение
+        deleted_msg = history.pop(number)
+
+        # Сохраняем обратно
+        dialog_history.save_history(ctx, history, chat=chat)
+
+        return {
+            "status": "ok",
+            "chat": chat,
+            "deleted_index": number,
+            "deleted_role": deleted_msg.get("role"),
+            "remaining": len(history)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.get("/memory")
 async def memory_endpoint(omd_key: str, collection: str = "user"):
     ctx = get_ctx(omd_key)
@@ -240,12 +281,14 @@ async def update_memory(mem_id: str, data: MemoryUpdate):
 @app.delete("/memory/{mem_id}")
 async def delete_memory(omd_key: str, mem_id: str, collection: str = "user"):
     ctx = get_ctx(omd_key)
+    print(f"KEY: {mem_id}")
     try:
-        success = memory_index.delete_memory_card(ctx, mem_id, collection)
+        success = memory_index.delete_memory_card(ctx, mem_id=mem_id, collection=collection)
         if not success:
             raise HTTPException(status_code=404, detail="Memory not found")
         return {"status": "deleted", "memory_id": mem_id}
     except Exception as e:
+        print (f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -441,7 +484,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             skip_history = False
             request = prompt
             instruction = (
-                "Respond to user. If user question relates to *Known facts*, be extremely accurate, do not guess."
+                "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
+                "If no *Known facts* provided, espond freely as a helpful conversational assistant."
             )
         gen = await core_service.perform_prompt(
             ctx,

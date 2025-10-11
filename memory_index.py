@@ -14,6 +14,7 @@ import requests
 from urllib.parse import urlparse
 import re
 from utils import   upload_vec_to_storage
+import time
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
@@ -68,7 +69,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl?nocache={int(time.time())}"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
@@ -301,7 +302,7 @@ def search_document_chunks(
     try:
         if collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             # Подгружаем vec из OMD
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/vecs/{vec_file}"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/vecs/{vec_file}?nocache={int(time.time())}"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
@@ -357,8 +358,9 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             and ctx.settings.get("omd_key")
             and collection == "user"
         ):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl?nocache={int(time.time())}"
             headers = {"authorization": f"token:{ctx.settings['omd_key']}"}
+            logging.info(f"loading memories from {url}")
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
                 text = resp.content.decode("utf-8")

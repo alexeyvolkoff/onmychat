@@ -306,6 +306,7 @@ SUMMARY_PROMPT = (
     "• If the text contains an abstract or table of contents, rely on them primarily. \n"
     "• Otherwise, summarize the main ideas from the provided excerpt. \n"
     "• Output in the following format:\n"
+    "<Document title> < detect or create the document title, one line/\n"
     "Summary: <2-3 sentences capturing the essence>\n"
     "Key Concepts: <comma-separated keywords/terms>\n"
     "Keep it factual, no speculation."
@@ -642,12 +643,13 @@ async def perform_prompt(ctx: UserContext,
     strict_fact = ""
     facts_text = ""
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-    #logging.info(f"collection: {collection} {is_rag}")
+    logging.info(f"Loading facts: {collection} {is_rag}")
     facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
     if facts:
         facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
+        logging.info(f"RAG request: {collection}")
         prep_prompt = (
             "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
@@ -729,6 +731,8 @@ async def perform_prompt(ctx: UserContext,
 
     if mem_id:
        user_message["mem_id"] = mem_id
+
+    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
 
     # Добавляем инструкцию
     messages.append(instruction_message)
@@ -817,6 +821,7 @@ async def perform_prompt(ctx: UserContext,
             accumulated_response = ""
             accumulated_thinking = ""
             thinking = False
+            logging.info(f"Requesting LLM {model}")
             async for data in llm_request_stream(main_payload):
                 if data.get("done"):  
                     # финал: собираем response на основе всего текста
@@ -849,6 +854,7 @@ async def perform_prompt(ctx: UserContext,
                     yield {"error": "Empty response", "done": True}
         return gen()    
     else:
+        logging.info(f"Requesting LLM {model}")
         data = await llm_request(main_payload)
         response = await process_response(data)
         return response

@@ -7,6 +7,8 @@ from config import SETTINGS
 from config import USER_DATA_DIR
 from user_context import UserContext, create_profile
 from utils import  upload_data_to_storage
+import time
+
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
@@ -18,7 +20,7 @@ def _get_path(user_id: str, chat: str) -> str:
 def load_history(ctx: UserContext, chat: str = "default") -> list:
     try:
         if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json"
+            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json?nocache={int(time.time())}"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
@@ -77,7 +79,7 @@ def load_chats_index(ctx: UserContext) -> dict:
         #print(f"[history] Load index: {ctx.user_id} {storage}")
 
         if storage and omd_key:
-            url = f"{GATEWAY_URL}/{storage}/chats/chats.json"
+            url = f"{GATEWAY_URL}/{storage}/chats/chats.json?nocache={int(time.time())}"
             headers = {"Authorization": f"token:{omd_key}"}
             resp = requests.get(url, headers=headers, timeout=10)
 

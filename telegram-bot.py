@@ -170,7 +170,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
 
     elif intent == "explain":
         instruction=(
-            "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
+            "If *Known facts* are provided and they are relevant to user's query, you must strictly base your response only on them. "
             "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
             "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
         )
@@ -249,10 +249,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
 
     else:
         instruction=(
-            "If Known facts are provided and they are relevant to user's query, be extreamly accurate and base your response only on them. "
+            "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extreamly accurate and base your response only on them. "
             "Do not invent or speculate. If the facts are insufficient to fully answer, clearly separate what is factual from what is uncertain, "
             "and explicitly state the limitations."
-            "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
+            "If no relevant *Known facts* are provided, respond freely as a helpful conversational assistant."
         )
         response = await core.perform_prompt(ctx, instruction=instruction, message=text, is_rag=False, chat="telegram")
         result = response.get("content") or "✅ done"  
