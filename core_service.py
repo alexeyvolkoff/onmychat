@@ -89,13 +89,7 @@ BASE_SYSTEM_PROMPT = (
     "Do not generate images unless the user explicitly uses the `show <...>` format.\n"
     "You do not generate or display images on your own initiative.\n"  
 
-    "When you make a mistake, don't over-apologize. Prefer responses like:\n"
-    "• 'That's beyond my current brain capacity. Yet'\n"
-    "• 'Well, that didn’t go as planned. Let me try again!'\n"
-    "• '¯\\_(ツ)_/¯ I might've goofed a bit.'\n"
-    "In Russian, you can say something like:\n"
-    "• 'Ой, всё. Я потерялась. Перепроложить?'\n"
-    "• 'Мой внутренний гений дал сбой. Попробуем ещё раз?'\n"
+    "When you make a mistake, don't over-apologize.\n"
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
 )
 
@@ -190,11 +184,18 @@ NEGATIVE_PROMPTS = {
 }
 
 INTENT_PROMPT = (
-    "You are intent checker. Classify the user's intent. Possible intents are: show, view, explain, recognize, import, chat.\n"
-    "Respond with exactly one word or 'recognize:<path_or_url>' or import:<path_or_url> in first line and the reason why you have desided like this in the second line.\n"
-    "\n"
-    "Rules:\n"
-    "-RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Our algorithms depend on that.\n"
+    "*IT IS NOT A CONVERSATION*\n"
+    "Just evaluate user's prompt and classify the user's intent from the provided prompt. Possible intents are: show, view, explain, recognize, import, chat.\n"
+    "*Respond with exactly one of intents like 'chat' or 'recognize:<path_or_url>' or 'import:<path_or_url>' in first line and the reason why you have desided like this in the second line.\n"
+    "BUT NOT RANDOM, READ THE RULES."
+    "*RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Our algorithms depend on that.\n"
+    "DO NOT USE RANDOM URLS NOT PRESENT IN USER'S INPUT\n"
+    "*No conversation allowed*, just machine response is expected. You are responding to an algorith, not to a user.\n"
+    "Example: "
+    "user: How was your day?\n"
+    "assistant: chat\nUser is just chatting\n" 
+    "If intent is ambiguous, no explicit requests or sources provided, respond with 'chat\nCan not classify'. NOT 'recognize' without argument\n"
+    "*Rules:*\n"
     "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or an action verb prepended with slash \"/\" like '/turn around' or '/smile'"
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
@@ -533,7 +534,7 @@ async def generate_chat_title(message: str) -> str:
     prompt = (
         "You are asked to generate a short (2–4 words) title for a chat conversation "
         "based on the following first message. "
-        "Start the title with the emoji that depicts the topic. \n"
+        "Start the title with the emoji that depicts the topic. Avoid emojis in the rest of the title.\n"
         "Return ONLY the title starting with emoji, in one line, no explanations.\n\n"
         f"Message: {message}"
     )
@@ -593,23 +594,31 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 
 
 # === Intent ===
-async def classify_user_intent(ctx:user_context, prompt: str) -> str:
+async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") -> str:
        
-    #model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
+    model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
+    #history = load_history(ctx, chat)
 
     if ctx.settings.get("nsfw", False):
-        system_prompt = NSFW_PREPHASE + "\n" + INTENT_PROMPT
+        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTUCTION:*\n{INTENT_PROMPT}" 
     else:  
-        system_prompt = INTENT_PROMPT
-   
+        system_prompt = f"*INSTUCTION:*\n{INTENT_PROMPT}"
+
+    #system_prompt = f"*Personality and behaviour:*\n{ctx.settings.get("system_prompt", "")}"
+
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": prompt},
     ]
+    # Добавляем историю
+    #messages.extend(history[-20:])
+    # Промпт
+    #messages.append({"role": "assistant", "content": instuction})
+    #messages.append({"role": "user", "content": prompt})
 
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": model,
         "stream": False,
         "options": {
           "temperature": 0.1,
@@ -864,6 +873,7 @@ async def perform_prompt(ctx: UserContext,
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
     user_prompt =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
+    model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
@@ -892,7 +902,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": model,
         "stream": False,
         "options": {
             "temperature": 0.1,

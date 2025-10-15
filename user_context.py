@@ -36,6 +36,7 @@ class UserContext:
     type: str   # "omd" или "temp"
     user_id: str  # либо account_id/username, либо temp_id
     settings: dict
+    history: dict
 
 # === Настройки пользователя ===
 def get_default_system_prompt() -> str:
@@ -108,10 +109,10 @@ def get_context(telegram_id: int) -> UserContext:
     if telegram_id in bindings["by_telegram"]:
         binding = bindings["by_telegram"][telegram_id]
         settings = load_user_settings(binding["username"])
-        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[])
     else:
         settings = load_user_settings(telegram_id)
-        ctx = UserContext(type="temp", user_id=str(telegram_id), settings=settings)
+        ctx = UserContext(type="temp", user_id=str(telegram_id), settings=settings, history=[])
     return  ctx
 
 
@@ -123,7 +124,7 @@ def get_context_by_account(account_id: str) -> UserContext:
     if account_id in bindings["by_account"]:
         binding = bindings["by_account"][account_id]
         settings = load_user_settings(binding["username"])
-        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings)
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[])
         return ctx 
     
     # если не найден — пробуем запросить у OMD
@@ -139,7 +140,7 @@ def get_context_by_account(account_id: str) -> UserContext:
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
             save_bindings()
             settings = load_user_settings(username)
-            ctx = UserContext(type="omd", user_id=username, settings=settings)
+            ctx = UserContext(type="omd", user_id=username, settings=settings, history=[])
             return ctx
     except Exception as e:
         logging.warning(f"Unbound OMD key: {account_id}")
@@ -147,7 +148,7 @@ def get_context_by_account(account_id: str) -> UserContext:
     # если ничего не получилось — временный контекст
     user_id=f"temp_{account_id}"
     settings = load_user_settings(user_id)
-    ctx = UserContext(type="temp", user_id=user_id, settings=settings)
+    ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[])
     return ctx
 
 

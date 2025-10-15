@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
+from fastapi import Header
 from PIL import Image
 import io
 import re
@@ -212,7 +213,7 @@ async def history_endpoint(omd_key: str, chat: str = "default"):
 
 
 @app.delete("/history/{chat}/{number:int}")
-def delete_history(chat: str, number: int, omd_key: str = Query(...)):
+def delete_history(chat: str, number: int, omd_key: str = Header(..., alias="X-OMD-Key")):
     """
     Удаляет сообщение по индексу (0-based) из истории указанного чата пользователя.
     """
@@ -279,7 +280,7 @@ async def update_memory(mem_id: str, data: MemoryUpdate):
 
 
 @app.delete("/memory/{mem_id}")
-async def delete_memory(omd_key: str, mem_id: str, collection: str = "user"):
+async def delete_memory(mem_id: str, omd_key: str = Header(..., alias="X-OMD-Key"), collection: str = "user" ):
     ctx = get_ctx(omd_key)
     print(f"KEY: {mem_id}")
     try:
@@ -391,13 +392,11 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             intent = "explain"   
             think = prompt.startswith("/think")
         else:
-            raw_intent = await core_service.classify_user_intent(ctx, prompt)
+            raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
             lines = raw_intent.strip().split("\n", 1)
+            logging.info(f"Intent detected: {raw_intent}  {ctx.settings["nsfw"]}")
             intent = lines[0].strip()
-            if len(lines) > 1:
-                logging.info(f"Intent explanation: {lines[1].strip()}")    
-
-        logging.info(f"Intent detected: {intent}  {ctx.settings["nsfw"]}")
+    
         if intent == "show":
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"

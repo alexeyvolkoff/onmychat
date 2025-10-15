@@ -90,7 +90,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
     if not text and update.message.photo:
         intent = "recognize"
     else:    
-        raw_intent = command if command else await core.classify_user_intent(ctx, text)
+        raw_intent = command if command else await core.classify_user_intent(ctx, text, "telegram")
         lines = raw_intent.strip().split("\n", 1)
         intent = lines[0].strip()
         if len(lines) > 1:

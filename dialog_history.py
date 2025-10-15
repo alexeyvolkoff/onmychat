@@ -19,13 +19,19 @@ def _get_path(user_id: str, chat: str) -> str:
 
 def load_history(ctx: UserContext, chat: str = "default") -> list:
     try:
+        if ctx.history:
+            return ctx.history
+
         if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
             url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json?nocache={int(time.time())}"
             token = ctx.settings["omd_key"]
             headers = {"Authorization": f"token:{token}"}
+            print(f"[loading history]: {ctx.user_id} {url} {token}")
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
                 history = json.loads(resp.content.decode("utf-8"))
+                # save chat history in context
+                ctx.history = history   
                 return  history
             return []
         else:
@@ -35,7 +41,10 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                 return []
             with open(path, "r", encoding="utf-8") as f:
                 history = json.load(f)
+                # save chat history in context
+                ctx.history = history   
                 return  history
+        
     except Exception as e:
         print(f"[history] Empty history: {ctx.user_id} {ctx.settings.get("storage")} {chat} {e}")
         return []
@@ -76,7 +85,7 @@ def load_chats_index(ctx: UserContext) -> dict:
     try:
         storage = ctx.settings.get("storage")
         omd_key = ctx.settings.get("omd_key")
-        #print(f"[history] Load index: {ctx.user_id} {storage}")
+        print(f"[history] Load index: {ctx.user_id} {storage}")
 
         if storage and omd_key:
             url = f"{GATEWAY_URL}/{storage}/chats/chats.json?nocache={int(time.time())}"
