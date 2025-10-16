@@ -411,10 +411,10 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             skip_history = True
             #Set specific instructions
             instruction = (
-                "Recognize and describe the provided image or scene description:\n"
+                "This is a textual description of the scene you are acting in:\n"
                 "{}\n\n"
                 "*'Me' refers to you in the provided scene description* \n\n"
-                "Continue conversation describing how you feel in this scene."
+                "Do not cite the prompt or scene description in your response, just continue conversation describing how you feel in this scene. "
             ).format(img_prompt)
             request = prompt
         elif intent == "view":
@@ -430,10 +430,10 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             skip_history = True
             #Set specific instructions
             instruction = (
-                "Recognize and describe the provided image or scene description:\n"
+                "You are viewing this scene:\n"
                 "{}\n\n"
                 "*'Me', if present, refers to you in the provided scene description*"
-                "Continue conversation describing this scene: {}\n\n"
+                "Do not the prompt or scene description in your response, just continue conversation describing this scene."
             ).format(img_prompt)
             request = prompt
         elif intent == "explain":    

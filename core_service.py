@@ -191,15 +191,18 @@ INTENT_PROMPT = (
     "*IT IS NOT A CONVERSATION*\n"
     "Just evaluate user's prompt and classify the user's intent from the provided prompt. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "*Respond with exactly one of intents like 'chat' or 'recognize:<path_or_url>' or 'import:<path_or_url>' in first line and the reason why you have desided like this in the second line.\n"
-    "BUT NOT RANDOM, READ THE RULES."
-    "*RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Our algorithms depend on that.\n"
-    "DO NOT USE RANDOM URLS NOT PRESENT IN USER'S INPUT\n"
+    "NOT RANDOM, READ THE RULES.\n"
+    "NOT 'SHOW: blabla', JUST 'SHOW' and explanation in the second row.\n"
+    "*RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Intent in the first row, explanation in the second row. Our algorithms depend on that.\n"
+    "*DO NOT CLASSYFY AS VIEW, SHOW, IMPORT OR RECOGNIZE FOR SIMPLE CHAT RESPONSES*\n"
+    "DO NOT COME UP WITH RANDOM URLS NOT PRESENT IN USER'S INPUT\n"
     "*No conversation allowed*, just machine response is expected. You are responding to an algorith, not to a user.\n"
     "Example: "
     "user: How was your day?\n"
     "assistant: chat\nUser is just chatting\n" 
     "If intent is ambiguous, no explicit requests or sources provided, respond with 'chat\nCan not classify'.\n"
     "*Rules:*\n"
+    "-In case of ANY ambiguity in user's request, classify intent as 'chat'. NOT ANYTHING ELSE. 'chat' as correct for any ambiguous case.\n"
     "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or an action verb prepended with slash \"/\" like '/turn around' or '/smile'"
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
     "-DO NOT CLASSIFY AS 'import' WITHOUT EXPLICIT path or url provided\n"
@@ -601,7 +604,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 # === Intent ===
 async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") -> str:
        
-    model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
+    #model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
     #history = load_history(ctx, chat)
 
     if ctx.settings.get("nsfw", False):
@@ -623,7 +626,7 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
 
     request_payload = {
         "messages": messages,
-        "model": model,
+        "model": DEFAULT_MODEL,
         "stream": False,
         "options": {
           "temperature": 0.1,
@@ -648,7 +651,8 @@ async def perform_prompt(ctx: UserContext,
                          think: bool = False) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    model = DEFAULT_MODEL
     b64_image = None
 
     history = load_history(ctx, chat)
@@ -878,7 +882,7 @@ async def perform_prompt(ctx: UserContext,
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
     user_prompt =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
@@ -907,7 +911,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     request_payload = {
         "messages": messages,
-        "model": model,
+        "model": DEFAULT_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.1,
@@ -964,11 +968,11 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     with open(WORKFLOW_CHARACTER_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
-    avatar_path = get_user_avatar_path(user_id)
+    #avatar_path = get_user_avatar_path(user_id)
     # Промпт для генерации
     workflow_json["4"]["inputs"]["text"] = negative_prompt
     workflow_json["85"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
-    workflow_json["135"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
+    #workflow_json["135"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
 
     # Выбираем модель в соответствии с режимом
     style = ctx.settings.get("style", "realistic")
