@@ -94,6 +94,9 @@ BASE_SYSTEM_PROMPT = (
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
+        "*This is not a conversational request, simply create an image prompt*.\n"
+        "Return only 'Image: prompt', no comments, no replies, no thoughts\n"
+        "*FOLLOW THIS INSTUCTION CAREFULLY to craft a image prompt*.\n"
         "Craft a vivid and detailed prompt for generating a realistic, cinematic scene. "
         "The image should depict your character performing the requested action, described in the third person, based on a short user input.\n"
         "Translate to English, add your character appearance, visual details, environment, style, "
@@ -137,6 +140,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
+        "*This is not a conversational request, simply create an image prompt*.\n"
         "Create a high-quality prompt for generating a realistic image "
         "of the requested object or scene from the short user input.\n"
         "(as you see it from aside). (Avoid placing yourself into the scene). \n"
@@ -194,7 +198,7 @@ INTENT_PROMPT = (
     "Example: "
     "user: How was your day?\n"
     "assistant: chat\nUser is just chatting\n" 
-    "If intent is ambiguous, no explicit requests or sources provided, respond with 'chat\nCan not classify'. NOT 'recognize' without argument\n"
+    "If intent is ambiguous, no explicit requests or sources provided, respond with 'chat\nCan not classify'.\n"
     "*Rules:*\n"
     "-DO NOT CLASSIFY AS 'show' WITHOUT EXPLICIT REQUEST containing 'show' or an action verb prepended with slash \"/\" like '/turn around' or '/smile'"
     "-DO NOT CLASSIFY AS 'recognize' WITHOUT EXPLICIT path or url provided.\n"
@@ -430,6 +434,7 @@ async def poll_for_result(prompt_id:  str,  timeout: int = 60):
                 for node_id, node_data in outputs.items():
                     images = node_data.get("images", [])
                     for image in images:
+                        logging.info(f"image: {image}")
                         filename = image.get("filename")
                         subfolder = image.get("subfolder", "")
                         full_path = os.path.join(COMFY_OUTPUT_DIR, subfolder, filename)
@@ -600,9 +605,9 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
     #history = load_history(ctx, chat)
 
     if ctx.settings.get("nsfw", False):
-        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTUCTION:*\n{INTENT_PROMPT}" 
+        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}" 
     else:  
-        system_prompt = f"*INSTUCTION:*\n{INTENT_PROMPT}"
+        system_prompt = f"*INSTRUCTION:*\n{INTENT_PROMPT}"
 
     #system_prompt = f"*Personality and behaviour:*\n{ctx.settings.get("system_prompt", "")}"
 
@@ -961,9 +966,9 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
 
     avatar_path = get_user_avatar_path(user_id)
     # Промпт для генерации
-    workflow_json["6"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
-    workflow_json["7"]["inputs"]["text"] = negative_prompt
-    workflow_json["11"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
+    workflow_json["4"]["inputs"]["text"] = negative_prompt
+    workflow_json["85"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
+    workflow_json["135"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
 
     # Выбираем модель в соответствии с режимом
     style = ctx.settings.get("style", "realistic")
