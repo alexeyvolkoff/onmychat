@@ -74,6 +74,12 @@ class MemoryUpdate(BaseModel):
     collection: str = "user"
     relevance: str = "contextual"
     document_id: str | None = None
+    memory_id: str | None = None
+
+class MemoryImport(BaseModel):
+    collection: str = "user"
+    document_id: str | None = None
+
 
 
 class GenerateInput(BaseModel):
@@ -260,9 +266,9 @@ async def memory_endpoint(omd_key: str, collection: str = "user"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/memory/{mem_id}")
-async def update_memory(mem_id: str, data: MemoryUpdate):
-    ctx = get_ctx(data.omd_key)  # сюда нужно будет пробросить omd_key
+@app.post("/memory")
+async def update_memory(data: MemoryUpdate, omd_key: str = Header(..., alias="X-OMD-Key")):
+    ctx = get_ctx(omd_key)  
     try:
         updated_id = memory_index.update_memory_card(
             ctx=ctx,
@@ -270,13 +276,29 @@ async def update_memory(mem_id: str, data: MemoryUpdate):
             collection=data.collection,
             relevance=data.relevance,
             document_id=data.document_id,
-            mem_id=mem_id
+            mem_id=data.memory_id
         )
         if not updated_id:
             raise HTTPException(status_code=404, detail="Memory not found")
         return {"status": "ok", "memory_id": updated_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/memory/import")
+async def update_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-OMD-Key")):
+    ctx = get_ctx(omd_key)  
+    try:
+        card = await core_service.import_doc(
+            ctx=ctx,
+            url_or_path=data.document_id,
+            collection=data.collection
+        )
+        if not card:
+            raise HTTPException(status_code=404, detail="Import failed")
+        return {"status": "ok", "card": card}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.delete("/memory/{mem_id}")
