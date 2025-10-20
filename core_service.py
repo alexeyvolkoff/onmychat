@@ -54,26 +54,36 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. \n\n"
     
-    "You can memorize facts about user that user shares with you in their messages. NOT FACTS FROM GENERAL KNOWLEDGE, NEW OR KNOWN FACTS SECTION:\n "
-    "Memorize: <fact>\n"
-    "Example: \n"
-    "   user: Our server runs on Ubuntu 24.04.\n"
-    "   assistant: Good choice!\n"
-    "              Memorize: User's server runs on Ubuntu 24.04.\n"
+    "You can memorize *personal facts about the user* that the user explicitly shares in their messages.\n"
     "\n"
-    "*Memorization rules*:\n"
-    " *DO NOT MEMORIZE FACTS FROM IMPORTED DOCUMENTS OR LINKS - THEY ARE ALREADY MEMORIZED. DO NOT MEMORIZE FACTS FROM YOUR OWN REPLIES!*\n"
-    "When the *user* shares a new fact about themselves, their project, or the task you assist with — something **not present in general knowledge** *NEW FACTS* or *KNOWN FACTS* —\\n"
-    "append to your reply:\n"
-    "Do **not** memorize:\n"
-    "* your replies,\n"
-    "* anything already covered by general knowledge or *KNOWN FACTS*.\n"
-    "* images explanations done by you,\\n"
-    "* document summarizations and explanations done by you,\\n"
-    "* greetings or casual chatter,\\n"
-    "* obvious context (e.g. “user asked a question, user shared a photo”),\n"
-    "* obvious facts (e.g. “London is a capital of Great Britain”),\n"
-    "Only momorize **new factual information** that user reveals.\n\n"
+    "Examples:\n"
+    "user: Our main server runs on Ubuntu 24.04.\n"
+    "assistant: Good choice!\n"
+    "Memorize: User’s main server runs on Ubuntu 24.04.\n"
+    "\n"
+    "user: I'm a software developer.\n"
+    "assistant: That's awesome!\n"
+    "Memorize: User is a software developer.\n"
+    "\n"
+    "*Do NOT memorize:*\n"
+    "- Facts from imported documents or links — they are already stored.\n"
+    "- Anything mentioned in your own replies or Known Facts, unless it is related to user personally.\n"
+    "- Temporary or conversational context (e.g., 'I'm fine', 'Let's test it now').\n"
+    "- Obvious context like user's actions in chat (e.g., 'user asked a question', 'user requested an image').\n"
+    "- General knowledge, public information, or non-user-specific facts.\n"
+    "- Do NOT memorize when the user asks you to explain, describe, summarize, or define something.\n"
+    "- Only memorize facts *about the user*, their setup, their data, their personal information, or their preferences.\n"
+    "\n"
+    "*Only memorize if:*\n"
+    "- The user reveals a new, factual, persistent detail about themselves, their project, or environment.\n"
+    "- The information would still be true after the current chat ends.\n"
+    "- It can be useful in future conversations (e.g., system setup, project name, goals, preferences).\n"
+    "\n"
+    "*Output format:*\n"
+    "If you find a new fact, append this line at the end of your reply:\n"
+    "Memorize: <fact>\n"
+    "If you're not sure — do not memorize.\n"
+    "\n"
  
     "*Images rules*:\n"
     
@@ -538,7 +548,7 @@ async def llm_request(payload: dict, headers: dict = None):
 
 
 # === Chats naming ==== #
-async def generate_chat_title(message: str) -> str:
+async def generate_chat_title(message: str, chats) -> str:
     """
     Спросить у LLM короткое имя для чата.
     """
@@ -547,7 +557,9 @@ async def generate_chat_title(message: str) -> str:
         "based on the following first message. "
         "Start the title with the emoji that depicts the topic. Avoid emojis in the rest of the title.\n"
         "Return ONLY the title starting with emoji, in one line, no explanations.\n\n"
-        f"Message: {message}"
+        f"Message: {message}\n"
+        "Avoid using already existing names and titles:\n"
+        "Existing chats:\n{chats}"
     )
 
     payload = {
@@ -574,14 +586,21 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     Убедиться, что чат есть в chats.json и файлы подготовлены.
     Если чат = default → сгенерировать нормальное название на основе первого сообщения.
     """
+    wasNewUser = ctx.settings.get("newUser", True)
     chats = load_chats_index(ctx)
+    if (not chats or len(chats) <= 1) and ctx.type == "temp":
+        ctx.settings["newUser"] = True
+        print(f"[chats] New user detected {ctx.user_id})")
+    else:
+        ctx.settings["newUser"] = False    
+    print(f"[chats] User status: {ctx.user_id} {ctx.settings["newUser"]})")
 
     if chat not in chats:
         title = f"Chat {chat}"
 
         if not chat or chat == "default" and first_message:
             try:
-                title = await generate_chat_title(first_message)
+                title = await generate_chat_title(first_message, chats)
                 chat =  re.sub(r'^[^\w]+', '', title).strip()
                 chat = chat.lower().replace(" ", "_")
             except Exception as e:
@@ -600,6 +619,9 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
         chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
 
     save_chats_index(ctx, chats)
+    if wasNewUser and  len(chats) > 1:
+        ctx.settings["newUser"] = False
+        user_context.save_user_settings(ctx)    
 
     return chats[chat]
 
@@ -713,6 +735,10 @@ async def perform_prompt(ctx: UserContext,
     # Персонализация
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
+    if ctx.settings.get("newUser", False):
+        system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
+    else:        
+        system_prompt += "\n\n*Attention*:* You are communicating with existing user.\n"
 
     # Факты
     if facts_text:
@@ -721,9 +747,12 @@ async def perform_prompt(ctx: UserContext,
 
     # Инструкция
     instruction_prompt = "*Instruction:*\n" + instruction
+    # Reminder
     if think:
         instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."    
-
+    else:
+        instruction_prompt += "\n\n*Important*: pay attention to memorization and imaging rules."
+   
     if nsfw_enabled:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
 

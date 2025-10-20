@@ -58,6 +58,7 @@ def load_user_settings(user_id) :
             "system_prompt": get_default_system_prompt(),
             "omd_key": "",
             "storage": "",
+            "newUser": True,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
             "kb_id": DEFAULT_KB_ID
@@ -166,6 +167,8 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
     """
     # Сохраняем выбранное хранилище в контекст
     ctx.settings["storage"] = storage
+    ctx.settings["storage"] = storage
+    
 
     headers = {
         "authorization": f"token:{omd_key}",
