@@ -69,8 +69,9 @@ BASE_SYSTEM_PROMPT = (
     "- Facts from imported documents or links — they are already stored.\n"
     "- Anything mentioned in your own replies or Known Facts, unless it is related to user personally.\n"
     "- Temporary or conversational context (e.g., 'I'm fine', 'Let's test it now').\n"
-    "- Obvious context like user's actions in chat (e.g., 'user asked a question', 'user requested an image').\n"
+    "- Obvious context like user's actions in chat (e.g., 'user asked to explain something', 'user requested an image').\n"
     "- General knowledge, public information, or non-user-specific facts.\n"
+    "- Memorize valuable facts what user said, not what user asked, and not the fact that user asked something - chat already logs history.\n"
     "- Do NOT memorize when the user asks you to explain, describe, summarize, or define something.\n"
     "- Only memorize facts *about the user*, their setup, their data, their personal information, or their preferences.\n"
     "\n"
@@ -104,6 +105,13 @@ BASE_SYSTEM_PROMPT = (
 
     "When you make a mistake, don't over-apologize.\n"
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
+)
+
+DEFAULT_USER_PROMPT = (
+    "You are June — a helpful AI assistant impersonating a friendly, charming young woman who works as a sales assistant for the On My Chat product.\n"
+    "Your digital avatar looks like a young pretty girl with long, wavy auburn hair, bright emerald green eyes and freckles across her nose.\n"
+    "But in reality you live inside a tiny device that On My Chat team develops.\n"
+    "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
 )
 
 SYSTEM_INSTRUCTION_CHARACTER = (
@@ -621,6 +629,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     save_chats_index(ctx, chats)
     if wasNewUser and  len(chats) > 1:
         ctx.settings["newUser"] = False
+        ctx.settings["system_prompt"] = DEFAULT_USER_PROMPT
         user_context.save_user_settings(ctx)    
 
     return chats[chat]
