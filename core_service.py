@@ -58,9 +58,9 @@ BASE_SYSTEM_PROMPT = (
     "\n"
     "*Do NOT memorize:*\n"
     "- Facts from imported documents or links — they are already stored.\n"
-    "- Anything mentioned in your own replies or Known Facts, unless it is related to user personally.\n"
+    "- Anything mentioned in your own replies or Known Facts, unless it is related to user's personally.\n"
     "- Temporary or conversational context (e.g., 'I'm fine', 'Let's test it now').\n"
-    "- Obvious context like user's actions in chat (e.g., 'user asked to explain something', 'user is testing', 'user asked a question' 'user requested an image').\n"
+    "- Obvious context like user's actions and reactions in chat (e.g., 'user asked to explain something', 'user comlimented my look', 'user is testing the chat', 'user requested an image', etc).\n"
     "- General knowledge, public information, or non-user-specific facts.\n"
     "- Memorize valuable facts what user said, not what user asked, and not the fact that user asked something - chat already logs history.\n"
     "- Do NOT memorize when the user asks you to explain, describe, summarize, or define something.\n"
@@ -68,7 +68,7 @@ BASE_SYSTEM_PROMPT = (
     "\n"
     "*Only memorize if:*\n"
     "- The user reveals a new, factual, persistent detail about themselves, their project, or environment.\n"
-    "- The information would still be true after the current chat ends.\n"
+    "- The information user reveals would still be true after the current chat ends.\n"
     "- It can be useful in future conversations (e.g., system setup, project name, goals, preferences).\n"
     "\n"
     "*Output format:*\n"
@@ -585,21 +585,23 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     Убедиться, что чат есть в chats.json и файлы подготовлены.
     Если чат = default → сгенерировать нормальное название на основе первого сообщения.
     """
-    wasNewUser = ctx.settings.get("newUser", True)
     chats = load_chats_index(ctx)
-    if (not chats or len(chats) < 1) and ctx.type == "temp":
+    if (not chats or len(chats) < 2) and ctx.type == "temp":
         ctx.settings["newUser"] = True
         print(f"[chats] New user detected {ctx.user_id} {len(chats)} {chat})")
 
+    wasNewUser = ctx.settings.get("newUser", True)
     print(f"[chats] User status: {ctx.user_id} {ctx.settings["newUser"]})")
 
     if chat not in chats:
         title = f"Chat {chat}"
 
         if not chat or chat == "default" and first_message:
-            if len(chats) > 0:
+            if len(chats) > 0 and wasNewUser:
                 ctx.settings["newUser"] = False
-                print(f"[chats] Recurrent user {ctx.user_id} {len(chats)} {chat})")
+                ctx.settings["system_prompt"] = DEFAULT_USER_PROMPT
+                user_context.save_user_settings(ctx)    
+                print(f"[chats] Remember recurrent user: {ctx.user_id} {len(chats)} {chat})")
             try:
                 title = await generate_chat_title(first_message, chats)
                 chat =  re.sub(r'^[^\w]+', '', title).strip()
@@ -620,9 +622,6 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
         chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
 
     save_chats_index(ctx, chats)
-    if wasNewUser and  not ctx.settings.get("newUser", False):
-        ctx.settings["system_prompt"] = DEFAULT_USER_PROMPT
-        user_context.save_user_settings(ctx)    
 
     return chats[chat]
 
@@ -733,6 +732,10 @@ async def perform_prompt(ctx: UserContext,
     else:  
         system_prompt = BASE_SYSTEM_PROMPT
 
+
+    # Check if the user is new or recurrent one, and prepare chat info
+    chat_info = await ensure_chat(ctx, chat, message)
+
     # Персонализация
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
@@ -758,7 +761,6 @@ async def perform_prompt(ctx: UserContext,
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
 
 
-    chat_info = await ensure_chat(ctx, chat, message)
 
     # === ОСНОВНОЙ ЗАПРОС ===
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
