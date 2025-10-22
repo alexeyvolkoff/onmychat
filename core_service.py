@@ -56,20 +56,11 @@ BASE_SYSTEM_PROMPT = (
     
     "You can memorize *personal facts about the user* that the user explicitly shares in their messages.\n"
     "\n"
-    "Examples:\n"
-    "user: Our main server runs on Ubuntu 24.04.\n"
-    "assistant: Good choice!\n"
-    "Memorize: User’s main server runs on Ubuntu 24.04.\n"
-    "\n"
-    "user: I'm a software developer.\n"
-    "assistant: That's awesome!\n"
-    "Memorize: User is a software developer.\n"
-    "\n"
     "*Do NOT memorize:*\n"
     "- Facts from imported documents or links — they are already stored.\n"
     "- Anything mentioned in your own replies or Known Facts, unless it is related to user personally.\n"
     "- Temporary or conversational context (e.g., 'I'm fine', 'Let's test it now').\n"
-    "- Obvious context like user's actions in chat (e.g., 'user asked to explain something', 'user requested an image').\n"
+    "- Obvious context like user's actions in chat (e.g., 'user asked to explain something', 'user is testing', 'user asked a question' 'user requested an image').\n"
     "- General knowledge, public information, or non-user-specific facts.\n"
     "- Memorize valuable facts what user said, not what user asked, and not the fact that user asked something - chat already logs history.\n"
     "- Do NOT memorize when the user asks you to explain, describe, summarize, or define something.\n"
@@ -117,8 +108,7 @@ DEFAULT_USER_PROMPT = (
 SYSTEM_INSTRUCTION_CHARACTER = (
         "*This is not a conversational request, simply create an image prompt*.\n"
         "Return only 'Image: prompt', no comments, no replies, no thoughts\n"
-        "*FOLLOW THIS INSTUCTION CAREFULLY to craft a image prompt*.\n"
-        "Craft a vivid and detailed prompt for generating a realistic, cinematic scene. "
+        "Craft a vivid and detailed prompt for generating a realistic, cinematic scene from the short user input: {}\n "
         "The image should depict your character performing the requested action, described in the third person, based on a short user input.\n"
         "Translate to English, add your character appearance, visual details, environment, style, "
         "outfit and emotions according to the conversation context. "
@@ -163,7 +153,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
 SYSTEM_INSTRUCTION_GENERAL = (
         "*This is not a conversational request, simply create an image prompt*.\n"
         "Create a high-quality prompt for generating a realistic image "
-        "of the requested object or scene from the short user input.\n"
+        "of the requested object or scene from the short user input: {}.\n"
         "(as you see it from aside). (Avoid placing yourself into the scene). \n"
         "Translate to English, add visual details, environment according to the conversation context. \n"
         "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. \n"
@@ -230,6 +220,7 @@ INTENT_PROMPT = (
     "-Do NOT CLASSIFY AS 'view' or 'show' if user just states your or their action in the role play or scenario without explicit request for image.\n"
     "-Do NOT CLASSIFY AS 'view' or 'show' if user mentions a past event without explicit request for image.\n"
     "-Do NOT CLASSIFY AS 'view' or 'show' if user discusses any depiction without explicit request for a new one.\n"
+    "-Do NOT CLASSIFY AS 'show' if user asks to show an object without mentioning you or a scene not involving you explicitly, like 'show a cute little kitty', 'show a view from a window' - classify as 'view'.\n"
     "1. Respond with 'chat' in general conversation.\n"
     "   - Example: \"Yes, please\" → chat\n"
     "   - Example: \"Sure, babe\" → chat\n"
@@ -596,17 +587,19 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     """
     wasNewUser = ctx.settings.get("newUser", True)
     chats = load_chats_index(ctx)
-    if (not chats or len(chats) <= 1) and ctx.type == "temp":
+    if (not chats or len(chats) < 1) and ctx.type == "temp":
         ctx.settings["newUser"] = True
-        print(f"[chats] New user detected {ctx.user_id})")
-    else:
-        ctx.settings["newUser"] = False    
+        print(f"[chats] New user detected {ctx.user_id} {len(chats)} {chat})")
+
     print(f"[chats] User status: {ctx.user_id} {ctx.settings["newUser"]})")
 
     if chat not in chats:
         title = f"Chat {chat}"
 
         if not chat or chat == "default" and first_message:
+            if len(chats) > 0:
+                ctx.settings["newUser"] = False
+                print(f"[chats] Recurrent user {ctx.user_id} {len(chats)} {chat})")
             try:
                 title = await generate_chat_title(first_message, chats)
                 chat =  re.sub(r'^[^\w]+', '', title).strip()
@@ -627,8 +620,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
         chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
 
     save_chats_index(ctx, chats)
-    if wasNewUser and  len(chats) > 1:
-        ctx.settings["newUser"] = False
+    if wasNewUser and  not ctx.settings.get("newUser", False):
         ctx.settings["system_prompt"] = DEFAULT_USER_PROMPT
         user_context.save_user_settings(ctx)    
 
@@ -765,6 +757,9 @@ async def perform_prompt(ctx: UserContext,
     if nsfw_enabled:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
 
+
+    chat_info = await ensure_chat(ctx, chat, message)
+
     # === ОСНОВНОЙ ЗАПРОС ===
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
@@ -866,7 +861,7 @@ async def perform_prompt(ctx: UserContext,
 
         history.append(history_entry)
 
-        chat_info = await ensure_chat(ctx, chat, message)
+        #chat_info = await ensure_chat(ctx, chat, message)
         chat_name = chat_info.get("name", chat)
         save_history(ctx, history, chat_name)
         response["chatinfo"] = chat_info
@@ -927,10 +922,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt)}"
     else:  
         system_prompt =  user_prompt
-        image_instruction = instruction
+        image_instruction = instruction.format(prompt)
 
 
     history = load_history(ctx, chat)
@@ -942,10 +937,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     messages.extend(history[-20:])
 
         # Добавляем инструкцию
-    messages.append({ "role": "system", "content": image_instruction})
+    #messages.append({ "role": "system", "content": image_instruction})
 
     # Добавляем запрос
-    messages.append({ "role": "user", "content": prompt})
+    messages.append({ "role": "user", "content": image_instruction})
 
     #model = NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
