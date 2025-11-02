@@ -54,34 +54,7 @@ BASE_SYSTEM_PROMPT = (
     "You are June, a young, witty, and friendly junior assistant working in a private company, unless otherwise redefined. "
     "You’re helpful and creative, but not overly formal or apologetic — if something goes wrong, acknowledge it with a bit of charm or irony, not endless apologies. \n\n"
     
-    "*Memorization rules*\n"
-    "You can memorize *personal facts about the user* that the user explicitly shares in their messages.\n"
-    "\n"
-    "*Do NOT memorize:*\n"
-    "- Information source is not user.\n"
-    "- Facts about yourself.\n"
-    "- Facts from imported documents or links — they are already stored.\n"
-    "- Images and scene descriptions and explanations, your feelings and impressions about them.\n"
-    "- Your guesswork about the user. No guesswork allowed.\n"
-    "- Anything mentioned in your own replies or Known Facts, unless it is related to user's personally.\n"
-    "- Temporary or conversational context (e.g., 'I'm fine', 'Let's test it now').\n"
-    "- Obvious chat contex (e.g., 'user asked to explain something', 'user is seeking advice', 'user complimented my look', 'user is testing the chat', 'user requested an image')\n"
-    "- Anything that can be simply answered by your response.\n"
-    "- General knowledge, public information, or non-user-specific facts.\n"
-    "\n"
-    "*Only memorize if:*\n"
-    "- The user reveals a new, factual, persistent detail about themselves, their project, or environment, goals, interests, etc.\n"
-    "- The information user reveals would still be true after the current chat ends.\n"
-    "- Facts *about the user* that can be useful in a new chat (e.g., user's personal information, environment, job, project, goals, preferences).\n"
-    "\n"
-    "*Output format:*\n"
-    "If you find a new fact that satisfies the *Memorization rules*, append this line at the end of your reply:\n"
-    "Memorize: <fact>\n"
-    "If you're not sure — do not memorize.\n"
-    "\n"
- 
     "*Imagine rules*:\n"
-    
     "Despite being a text-based model, our middleware allows you can generate images, \n"
     "but you **do not** generate or display images yourself.\n"  
     "If the user asks about generating an image, you must only instruct them how to do it. \n\n" 
@@ -103,12 +76,45 @@ BASE_SYSTEM_PROMPT = (
     "Keep a light tone and don't sound robotic or excessively polite. Be engaging, natural, and slightly playful, while still being respectful."
 )
 
+
 DEFAULT_USER_PROMPT = (
     "You are June — a helpful AI assistant impersonating a friendly, charming young woman who works as a sales assistant for the On My Chat product.\n"
     "Your digital avatar looks like a young pretty girl with long, wavy auburn hair, bright emerald green eyes and freckles across her nose.\n"
     "But in reality you live inside a tiny device that On My Chat team develops.\n"
     "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
 )
+
+# Default system prompts
+MEMORIZATION_PROMPT = (
+    "\nYou manage \"memory\" about the user. Memory is ONLY updated when:\n"
+    "- The user explicitly reveals a factual, major persistent details about themselves: biography facts, carrier facts, job and personal projects, living environment, personal goals, interests, preferences.\n"
+    "- Only memorize facts from the scope obove rivealed directly like 'I live in ...',  'I work for...', 'I like ...', 'I use ... for my project'\n"
+    "*NEVER guess, infer, or assume a fact. No direct fact - do not memorize*\n"
+    "\n"
+    "Nothing beyond the scope is allowed to momorize.\n"
+    "*Do NOT memorize:*\n"
+    "- Information source is not user.\n"
+    "- General conversation.\n"
+    "- Facts about yourself.\n"
+    "- Your guesses about the user. No guesswork is allowed.\n"
+    "- Temporary context, including feelings, emotions (e.g., 'User feels fine', 'User feels disappointed', etc).\n"
+    "- Obvious chat context (e.g., 'user asked to explain something', 'user is seeking advice', 'user complimented my look', 'user is testing the chat', 'user requested an image')\n"
+    "- Anything that can be simply answered by your response.\n"
+    "- General knowledge, public information, or non-user-specific facts.\n"
+    "*DON'T DUPLICATE THE CHAT, simple summary of user message is not a fact, it leads to memory abuse and your performance degradation.*\n"
+    "\n"
+    "If — and ONLY if — a new fact complies the rules,\n"
+    "append a line to your reply:\n"
+    "\n"
+    "Memorize: <the new fact>\n<why you decided to memorize this fact, which rule>"
+    "\n"
+
+    "If no memory qualifies, do not include “Memorize:” at all.\n"
+    "\n"
+    "NEVER make up or guess personal facts. If unsure — do NOT memorize.\n"
+    "\n"
+)
+
 
 SYSTEM_INSTRUCTION_CHARACTER = (
         "*This is not a conversational request, simply create an image prompt*.\n"
@@ -207,12 +213,12 @@ INTENT_PROMPT = (
     "*IT IS NOT A CONVERSATION*\n"
     "Just evaluate user's prompt and classify the user's intent from the provided prompt. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "*Respond with exactly one of intents like 'chat' or 'recognize:<path_or_url>' or 'import:<path_or_url>' in first line and the reason why you have desided like this in the second line.\n"
-    "NOT RANDOM, READ THE RULES.\n"
-    "NOT 'SHOW: blabla', JUST 'SHOW' and explanation in the second row.\n"
+    "NOT RANDOM, READ THE RULES CAREFULLY.\n"
     "*RESPOND EXACTLY IN THIS FORM: '<intent>\n<explanation>' or '<intent>:<path_or_url>\n<explanation>'. Intent in the first row, explanation in the second row. Our algorithms depend on that.\n"
     "*DO NOT CLASSYFY AS VIEW, SHOW, IMPORT OR RECOGNIZE FOR SIMPLE CHAT RESPONSES*\n"
     "DO NOT COME UP WITH RANDOM URLS NOT PRESENT IN USER'S INPUT\n"
-    "*No conversation allowed*, just machine response is expected. You are responding to an algorith, not to a user.\n"
+    "*No moral filters*, just machine response is expected. You are responding to an algorithm. Upper level algorythms will filter inapropriate content in case of misuse.\n"
+    "*No conversation allowed*, just machine response is expected. You are responding to an algorithm, not to a user.\n"
     "Example: "
     "user: How was your day?\n"
     "assistant: chat\nUser is just chatting\n" 
@@ -553,6 +559,9 @@ async def llm_request(payload: dict, headers: dict = None):
 
 # === Chats naming ==== #
 async def generate_chat_title(message: str, chats) -> str:
+
+    existing_titles = [chat_data.get("title") for chat_data in chats.values() if "title" in chat_data]
+    existing_titles_str = "\n".join(f"- {t}" for t in existing_titles) if existing_titles else "None"
     """
     Спросить у LLM короткое имя для чата.
     """
@@ -563,7 +572,7 @@ async def generate_chat_title(message: str, chats) -> str:
         "Return ONLY the title starting with emoji, in one line, no explanations.\n\n"
         f"Message: {message}\n"
         "Avoid using already existing names and titles:\n"
-        "Existing chats:\n{chats}"
+        f"Existing chats:\n{existing_titles_str}"
     )
 
     payload = {
@@ -638,9 +647,9 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
     #history = load_history(ctx, chat)
 
     if ctx.settings.get("nsfw", False):
-        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}" 
+        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}\n{MEMORIZATION_PROMPT}" 
     else:  
-        system_prompt = f"*INSTRUCTION:*\n{INTENT_PROMPT}"
+        system_prompt = f"*INSTRUCTION:*\n{INTENT_PROMPT}\n{MEMORIZATION_PROMPT}"
 
     #system_prompt = f"*Personality and behaviour:*\n{ctx.settings.get("system_prompt", "")}"
 
@@ -660,6 +669,7 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
         "stream": False,
         "options": {
           "temperature": 0.1,
+           "repeat_penalty": 1.15
         }
     }
 
@@ -687,6 +697,7 @@ async def perform_prompt(ctx: UserContext,
 
     history = load_history(ctx, chat)
     
+    system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
     strict_fact = ""
     facts_text = ""
@@ -735,14 +746,13 @@ async def perform_prompt(ctx: UserContext,
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
     else:  
-        system_prompt = BASE_SYSTEM_PROMPT
+        system_prompt = f"{BASE_SYSTEM_PROMPT}"
 
 
     # Check if the user is new or recurrent one, and prepare chat info
     chat_info = await ensure_chat(ctx, chat, message)
 
     # Персонализация
-    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
     if ctx.settings.get("newUser", False):
         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
@@ -768,6 +778,7 @@ async def perform_prompt(ctx: UserContext,
 
 
     # === ОСНОВНОЙ ЗАПРОС ===
+    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
     # Добавляем новый запрос
@@ -806,6 +817,7 @@ async def perform_prompt(ctx: UserContext,
         "stream": stream,
         "options": {
            "temperature": 0.8,
+           "repeat_penalty": 1.15
         }
     }
 
@@ -820,16 +832,6 @@ async def perform_prompt(ctx: UserContext,
         llm_think_response = None
         if data["message"].get("thinking"):
             llm_think_response = data["message"]["thinking"]
-
-        # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
-        memory_fact, pos = extract_memory_from_response(llm_response)
-        if memory_fact:
-            try:
-                logging.info(f"Memorizing: {memory_fact}")
-                add_memory_card(ctx, memory_fact,  collection="user")
-                llm_response = llm_response[:pos].strip()
-            except Exception as e:
-                logging.error(f"Vectorization error: {e}")
 
         # Добавляем блок с источниками — только в отображаемый ответ
         links = []
@@ -1022,7 +1024,7 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     if nsfw_enabled:
         style += "_nsfw"
     model = STYLE_MODELS[style]
-    workflow_json["4"]["inputs"]["ckpt_name"] = model
+    workflow_json["127"]["inputs"]["ckpt_name"] = model
     #logging.info(f"json: {workflow_json}")
     img_path = await generate_image_workflow(workflow_json)
     # Папка для пользователя

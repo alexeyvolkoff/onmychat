@@ -220,7 +220,7 @@ def delete_memory_card(
 
 
 
-def extract_memory_from_response(response: str) -> tuple[str | None, int | None]:
+def extract_memory_from_response(response: str) -> str | None:
     response_lower = response.lower()
     for keyword in MEMORY_KEYWORDS:
         keyword_lower = keyword.lower()
@@ -228,8 +228,8 @@ def extract_memory_from_response(response: str) -> tuple[str | None, int | None]
         if pos != -1:
             start = pos + len(keyword)
             fact = response[start:].strip()
-            return fact, pos
-    return None, None
+            return fact
+    return None
 
 
 def make_file_name_from_document_id(document_id: str) -> str:

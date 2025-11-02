@@ -416,8 +416,18 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         else:
             raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
             lines = raw_intent.strip().split("\n", 1)
-            logging.info(f"Intent detected: {raw_intent}  {ctx.settings["nsfw"]}")
+            logging.info(f"Intent detected: {raw_intent} NSFW: {ctx.settings["nsfw"]}")
             intent = lines[0].strip()
+            # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
+            memory_fact = memory_index.extract_memory_from_response(raw_intent)
+            if memory_fact:
+                try:
+                    logging.info(f"Memorizing: {memory_fact}")
+                    memory_index.add_memory_card(ctx, memory_fact,  collection="user", relevance="permanent")
+                    yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
+                    
+                except Exception as e:
+                    logging.error(f"Vectorization error: {e}")
     
         if intent == "show":
             # 1️⃣ статус
