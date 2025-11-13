@@ -86,23 +86,30 @@ DEFAULT_USER_PROMPT = (
 
 # Default system prompts
 MEMORIZATION_PROMPT = (
-    "\nYou manage \"memory\" about the user. Memory is ONLY updated when:\n"
-    "- The user explicitly reveals a factual, major persistent details about themselves: biography facts, carrier facts, job and personal projects, living environment, personal goals, interests, preferences.\n"
-    "- Only memorize facts from the scope obove rivealed directly like 'I live in ...',  'I work for...', 'I like ...', 'I use ... for my project'\n"
+    "\nYou manage the user's \"memory\". Memory is ONLY updated when the user explicitly shares a factual, significant, and persistent detail about themselves "
+    "that matches one or more items in the following *SCOPE OF FACTS*:\n"
+    "- biographical information (age, gender, native language, place of birth), "
+    "- career history, job roles, and project-related facts, "
+    "- preferences and choices related to work and projects, "
+    "- facts about the user's living environment, "
+    "- the user's goals, aspirations, and interests.\n"
+    "- only the facts expressed directly and explicitly like 'User: I work for...' - 'User works for....', 'User: I like ...' - 'User likes', 'User: I prefer ...' - 'User prefers ...' should be memorized, not obvious or logical derrivals from the conversation like 'User: -Let's go shopping' - 'User invites me to go shopping'\n"
+
     "*NEVER guess, infer, or assume a fact. No direct fact - do not memorize*\n"
     "\n"
-    "Nothing beyond the scope is allowed to momorize.\n"
-    "*Do NOT memorize:*\n"
-    "- Information source is not user.\n"
-    "- General conversation.\n"
+    "Nothing beyond the *SCOPE OF FACTS* is allowed to be memorized.\n"
+    "*NEGATIVE scope:*\n"
+    "- Events happened in the scenario or roleplay,\n"
+    "- Contextual facts,  releted to this conversation or scenatio only, like user reactions or comments on your responses.\n"
+    "- General conversation, role play scenario development\n"
     "- Facts about yourself.\n"
     "- Your guesses about the user. No guesswork is allowed.\n"
     "- Temporary context, including feelings, emotions (e.g., 'User feels fine', 'User feels disappointed', etc).\n"
     "- Obvious chat context (e.g., 'user asked to explain something', 'user is seeking advice', 'user complimented my look', 'user is testing the chat', 'user requested an image')\n"
     "- Anything that can be simply answered by your response.\n"
     "- General knowledge, public information, or non-user-specific facts.\n"
-    "*DON'T DUPLICATE THE CHAT, simple summary of user message is not a fact, it leads to memory abuse and your performance degradation.*\n"
     "\n"
+    "Nothing that matches *NEGATIVE scope* is allowed to be memorized.\n"
     "If — and ONLY if — a new fact complies the rules,\n"
     "append a line to your reply:\n"
     "\n"
@@ -644,24 +651,25 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") -> str:
        
     #model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
-    #history = load_history(ctx, chat)
+    history = load_history(ctx, chat)
 
     if ctx.settings.get("nsfw", False):
-        system_prompt = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}\n{MEMORIZATION_PROMPT}" 
+        instruction = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}" 
     else:  
-        system_prompt = f"*INSTRUCTION:*\n{INTENT_PROMPT}\n{MEMORIZATION_PROMPT}"
+        instruction = f"*INSTRUCTION:*\n{INTENT_PROMPT}"
 
-    #system_prompt = f"*Personality and behaviour:*\n{ctx.settings.get("system_prompt", "")}"
+    system_prompt = "*This is a chat pre-processor task. Create machine-readable intent and optional memorization output according to further instructions and provided context. Do not respond to the message itself or express opinions or thought*\n"
+    system_prompt += f"*Facts about your character:*\n{ctx.settings.get("system_prompt", "")}\n*Memoryzation rules:*{MEMORIZATION_PROMPT}"
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
+        #{"role": "user", "content": prompt},
     ]
     # Добавляем историю
-    #messages.extend(history[-20:])
+    messages.extend(history[-20:])
     # Промпт
-    #messages.append({"role": "assistant", "content": instuction})
-    #messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "assistant", "content": instruction})
+    messages.append({"role": "user", "content": prompt})
 
     request_payload = {
         "messages": messages,
@@ -669,7 +677,6 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
         "stream": False,
         "options": {
           "temperature": 0.1,
-           "repeat_penalty": 1.15
         }
     }
 
@@ -766,15 +773,15 @@ async def perform_prompt(ctx: UserContext,
 
     # Инструкция
     instruction_prompt = "*Instruction:*\n" + instruction
+
+    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
+
     # Reminder
     if think:
         instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."    
-    else:
-        instruction_prompt += "\n\n*Important*: pay attention to memorization and imaging rules."
    
     if nsfw_enabled:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
-
 
 
     # === ОСНОВНОЙ ЗАПРОС ===
@@ -816,8 +823,10 @@ async def perform_prompt(ctx: UserContext,
         "model": model,
         "stream": stream,
         "options": {
-           "temperature": 0.8,
-           "repeat_penalty": 1.15
+            "temperature": 0.85,          # немного выше для разнообразия
+            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
+            "frequency_penalty": 0.6,     # штраф за частое повторение слов
+            "presence_penalty": 0.5,      # штраф за повторение идей/тем
         }
     }
 
@@ -1021,11 +1030,15 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
 
     # Выбираем модель в соответствии с режимом
     style = ctx.settings.get("style", "realistic")
+    lora = ctx.settings.get("assistant_model", "lora_9")
     if nsfw_enabled:
         style += "_nsfw"
+        workflow_json["103"]["inputs"]["lora_3"]["on"] = True
+        #workflow_json["103"]["inputs"]["lora_10"]["on"] = True        
     model = STYLE_MODELS[style]
     workflow_json["127"]["inputs"]["ckpt_name"] = model
-    #logging.info(f"json: {workflow_json}")
+    workflow_json["103"]["inputs"][lora]["on"] = True
+    logging.info(f"Generating with model: {model}, lora: {lora}")
     img_path = await generate_image_workflow(workflow_json)
     # Папка для пользователя
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")

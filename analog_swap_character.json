@@ -1,7 +1,7 @@
 {
   "4": {
     "inputs": {
-      "text": "censored, (worst quality, low quality:1.4), child, deformed, malformed, bad hands, bad fingers, bad eyes, bad teeth, long body, blurry, duplicated, cloned, duplicate body parts, disfigured, extra limbs, fused fingers, extra fingers, twisted, distorted, malformed hands, malformed fingers, mutated hands and fingers, conjoined, missing limbs, bad anatomy, bad proportions, logo, watermark, text, lowres, mutated, mutilated, blend, artifacts, gross, ugly, depth of field, asian, face defects)",
+      "text": "censored, (worst quality, low quality:1.4), child, deformed, malformed, bad hands, bad fingers, bad eyes, bad teeth, long body, blurry, duplicated, cloned, duplicate body parts, disfigured, extra limbs, fused fingers, missing fingers, extra fingers, twisted, distorted, malformed hands, malformed fingers, mutated hands and fingers, conjoined, missing limbs, bad anatomy, bad proportions, logo, watermark, text, lowres, mutated, mutilated, blend, artifacts, gross, ugly, depth of field, asian, face defects)",
       "clip": [
         "103",
         1
@@ -14,7 +14,7 @@
   },
   "5": {
     "inputs": {
-      "seed": 885015153121275,
+      "seed": 493130976391130,
       "steps": 10,
       "cfg": 1,
       "sampler_name": "lcm",
@@ -71,7 +71,7 @@
   },
   "85": {
     "inputs": {
-      "text": "positive",
+      "text": "8K, depth of field, dynamic angle, sexy pose, best quality, detailed eyes, perfect eyes, realistic eyes, single, one, blonde hair, single  beautiful long-legged Slavic girl, slim body but busty, blue eyes, (blonde-to-pink gradient wave hair  ):1.3, full lips, slim body, pearls, heels, , small breast, realistic breast, (black knitted cardigan), lace blouse, (pleated midi skirt), BREAK, sitting, Hugging own legs, side view, looking at viewer, movie perspective, white room, white bedroom, white background, depth of field, artist:moriimee, , detailed<lora:MoriiMee_Gothic_Niji_Style_Illustrious_r1:0.7> artist:moriimee, upskirt, camel toe, low camera angle, <lora:PowerPuffMixLora:0.5>,medium breasts, fat ass, thick hips,fat legs, pawgxl, narrow waist, , perfect hands, detailed hands, human hands, left hand, right hand, human anatomy, black garter belt stockings, (the whole scene is in the frame:1.7) (wide shot, full body shot, cowboy shot, dutch angle)\n",
       "clip": [
         "127",
         1
@@ -119,8 +119,8 @@
       },
       "lora_7": {
         "on": false,
-        "lora": "Naomi-XSTAR-XL.safetensors",
-        "strength": 1
+        "lora": "AniDomi.safetensors",
+        "strength": 0.5
       },
       "lora_8": {
         "on": false,
@@ -136,6 +136,11 @@
         "on": false,
         "lora": "Round_Breasts_XL_XV7-000038.safetensors",
         "strength": 1
+      },
+      "lora_11": {
+        "on": false,
+        "lora": "add-detail-xl.safetensors",
+        "strength": 2.04
       },
       "➕ Add Lora": "",
       "model": [
@@ -189,12 +194,12 @@
   },
   "125": {
     "inputs": {
-      "enabled": false,
+      "enabled": true,
       "swap_model": "hyperswap_1b_256.onnx",
       "facedetection": "retinaface_resnet50",
       "face_restore_model": "none",
-      "face_restore_visibility": 1,
-      "codeformer_weight": 0.5,
+      "face_restore_visibility": 0.8000000000000002,
+      "codeformer_weight": 0.8000000000000002,
       "detect_gender_input": "female",
       "detect_gender_source": "female",
       "input_faces_index": "0",
@@ -244,7 +249,7 @@
   },
   "131": {
     "inputs": {
-      "filename_prefix": "IMG",
+      "filename_prefix": "IMG-analogMadnessSDXL_xl5.safetensors",
       "images": [
         "123",
         0
