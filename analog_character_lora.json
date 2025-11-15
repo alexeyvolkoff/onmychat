@@ -93,8 +93,8 @@
         "strength": 1
       },
       "lora_2": {
-        "on": false,
-        "lora": "SDXL\\Pubic_Hair_Peek_SDXL.safetensors",
+        "on": true,
+        "lora": "real-humans-PublicPrompts.safetensors",
         "strength": 1
       },
       "lora_3": {
