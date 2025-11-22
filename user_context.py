@@ -61,7 +61,7 @@ def load_user_settings(user_id) :
             "newUser": True,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
-            "assistant_model": "lora_9",
+            "assistant_model": "Domi",
             "kb_id": DEFAULT_KB_ID
         }
 

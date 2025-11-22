@@ -138,7 +138,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
     elif intent == "view":
         prompt = await core.generate_general_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
-        storage_path = await core.generate_general_image(ctx, prompt, "telegram")
+        storage_path = await core.generate_image(ctx, prompt, "telegram")
         path = f"{core.COMFY_OUTPUT_DIR}/{storage_path}"
         # Отправляем фото
         with open(path, "rb") as f:
@@ -166,6 +166,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
             result = format_response_for_markdown_v2(explained)
             await update.message.reply_text(result, parse_mode="MarkdownV2")
             logging.info(f"Explained photo: {explained}")
+
+
 
 
     elif intent == "explain":
@@ -308,7 +310,7 @@ async def nsfw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ctx = get_context(update.effective_user.id)
     if not context.args:
-        await update.message.reply_text("❗ Choose style: realistic, dream, tooned.")
+        await update.message.reply_text("❗ Choose style: realistic, perfection, fantasy, tooned.")
         return
     chosen_style = context.args[0].lower()
     if chosen_style not in core.STYLE_MODELS:

@@ -89,52 +89,50 @@
       },
       "lora_1": {
         "on": false,
-        "lora": "SDXL\\on_offV2.safetensors",
+        "name": "boobs",
+        "lora": "Round_Breasts_XL_XV7-000038.safetensors",
         "strength": 1
       },
       "lora_2": {
-        "on": true,
-        "lora": "real-humans-PublicPrompts.safetensors",
+        "on": false,
+        "name": "seductive",
+        "lora": "SDXL\\Seductive_Expression_SDXL-000040.safetensors",
         "strength": 1
       },
       "lora_3": {
         "on": false,
-        "lora": "SDXL\\Seductive_Expression_SDXL-000040.safetensors",
+        "name": "Lily",
+        "lora": "Lily.safetensors",
         "strength": 1
       },
       "lora_4": {
         "on": false,
-        "lora": "DPPonyXL.safetensors",
-        "strength": 0.9
+        "name": "Domi",
+        "lora": "XLDomiv2.safetensors",
+        "strength": 1
       },
       "lora_5": {
         "on": false,
-        "lora": "Woomy 1 SDXL.safetensors",
+        "name": "Judith",
+        "lora": "JudithCB_r2-000011.safetensors",
         "strength": 1
       },
       "lora_6": {
         "on": false,
-        "lora": "JudithCB_r2-000011.safetensors",
+        "name": "Naomi",
+        "lora": "Naomi-XSTAR-XL.safetensors",
         "strength": 1
       },
       "lora_7": {
         "on": false,
-        "lora": "Naomi-XSTAR-XL.safetensors",
+        "name": "Verotika",
+        "lora": "VEROTIKA-XSTAR-XL-FINAL.safetensors",
         "strength": 1
       },
       "lora_8": {
         "on": false,
-        "lora": "VEROTIKA-XSTAR-XL-FINAL.safetensors",
-        "strength": 1
-      },
-      "lora_9": {
-        "on": false,
+        "name": "Bianca",
         "lora": "BIANCA-XSTAR-XL.safetensors",
-        "strength": 1
-      },
-      "lora_10": {
-        "on": false,
-        "lora": "Round_Breasts_XL_XV7-000038.safetensors",
         "strength": 1
       },
       "➕ Add Lora": "",

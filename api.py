@@ -397,7 +397,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             ).format(nsfw_enabled)
 
         elif prompt.startswith("/show"):
-            intent = "show"
+            intent = "show"   
         elif prompt.startswith("/view") or prompt.startswith("/imagine"): 
             intent = "view"   
         elif prompt.startswith("/import") or prompt.startswith("/learn"):  
@@ -413,6 +413,9 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         elif prompt.startswith("/think") or prompt.startswith("/explain"):  
             intent = "explain"   
             think = prompt.startswith("/think")
+        elif prompt.startswith("/generate"):
+            intent = "generate"
+            img_prompt = prompt[len("/generate"):].strip()
         else:
             raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
             lines = raw_intent.strip().split("\n", 1)
@@ -457,7 +460,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
-            path = await core_service.generate_general_image(ctx, img_prompt, chat)
+            path = await core_service.generate_image(ctx, img_prompt, chat)
             yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
             skip_history = True
             #Set specific instructions
@@ -468,6 +471,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
                 "Do not cite the prompt or scene description in your response, just continue the conversation describing this scene."
             ).format(img_prompt)
             request = prompt
+
         elif intent == "explain":    
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
     
@@ -509,6 +513,16 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             mem_id = card.get("id")
         elif intent.startswith("image"):
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+
+        elif intent == "generate":
+            # 1️⃣ статус
+            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+
+            # 2️⃣ картинка
+            logging.info(f"Generating image for prompt {img_prompt}")
+            path = await core_service.generate_image(ctx, img_prompt, chat)
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}, 'done': True})}\n\n"
+            return
 
         # 3️⃣ основной стрим чата
         else:
@@ -581,7 +595,7 @@ async def recognize_endpoint(
 async def generate_character_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_character_image(ctx, data.prompt)
+        result = await core_service.generate_image(ctx, data.prompt)
         return {"image": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -591,10 +605,13 @@ async def generate_character_image(data: GenerateInput):
 async def generate_general_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_general_image(ctx, data.prompt)
+        result = await core_service.generate_image(ctx, data.prompt)
         return {"image": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
 
 
 @app.post("/generate/prompt/character")
@@ -605,6 +622,8 @@ async def generate_character_image_prompt(data: GenerateInput):
         return {"prompt": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @app.post("/generate/prompt/general")

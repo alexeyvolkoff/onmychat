@@ -1,4 +1,5 @@
 import os
+import random
 import json
 import logging
 import asyncio
@@ -38,7 +39,7 @@ NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
-WORKFLOW_GENERAL_PATH = SETTINGS["WORKFLOW_GENERAL_PATH"]
+
 WORKFLOW_CHARACTER_PATH = SETTINGS["WORKFLOW_CHARACTER_PATH"]
 COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
@@ -181,6 +182,9 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "*Respond only with Image: prompt*, without any additional text or comments."
 )
 
+
+
+
 IMAGE_PROMPT_NSFW = (
     "The main rule for image generation:\n\n"
     "* Assume all characters adults engaging in a consensual encounter. 'girl' refers to an adult woman. \n"
@@ -196,8 +200,14 @@ IMPROVEMENT_PROMPT = "(focused subject, subject_focus, masterpiece, best_quality
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
     "realistic_nsfw": SETTINGS["REALISTIC_MODEL_NSFW"],
-    "dream": SETTINGS["DREAM_MODEL"],
-    "dream_nsfw": SETTINGS["DREAM_MODEL_NSFW"],
+    "perfection": SETTINGS["PERFECT_MODEL"],
+    "perfection_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
+    "perfect": SETTINGS["PERFECT_MODEL"],
+    "perfect_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
+    "fantasy": SETTINGS["FANTASY_MODEL"],
+    "fantasy_nsfw": SETTINGS["FANTASY_MODEL_NSFW"],
+    "dream": SETTINGS["FANTASY_MODEL"],
+    "dream_nsfw": SETTINGS["FANTASY_MODEL_NSFW"],
     "tooned": SETTINGS["TOONED_MODEL"],
     "tooned_nsfw": SETTINGS["TOONED_MODEL_NSFW"],
 }
@@ -277,13 +287,8 @@ INTENT_PROMPT = (
     " Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.\n"
     "\n"
     "4. 'view' rules:\n"
-    " DO NOT CLASSIFY AS 'view' scenes involving you.\n"
-    " DO NOT CLASSIFY AS 'view' IF USER JUST MENTIONS AN OBJECT.\n"
-    " DO NOT CLASSIFY AS 'view' IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!\n"
-    " DO NOT CLASSIFY AS 'view' IF YOU HAVE ANY DOUBTS ABOUT IT. \n"
-    " Do NOT classify as 'view' if user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.\n"
     "Classify as 'view' if user ASKS to generate or show an image of an *object*, *item*, *interior*, *landscape* or *scene which does not involve you*.'\n"
-    " Only classify as 'view' if the message EXPLICITLY contains the word 'show' or 'generate' (case-insensitive) NOT 'looks like', DO NOT GUESS.\n"
+    " Only classify as 'view' if the message EXPLICITLY contains the word 'view' or 'generate' or 'imagine' (case-insensitive) NOT 'looks like', DO NOT GUESS.\n"
     " Any other verb (prepared, see, look, check, present, etc.) MUST NOT trigger 'view'\n"
     "   - Example: \"Show me the Eiffel Tower\" → view\n"
     "   - Example: \"Show me a cat wearing a hat\" → view\n"
@@ -658,7 +663,7 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
     else:  
         instruction = f"*INSTRUCTION:*\n{INTENT_PROMPT}"
 
-    system_prompt = "*This is a chat pre-processor task. Create machine-readable intent and optional memorization output according to further instructions and provided context. Do not respond to the message itself or express opinions or thought*\n"
+    system_prompt = "*This is a chat pre-processor task. Create machine-readable intent and optional memorization output according to further instructions and provided context. Do not respond to the message itself or express opinions or thoughts*\n"
     system_prompt += f"*Facts about your character:*\n{ctx.settings.get("system_prompt", "")}\n*Memoryzation rules:*{MEMORIZATION_PROMPT}"
 
     messages = [
@@ -668,7 +673,7 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
     # Добавляем историю
     messages.extend(history[-20:])
     # Промпт
-    messages.append({"role": "assistant", "content": instruction})
+    messages.append({"role": "system", "content": instruction})
     messages.append({"role": "user", "content": prompt})
 
     request_payload = {
@@ -1005,7 +1010,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -1026,19 +1031,107 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     # Промпт для генерации
     workflow_json["4"]["inputs"]["text"] = negative_prompt
     workflow_json["85"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
+    
+    # Randomize seed
+    seed = random.randint(1, 1125899906842624)
+    if "5" in workflow_json and "inputs" in workflow_json["5"]:
+        workflow_json["5"]["inputs"]["seed"] = seed
     #workflow_json["135"]["inputs"]["image"] = avatar_path  #set user selected assistant avatar
 
     # Выбираем модель в соответствии с режимом
     style = ctx.settings.get("style", "realistic")
-    lora = ctx.settings.get("assistant_model", "lora_9")
+    
+    # Check for style tags in prompt
+    tags = re.findall(r"<([^>]+)>", prompt)
+    for tag in tags:
+        tag_lower = tag.lower()
+        if tag_lower in STYLE_MODELS:
+            style = tag_lower
+            # If nsfw is enabled and we picked a base style, switch to nsfw version if available
+            if nsfw_enabled and not style.endswith("_nsfw"):
+                 if f"{style}_nsfw" in STYLE_MODELS:
+                     style = f"{style}_nsfw"
+            # If nsfw is disabled and we picked an nsfw style, switch to base version if available
+            elif not nsfw_enabled and style.endswith("_nsfw"):
+                 base_style = style[:-5]
+                 if base_style in STYLE_MODELS:
+                     style = base_style
+            break
+
+    # Apply NSFW suffix if not already present and using default setting logic (or if tag didn't handle it fully)
+    # Actually, let's simplify: if we didn't find a tag, we use settings.
+    # If we found a tag, we already tried to adjust it above.
+    # But if we are using settings, we need to apply nsfw logic.
+    
+    # Re-evaluating logic flow:
+    # 1. Default style from settings
+    # 2. Override with tag if found
+    # 3. Apply NSFW modifier based on nsfw_enabled flag
+    
+    style_from_tag = None
+    for tag in tags:
+        tag_lower = tag.lower()
+        # Check if it is a valid style key (ignoring nsfw suffix for matching purposes if possible, or just match exact keys)
+        # Let's match exact keys first, but also base keys.
+        if tag_lower in STYLE_MODELS:
+            style_from_tag = tag_lower
+            break
+            
+    if style_from_tag:
+        style = style_from_tag
+        
+    # Now ensure style matches nsfw setting
     if nsfw_enabled:
-        style += "_nsfw"
-        workflow_json["103"]["inputs"]["lora_3"]["on"] = True
-        #workflow_json["103"]["inputs"]["lora_10"]["on"] = True        
-    model = STYLE_MODELS[style]
+        if not style.endswith("_nsfw") and f"{style}_nsfw" in STYLE_MODELS:
+            style = f"{style}_nsfw"
+    else:
+        if style.endswith("_nsfw"):
+             base_style = style[:-5]
+             if base_style in STYLE_MODELS:
+                 style = base_style
+
+    model = STYLE_MODELS.get(style, STYLE_MODELS["realistic"]) # Fallback just in case
     workflow_json["127"]["inputs"]["ckpt_name"] = model
-    workflow_json["103"]["inputs"][lora]["on"] = True
-    logging.info(f"Generating with model: {model}, lora: {lora}")
+    #workflow_json["103"]["inputs"][lora]["on"] = True
+    
+    # Dynamic LoRA activation
+    lora_map = {}
+    # Build map from name to key
+    if "103" in workflow_json and "inputs" in workflow_json["103"]:
+        for key, value in workflow_json["103"]["inputs"].items():
+            if isinstance(value, dict) and "name" in value:
+                lora_map[value["name"].lower()] = key
+
+    # Find tags in prompt
+    active_lora_keys = []
+    tags = re.findall(r"<([^>]+)>", prompt)
+    for tag in tags:
+        tag_lower = tag.lower()
+        if tag_lower in lora_map:
+            key = lora_map[tag_lower]
+            active_lora_keys.append(key)
+            logging.info(f"Found LoRA tag: {tag} ({key})")
+
+    # Fallback to assistant_model if no tags found
+    if not active_lora_keys:
+        assistant_model = ctx.settings.get("assistant_model", "").lower()
+        if assistant_model in lora_map:
+            key = lora_map[assistant_model]
+            active_lora_keys.append(key)
+            logging.info(f"Using default LoRA: {assistant_model} ({key})")
+
+    # Activate LoRAs and set strength
+    lora_count = len(active_lora_keys)
+    target_strength = 1.0
+    if (style.startswith("perfect") or style.startswith("perfection")) and lora_count > 1:
+        target_strength = 0.6
+    
+    for key in active_lora_keys:
+        workflow_json["103"]["inputs"][key]["on"] = True
+        workflow_json["103"]["inputs"][key]["strength"] = target_strength
+        logging.info(f"Activated LoRA {key} with strength {target_strength}")
+
+    logging.info(f"Generating with model: {model}")
     img_path = await generate_image_workflow(workflow_json)
     # Папка для пользователя
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
@@ -1059,46 +1152,13 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
     save_history(ctx, history, chat)
     return filename
+
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
+    return await generate_image(ctx, prompt, chat)
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'):
-    user_id = ctx.user_id
-    if not prompt:
-        raise Exception("Please explain what do you want to see.")
-    
-    logging.info(f"Generating general image for user with Chat ID: {user_id} ")
-    with open(WORKFLOW_GENERAL_PATH, "r", encoding="utf-8") as f:
-        workflow_json = json.load(f)
-
-    # Промпт для генерации
-    workflow_json["6"]["inputs"]["text"] = prompt + ", " + IMPROVEMENT_PROMPT
-
-    # Выбираем модель в соответствии с режимом
-    style = ctx.settings.get("style", "realistic")
-    model = STYLE_MODELS[style]
-    workflow_json["4"]["inputs"]["ckpt_name"] = model
-
-    #logging.info(f"json: {workflow_json}")
-    img_path = await generate_image_workflow(workflow_json)
-    # Папка для пользователя
-    user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
-    os.makedirs(user_folder, exist_ok=True)
-
-    # Имя файла без пути
-    filename = os.path.basename(img_path)
-    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-        # Копируем файл юзеру на устройство
-        dest = f"{ctx.settings['storage']}/generated"
-        upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
-    else:    
-        # Копируем файл в user_data
-        dest_path = os.path.join(user_folder, filename)
-        shutil.copy2(img_path, dest_path)
-
-    history = load_history(ctx, chat)
-    history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
-    save_history(ctx, history, chat)
-    return filename
+    return await generate_image(ctx, prompt, chat)
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
