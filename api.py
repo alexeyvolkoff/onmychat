@@ -11,6 +11,7 @@ import os
 import hashlib
 import email.utils
 import datetime
+import requests
 
 import core_service
 import user_context
@@ -88,6 +89,16 @@ class GenerateInput(BaseModel):
     chat: str = "default"
 
 
+class UpdateAssistantInput(BaseModel):
+    omd_key: str
+    nsfw: bool | None = None
+    style: str | None = None
+    system_prompt: str | None = None
+    assistant_name: str | None = None
+    assistant_title: str | None = None
+    assistant_model: str | None = None
+
+
 # ==== Хелпер ====
 
 def get_ctx(omd_key: str):
@@ -158,11 +169,15 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 async def assistant_info(omd_key: str):
     ctx = get_ctx(omd_key)
     try:
-        avatarPath = core_service.get_assistant_avatar_path(ctx.user_id)
         assistant = {
-            "avatarPath": avatarPath,
             "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
             "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
+            "system_prompt": ctx.settings.get("system_prompt", ""),
+            "style": ctx.settings.get("style", ""),
+            "nsfw": ctx.settings.get("nsfw", False),
+            "model": ctx.settings.get("assistant_model", ""),
+            "avatar_version": await core_service.get_avatar_version(ctx),
+            "omd_key": ctx.settings.get("omd_key") or omd_key
         }
         return assistant
 
@@ -172,19 +187,86 @@ async def assistant_info(omd_key: str):
 
 @app.get("/assistant/avatar")
 async def assistant_avatar(
-    omd_key: str,
     request: Request,
-    size: int | None = Query(None, description="Target size in pixels")
+    omd_key: str,
+    size: int = 80
 ):
     ctx = get_ctx(omd_key)
     try:
-        storage_path = core_service.get_assistant_avatar_path(ctx.user_id)
-        avatar_path = f"{core_service.STORAGE_ROOT}/{storage_path}"
+        # Check for custom avatar in remote storage
+        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+            storage_id = ctx.settings["storage"]
+            storage_key = ctx.settings["omd_key"]
+            
+            # Clean up URL construction
+            base_url = user_context.GATEWAY_URL.rstrip("/")
+            clean_storage_id = storage_id.strip("/")
+            url = f"{base_url}/{clean_storage_id}/avatar.png"
+            
+            headers = {"Authorization": f"token:{storage_key}"}
+            try:
+                # Use a short timeout to avoid hanging if gateway is slow
+                resp = requests.get(url, headers=headers, stream=True, timeout=5)
+                
+                content_type = resp.headers.get("Content-Type", "")
+                # Check if it is actually an image
+                if resp.status_code == 200 and content_type.startswith("image/"):
+                    return StreamingResponse(resp.iter_content(chunk_size=8192), media_type=content_type)
+                #else:
+                #    logging.warning(f"Remote avatar fetch failed. Status: {resp.status_code}, Type: {content_type}")
+            except Exception as e:
+                logging.warning(f"Failed to fetch avatar from storage: {e}")
+
+        # Fallback to default model avatar
+        storage_path = core_service.get_assistant_avatar_path(ctx)
+        
+        # core_service.get_assistant_avatar_path strips STORAGE_ROOT, but might leave a leading slash
+        # making it look like an absolute path (e.g. /projects/...).
+        # We need to re-attach STORAGE_ROOT.
+        
+        if storage_path.startswith("/"):
+            storage_path = storage_path[1:]
+            
+        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        return serve_file(avatar_path, request, size=size)
+
+    except Exception as e:
+        logging.error(f"Error serving avatar: {e}")
+        # Return default if anything fails
+        storage_path = core_service.get_assistant_avatar_path(ctx)
+        default_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        logging.warning(f"Serving default: {default_path}")
+        return serve_file(default_path, request, size=size)
+
+
+@app.get("/assistant/loras")
+async def get_loras():
+    return core_service.get_available_loras()
+
+@app.get("/assistant/model/{lora_name}/avatar")
+async def model_avatar(
+    request: Request,
+    lora_name: str,
+    omd_key: str,
+    size: int = 80
+):
+    ctx = get_ctx(omd_key)
+    try:
+        storage_path = core_service.get_model_avatar_path(lora_name)
+        
+        # Re-attach STORAGE_ROOT logic
+        if storage_path.startswith("/"):
+            storage_path = storage_path[1:]
+            
+        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+
+        logging.warning(f"Serving model avatar: {avatar_path}")
         return serve_file(avatar_path, request, size=size)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
+        logging.error(f"Error serving model avatar: {e}")
+        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
+        return serve_file(default_path, request, size=size)
+    
 @app.get("/generated/{filename}")
 async def get_generated_file(
     request: Request,
@@ -632,5 +714,49 @@ async def generate_general_image_prompt(data: GenerateInput):
     try:
         result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat)
         return {"prompt": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/updateAssistant")
+async def update_assistant(request: Request):
+    try:
+        body = await request.json()
+        logging.info(f"UpdateAssistant payload: {body}")
+        data = UpdateAssistantInput(**body)
+    except Exception as e:
+        logging.error(f"Validation error: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+
+    ctx = get_ctx(data.omd_key)
+    try:
+        # Update settings with provided values
+        if data.nsfw is not None:
+            ctx.settings["nsfw"] = data.nsfw
+        if data.style is not None:
+            ctx.settings["style"] = data.style
+        if data.system_prompt is not None:
+            ctx.settings["system_prompt"] = data.system_prompt
+        if data.assistant_name is not None:
+            ctx.settings["assistant_name"] = data.assistant_name
+        if data.assistant_title is not None:
+            ctx.settings["assistant_title"] = data.assistant_title
+        if data.assistant_model is not None:
+            ctx.settings["assistant_model"] = data.assistant_model
+        
+        user_context.save_user_settings(ctx)
+        
+        # Return settings without sensitive data if preferred, but for now returning all
+        # We might want to exclude 'omd_key' or 'storage' from response if strictly needed, 
+        # but the user has the key anyway.
+        
+        # Get new avatar version
+        version = await core_service.get_avatar_version(ctx)
+        
+        return {
+            "status": "ok", 
+            "settings": ctx.settings, 
+            "avatar_version": version
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

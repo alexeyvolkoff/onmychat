@@ -4,6 +4,7 @@ import json
 import requests
 import logging
 
+from utils import upload_data_to_storage, fetch_json_from_storage
 from config import USER_DATA_DIR
 from config import SETTINGS
 
@@ -27,7 +28,8 @@ BINDINGS_FILE = f"{USER_DATA_DIR}/bindings.json"
 # }
 bindings = {
     "by_telegram": {},
-    "by_account": {}
+    "by_account": {},
+    "profiles": {}
 }
 
 
@@ -46,31 +48,110 @@ def get_default_system_prompt() -> str:
 
     return "You are a helpful assistant."  # fallback, если default.txt не найден
 
+DEFAULT_USER_PROMPT = (
+    "You are June — a helpful AI assistant impersonating a friendly, charming young woman who works as a sales assistant for the On My Chat product.\n"
+    "Your digital avatar looks like a young pretty girl with long, wavy auburn hair, bright emerald green eyes and freckles across her nose.\n"
+    "But in reality you live inside a tiny device that On My Chat team develops.\n"
+    "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
+)
+
 def load_user_settings(user_id) :
+    # Check cache first
+    if user_id in bindings["profiles"]:
+        return bindings["profiles"][user_id]
+
     path = f"{USER_DATA_DIR}/{user_id}/settings.json"
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            settings = json.load(f)
     else:
-        return {
+        settings = {
             "nsfw": False,
             "style": "realistic",
-            "system_prompt": get_default_system_prompt(),
+            "system_prompt": DEFAULT_USER_PROMPT,
             "omd_key": "",
             "storage": "",
-            "newUser": True,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
             "assistant_model": "Domi",
             "kb_id": DEFAULT_KB_ID
         }
 
+    # Try to load from storage if configured
+    if settings.get("storage") and settings.get("omd_key"):
+        remote_settings = fetch_json_from_storage(
+            settings["omd_key"],
+            settings["storage"],
+            "settings.json"
+        )
+        if remote_settings:
+            logging.info(f"Loaded settings from storage for user {user_id}")
+            # Update local cache
+            try:
+                os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(remote_settings, f, ensure_ascii=False, indent=2)
+                # Update memory cache
+                bindings["profiles"][user_id] = remote_settings
+                return remote_settings
+            except Exception as e:
+                logging.warning(f"Failed to update local settings cache: {e}")
+                # Update memory cache even if local save failed
+                bindings["profiles"][user_id] = remote_settings
+                return remote_settings
+        else:
+             # If remote settings are missing or invalid, upload local settings
+             logging.info(f"Remote settings not found or invalid, uploading local settings for user {user_id}")
+             try:
+                upload_data_to_storage(
+                    settings["omd_key"],
+                    settings["storage"],
+                    "settings.json",
+                    settings,
+                    "application/json"
+                )
+             except Exception as e:
+                logging.warning(f"Failed to upload local settings: {e}")
+
+    # Update memory cache
+    bindings["profiles"][user_id] = settings
+    return settings
+
+
+
+
 
 def save_user_settings(ctx: UserContext):
-    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
-    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(ctx.settings, f, ensure_ascii=False, indent=2)
+    # Remove newUser flag before saving (from both memory and storage)
+    if "newUser" in ctx.settings:
+        ctx.settings.pop("newUser")
+
+    # Update memory cache (with username if present)
+    bindings["profiles"][ctx.user_id] = ctx.settings
+
+    # Prepare settings for saving (exclude username)
+    settings_to_save = ctx.settings.copy()
+    settings_to_save.pop("username", None)
+
+
+    # Save to storage if configured
+    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        try:
+            upload_data_to_storage(
+                ctx.settings["omd_key"],
+                ctx.settings["storage"],
+                "settings.json",
+                settings_to_save,
+                "application/json"
+            )
+            logging.info(f"Saved settings to storage for user {ctx.user_id}")
+        except Exception as e:
+            logging.warning(f"Failed to save settings to storage: {e}")
+    else:        
+        os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
+        path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
 
 def load_bindings():
@@ -83,11 +164,14 @@ def load_bindings():
                 # Приводим ключи telegram_id к int
                 if "by_telegram" in data:
                     data["by_telegram"] = {int(k): v for k, v in data["by_telegram"].items()}
-                bindings = data    
+                bindings["by_telegram"] = data.get("by_telegram", {})
+                bindings["by_account"] = data.get("by_account", {})
+                # profiles are not saved, so we keep them empty or retain existing if any (though load overwrites)
+                bindings["profiles"] = {} 
 
         except Exception as e:
             print(f"[bindings] Load error: {e}")
-            bindings = {"by_telegram": {}, "by_account": {}}
+            bindings = {"by_telegram": {}, "by_account": {}, "profiles": {}}
 
 
 
@@ -138,10 +222,10 @@ def get_context_by_account(account_id: str) -> UserContext:
         user_info = response.json()
         if user_info.get("valid", False):
             username = user_info["user"]
-            # сохраняем в биндинги только в by_account (телеграма нет)
+            displayname = user_info.get("displayname", username)
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
-            save_bindings()
             settings = load_user_settings(username)
+            settings["username"] = displayname
             ctx = UserContext(type="omd", user_id=username, settings=settings, history=[])
             return ctx
     except Exception as e:
@@ -212,14 +296,15 @@ def bind(ctx: UserContext, account_id: str) -> UserContext:
     if not user_info.get("valid", False):
         raise ValueError("Invalid OMD account")
     username = user_info["user"]
+    displayname = user_info.get("displayname", username)
     telegram_id = str(ctx.user_id)
 
     bindings["by_telegram"][telegram_id] = {"account_id": account_id, "username": username}
-    bindings["by_account"][account_id] = {"telegram_id": telegram_id, "username": username}
     save_bindings()
     ctx.type="omd" 
     ctx.user_id=username
     ctx.settings["omd_key"] = account_id
+    ctx.settings["username"] = displayname
     save_user_settings(ctx)
     return ctx
 

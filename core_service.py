@@ -78,12 +78,7 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
-DEFAULT_USER_PROMPT = (
-    "You are June — a helpful AI assistant impersonating a friendly, charming young woman who works as a sales assistant for the On My Chat product.\n"
-    "Your digital avatar looks like a young pretty girl with long, wavy auburn hair, bright emerald green eyes and freckles across her nose.\n"
-    "But in reality you live inside a tiny device that On My Chat team develops.\n"
-    "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
-)
+
 
 # Default system prompts
 MEMORIZATION_PROMPT = (
@@ -421,27 +416,89 @@ def bind_account(ctx: UserContext, omd_key: str):
     return ctx
 
 
-# === Imaging and vision === #
-
-def get_user_avatar_path(user_id: str) -> str:
-    """
-    Возвращает относительный путь до аватара пользователя для подстановки в ComfyUI workflow.
-    Если файл не найден, возвращает default.png.
-    """
-    user_avatar_rel = f"{AVATAR_DIR}/{user_id}.png"
-    user_avatar_abs = os.path.join(COMFY_INPUT_DIR, user_avatar_rel)
-
-    if os.path.exists(user_avatar_abs):
-        return user_avatar_rel
-    else:
-        return f"{AVATAR_DIR}/default.png"
     
 
-def get_assistant_avatar_path(user_id: str) -> str:
-    user_avatar_path = get_user_avatar_path(user_id)
-    full_avatar_path = f"{COMFY_INPUT_DIR}/{user_avatar_path}"
+def get_assistant_avatar_path(ctx: UserContext) -> str:
+    model = ctx.settings.get("assistant_model", "Domi")
+    full_avatar_path = f"{COMFY_INPUT_DIR}/{AVATAR_DIR}/{model}.png"
     avatar_path = full_avatar_path.replace(STORAGE_ROOT, "")
     return avatar_path
+
+def get_model_avatar_path(model_name: str) -> str:
+    full_avatar_path = f"{COMFY_INPUT_DIR}/{AVATAR_DIR}/{model_name}.png"
+    avatar_path = full_avatar_path.replace(STORAGE_ROOT, "")
+    return avatar_path
+
+
+def get_available_loras() -> list:
+    lora_file = os.path.join(os.path.dirname(__file__), "analog_character_lora.json")
+    if os.path.exists(lora_file):
+        try:
+            with open(lora_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            # Find Power Lora Loader node (ID 103 based on file inspection)
+            # Or search for class_type "Power Lora Loader (rgthree)"
+            loras = []
+            for key, node in data.items():
+                if node.get("class_type") == "Power Lora Loader (rgthree)":
+                    inputs = node.get("inputs", {})
+                    for input_key, input_val in inputs.items():
+                        if input_key.startswith("lora_") and isinstance(input_val, dict):
+                            if "name" in input_val:
+                                loras.append({"name": input_val["name"]})
+            
+            # Sort by name
+            loras.sort(key=lambda x: x["name"])
+            return loras
+
+        except Exception as e:
+            logging.error(f"Error reading LoRA file: {e}")
+            return []
+    return []
+
+
+async def get_avatar_version(ctx: UserContext) -> str:
+    # 1. Check remote
+    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        try:
+            storage_id = ctx.settings["storage"]
+            storage_key = ctx.settings["omd_key"]
+            
+            base_url = GATEWAY_URL.rstrip("/")
+            clean_storage_id = storage_id.strip("/")
+            url = f"{base_url}/{clean_storage_id}/avatar.png"
+            
+            headers = {"Authorization": f"token:{storage_key}"}
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.head(url, headers=headers, timeout=2) as resp:
+                    if resp.status == 200:
+                        # Use ETag or Last-Modified
+                        etag = resp.headers.get("ETag")
+                        last_modified = resp.headers.get("Last-Modified")
+                        if etag:
+                            return etag.strip('"')
+                        if last_modified:
+                            # Simple hash of last modified string
+                            return str(hash(last_modified))
+        except Exception as e:
+            logging.warning(f"Failed to get remote avatar version: {e}")
+
+    # 2. Fallback to local
+    try:
+        storage_path = get_assistant_avatar_path(ctx)
+        if storage_path.startswith("/"):
+            storage_path = storage_path[1:]
+        
+        full_path = os.path.join(STORAGE_ROOT, storage_path)
+        if os.path.exists(full_path):
+            mtime = os.path.getmtime(full_path)
+            return str(int(mtime))
+    except Exception as e:
+        logging.warning(f"Failed to get local avatar version: {e}")
+
+    return "default"
 
 
 async def poll_for_result(prompt_id:  str,  timeout: int = 60):
@@ -616,8 +673,8 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
         ctx.settings["newUser"] = True
         print(f"[chats] New user detected {ctx.user_id} {len(chats)} {chat})")
 
-    wasNewUser = ctx.settings.get("newUser", True)
-    print(f"[chats] User status: {ctx.user_id} {ctx.settings["newUser"]})")
+    wasNewUser = ctx.settings.get("newUser", False)
+    print(f"[chats] User status: {ctx.user_id} {wasNewUser}")
 
     if chat not in chats:
         title = f"Chat {chat}"
@@ -765,11 +822,16 @@ async def perform_prompt(ctx: UserContext,
     chat_info = await ensure_chat(ctx, chat, message)
 
     # Персонализация
-    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
+    user_prompt = ctx.settings.get("system_prompt", "")
+
     if ctx.settings.get("newUser", False):
-        system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
+         user_prompt = user_context.get_default_system_prompt()
+         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
-        system_prompt += "\n\n*Attention*:* You are communicating with existing user.\n"
+         username = ctx.settings.get("username", "User")
+         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
+
+    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
 
     # Факты
     if facts_text:
@@ -1027,7 +1089,6 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default') -> str
     with open(WORKFLOW_CHARACTER_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
-    #avatar_path = get_user_avatar_path(user_id)
     # Промпт для генерации
     workflow_json["4"]["inputs"]["text"] = negative_prompt
     workflow_json["85"]["inputs"]["text"] =  prompt + ", " + IMPROVEMENT_PROMPT
