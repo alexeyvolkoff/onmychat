@@ -297,7 +297,7 @@ def search_document_chunks(
 ) -> list[dict]:
     
     chunks = []
-    logging.info(f"Loading document: {vec_file}")
+    logging.info(f"Loading document: {vec_file} with threshold {distance_threshold}")
 
     try:
         if collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
@@ -338,7 +338,7 @@ def search_document_chunks(
     for chunk in chunks:
         distance = cosine_distance(query_emb, chunk["embedding"])
         if distance <= distance_threshold:
-            #logging.info(f"Relevant chunk: {distance}")
+            logging.info(f"Relevant chunk: {distance}")
             results.append({
                 "text": chunk.get("text", "").strip(),
                 "distance": distance,
@@ -410,8 +410,8 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
             doc_id = m.get("document_id")
             if doc_id:
                 vec_file = make_file_name_from_document_id(doc_id) + ".vec"
-                # Adding relevant document chunks
-                doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection)
+                # Adding relevant document chunks with lenient threshold
+                doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection, distance_threshold=0.8)
                 permanent.extend(doc_chunks)
             else:
                 # Adding memory card
@@ -431,8 +431,8 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
                 doc_id = m.get("document_id")
                 if doc_id:
                     vec_file = make_file_name_from_document_id(doc_id) + ".vec"
-                    # Adding relevant document chunks
-                    doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection)
+                    # Adding relevant document chunks with lenient threshold
+                    doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection, distance_threshold=0.8)
                     contextual.extend(doc_chunks)
                 else:
                   # Adding memory card
