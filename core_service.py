@@ -446,7 +446,10 @@ def get_available_loras() -> list:
                     for input_key, input_val in inputs.items():
                         if input_key.startswith("lora_") and isinstance(input_val, dict):
                             if "name" in input_val:
-                                loras.append({"name": input_val["name"]})
+                                loras.append({
+                                    "name": input_val["name"],
+                                    "type": input_val.get("type", "character")
+                                })
             
             # Sort by name
             loras.sort(key=lambda x: x["name"])

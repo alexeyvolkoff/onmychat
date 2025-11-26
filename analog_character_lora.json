@@ -90,48 +90,56 @@
       "lora_1": {
         "on": false,
         "name": "Busty",
+        "type": "style",
         "lora": "Round_Breasts_XL_XV7-000038.safetensors",
         "strength": 1
       },
       "lora_2": {
         "on": false,
         "name": "Seductive",
+        "type": "style",
         "lora": "SDXL\\Seductive_Expression_SDXL-000040.safetensors",
         "strength": 1
       },
       "lora_3": {
         "on": false,
         "name": "Lily",
+        "type": "character",
         "lora": "Lily.safetensors",
         "strength": 1
       },
       "lora_4": {
         "on": false,
         "name": "Domi",
+        "type": "character",
         "lora": "XLDomiv2.safetensors",
         "strength": 1
       },
       "lora_5": {
         "on": false,
         "name": "Judith",
+        "type": "character",
         "lora": "JudithCB_r2-000011.safetensors",
         "strength": 1
       },
       "lora_6": {
         "on": false,
         "name": "Naomi",
+        "type": "character",
         "lora": "Naomi-XSTAR-XL.safetensors",
         "strength": 1
       },
       "lora_7": {
         "on": false,
         "name": "Vera",
+        "type": "character",
         "lora": "VEROTIKA-XSTAR-XL-FINAL.safetensors",
         "strength": 1
       },
       "lora_8": {
         "on": false,
         "name": "Bianca",
+        "type": "character",
         "lora": "BIANCA-XSTAR-XL.safetensors",
         "strength": 1
       },
