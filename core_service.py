@@ -385,8 +385,8 @@ def bind_account(ctx: UserContext, omd_key: str):
                 logging.warning(f"[bind_account] WARNING: {new_dir} already exists, skipping rename")
 
     # === Проверяем storage и переносим данные ===
-    storage = ctx.settings.get("storage")
-    omd_key = ctx.settings.get("omd_key")
+    storage = ctx.storage
+    omd_key = ctx.omd_key
     if ctx.type == "omd" and storage and omd_key:
 
         # 1. Переносим чаты
@@ -463,10 +463,10 @@ def get_available_loras() -> list:
 
 async def get_avatar_version(ctx: UserContext) -> str:
     # 1. Check remote
-    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+    if ctx.storage and ctx.omd_key:
         try:
-            storage_id = ctx.settings["storage"]
-            storage_key = ctx.settings["omd_key"]
+            storage_id = ctx.storage
+            storage_key = ctx.omd_key
             
             base_url = GATEWAY_URL.rstrip("/")
             clean_storage_id = storage_id.strip("/")
@@ -1075,7 +1075,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = False) -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -1087,8 +1087,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default') -> str
         negative_prompt = NEGATIVE_PROMPTS["nsfw"] + "," + negative_prompt
 
 
-    logging.info(f"Generating character image for user with Chat ID: {user_id} ")
-    logging.info(f"Improved prompt: {prompt}")
+    logging.info(f"Generating image for user with Chat ID: {user_id} ")
+    logging.info(f"Prompt: {prompt}")
     with open(WORKFLOW_CHARACTER_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
@@ -1203,18 +1203,18 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default') -> str
 
     # Имя файла без пути
     filename = os.path.basename(img_path)
-    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+    if ctx.storage and ctx.omd_key:
         # Копируем файл юзеру на устройство
-        dest = f"{ctx.settings['storage']}/generated"
-        upload_to_storage(ctx.settings["omd_key"], dest, filename, img_path)
+        dest = f"{ctx.storage}/generated"
+        upload_to_storage(ctx.omd_key, dest, filename, img_path)
     else:    
         # Копируем файл в user_data
         dest_path = os.path.join(user_folder, filename)
         shutil.copy2(img_path, dest_path)
-
-    history = load_history(ctx, chat)
-    history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
-    save_history(ctx, history, chat)
+    if update_history:
+        history = load_history(ctx, chat)
+        history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
+        save_history(ctx, history, chat)
     return filename
 
 async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> str:

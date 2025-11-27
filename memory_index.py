@@ -62,41 +62,18 @@ def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
     return index_path
 
 
-def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
-    try:
-        if (
-            ctx.settings.get("storage")
-            and ctx.settings.get("omd_key")
-            and collection == "user"
-        ):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl?nocache={int(time.time())}"
-            token = ctx.settings["omd_key"]
-            headers = {"Authorization": f"token:{token}"}
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                return [json.loads(line) for line in resp.text.splitlines() if line.strip()]
-            return []
-        else:
-            # локальный fallback
-            path = f"{USER_DATA_DIR}/{ctx.user_id}/memory/{collection}.jsonl"
-            if not os.path.exists(path):
-                return []
-            with open(path, "r", encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-    except Exception as e:
-        print(f"[memory] No memories: {ctx.user_id} {collection} {e}")
-        return []
+
 
 
 def save_memories(ctx: UserContext, memories: list[dict], collection: str = "user"):
     try:
         if (
-            ctx.settings.get("storage")
-            and ctx.settings.get("omd_key")
+            ctx.storage
+            and ctx.omd_key
             and collection == "user"
         ):
-            dest = f"{ctx.settings['storage']}"
-            upload_vec_to_storage(ctx.settings['omd_key'], dest, "memory.jsonl", memories, "application/jsonl")
+            dest = f"{ctx.storage}"
+            upload_vec_to_storage(ctx.omd_key, dest, "memory.jsonl", memories, "application/jsonl")
         else:
             # локальный fallback
             path = get_index_path(ctx.user_id, collection)
@@ -300,10 +277,10 @@ def search_document_chunks(
     logging.info(f"Loading document: {vec_file} with threshold {distance_threshold}")
 
     try:
-        if collection == "user" and ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+        if collection == "user" and ctx.storage and ctx.omd_key:
             # Подгружаем vec из OMD
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/vecs/{vec_file}?nocache={int(time.time())}"
-            token = ctx.settings["omd_key"]
+            url = f"{GATEWAY_URL}/{ctx.storage}/vecs/{vec_file}?nocache={int(time.time())}"
+            token = ctx.omd_key
             headers = {"Authorization": f"token:{token}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
@@ -354,12 +331,12 @@ def search_document_chunks(
 def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
     try:
         if (
-            ctx.settings.get("storage")
-            and ctx.settings.get("omd_key")
+            ctx.storage
+            and ctx.omd_key
             and collection == "user"
         ):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/memory.jsonl?nocache={int(time.time())}"
-            headers = {"authorization": f"token:{ctx.settings['omd_key']}"}
+            url = f"{GATEWAY_URL}/{ctx.storage}/memory.jsonl?nocache={int(time.time())}"
+            headers = {"authorization": f"token:{ctx.omd_key}"}
             logging.info(f"loading memories from {url}")
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
@@ -512,13 +489,13 @@ def chunk_and_vectorize_to_file(
 
     try:
         if (
-            ctx.settings.get("storage")
-            and ctx.settings.get("omd_key")
+            ctx.storage
+            and ctx.omd_key
             and collection == "user"
         ):
             # --- Хранение в OMD ---
-            dest = f"{ctx.settings['storage']}/vecs"
-            upload_vec_to_storage(ctx.settings['omd_key'], dest, f"{filename}.vec", entries, "application/jsonl")
+            dest = f"{ctx.storage}/vecs"
+            upload_vec_to_storage(ctx.omd_key, dest, f"{filename}.vec", entries, "application/jsonl")
         else:
             # --- Локальное хранение ---
             if collection == "user":

@@ -39,6 +39,8 @@ class UserContext:
     user_id: str  # либо account_id/username, либо temp_id
     settings: dict
     history: dict
+    omd_key: str = ""
+    storage: str = ""
 
 # === Настройки пользователя ===
 def get_default_system_prompt() -> str:
@@ -55,7 +57,7 @@ DEFAULT_USER_PROMPT = (
     "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
 )
 
-def load_user_settings(user_id) :
+def load_user_settings(user_id, omd_key=None, storage=None) :
     # Check cache first
     if user_id in bindings["profiles"]:
         return bindings["profiles"][user_id]
@@ -69,8 +71,6 @@ def load_user_settings(user_id) :
             "nsfw": False,
             "style": "realistic",
             "system_prompt": DEFAULT_USER_PROMPT,
-            "omd_key": "",
-            "storage": "",
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
             "assistant_model": "Domi",
@@ -78,10 +78,10 @@ def load_user_settings(user_id) :
         }
 
     # Try to load from storage if configured
-    if settings.get("storage") and settings.get("omd_key"):
+    if storage and omd_key:
         remote_settings = fetch_json_from_storage(
-            settings["omd_key"],
-            settings["storage"],
+            omd_key,
+            storage,
             "settings.json"
         )
         if remote_settings:
@@ -104,8 +104,8 @@ def load_user_settings(user_id) :
              logging.info(f"Remote settings not found or invalid, uploading local settings for user {user_id}")
              try:
                 upload_data_to_storage(
-                    settings["omd_key"],
-                    settings["storage"],
+                    omd_key,
+                    storage,
                     "settings.json",
                     settings,
                     "application/json"
@@ -133,13 +133,17 @@ def save_user_settings(ctx: UserContext):
     settings_to_save = ctx.settings.copy()
     settings_to_save.pop("username", None)
 
+    # Update bindings if we have omd_key (account_id)
+    if ctx.omd_key and ctx.omd_key in bindings["by_account"]:
+        if ctx.storage:
+            bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
 
     # Save to storage if configured
-    if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
+    if ctx.storage and ctx.omd_key:
         try:
             upload_data_to_storage(
-                ctx.settings["omd_key"],
-                ctx.settings["storage"],
+                ctx.omd_key,
+                ctx.storage,
                 "settings.json",
                 settings_to_save,
                 "application/json"
@@ -194,23 +198,38 @@ def get_context(telegram_id: int) -> UserContext:
     """Вернуть контекст пользователя по его telegram_id."""
     if telegram_id in bindings["by_telegram"]:
         binding = bindings["by_telegram"][telegram_id]
-        settings = load_user_settings(binding["username"])
-        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[])
+        account_id = binding.get("account_id")
+        
+        # Try to find storage in account binding
+        storage = None
+        if account_id and account_id in bindings["by_account"]:
+             storage = bindings["by_account"][account_id].get("storage")
+
+        settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
     else:
-        settings = load_user_settings(telegram_id)
+        settings = load_user_settings(str(telegram_id))
         ctx = UserContext(type="temp", user_id=str(telegram_id), settings=settings, history=[])
     return  ctx
 
 
 
-def get_context_by_account(account_id: str) -> UserContext:
+def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
     """Вернуть контекст пользователя по account_id (omd_key).
        Если нет в bindings, пробуем спросить у OMD.
     """
+
     if account_id in bindings["by_account"]:
         binding = bindings["by_account"][account_id]
-        settings = load_user_settings(binding["username"])
-        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[])
+        # Prioritize storage from binding if set, otherwise use passed storage
+        if not storage:
+            storage = binding.get("storage")
+        else:
+             # Update storage in binding if passed
+             binding["storage"] = storage
+
+        settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
         return ctx 
     
     # если не найден — пробуем запросить у OMD
@@ -223,13 +242,21 @@ def get_context_by_account(account_id: str) -> UserContext:
         if user_info.get("valid", False):
             username = user_info["user"]
             displayname = user_info.get("displayname", username)
-            bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
-            settings = load_user_settings(username)
+            
+            # Check for defaultStorage in profile
+            profile_storage = user_info.get("defaultStorage")
+            if profile_storage:
+                storage = profile_storage
+            
+            # We don't know storage yet if not passed or in profile, it will be set later via create_profile or update
+            bindings["by_account"][account_id] = {"telegram_id": None, "username": username, "storage": storage}
+            
+            settings = load_user_settings(username, omd_key=account_id)
             settings["username"] = displayname
-            ctx = UserContext(type="omd", user_id=username, settings=settings, history=[])
+            ctx = UserContext(type="omd", user_id=username, settings=settings, history=[], omd_key=account_id, storage=storage)
             return ctx
     except Exception as e:
-        logging.warning(f"Unbound OMD key: {account_id}")
+        logging.warning(f"Unbound OMD key: {account_id} {e}")
 
     # если ничего не получилось — временный контекст
     user_id=f"temp_{account_id}"
@@ -251,8 +278,7 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
     storage  — базовый путь в OMD, например: "storage/user123"
     """
     # Сохраняем выбранное хранилище в контекст
-    ctx.settings["storage"] = storage
-    ctx.settings["storage"] = storage
+    ctx.storage = storage
     
 
     headers = {
@@ -277,8 +303,11 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
             # Можно залогировать или выбросить исключение
             logging.warning(f"Error while creating profile dir: {e}")
             results[folder] = {"error": str(e)}
-    # save settings
-    ctx.settings["omd_key"] = omd_key
+    
+    # Update context with new storage and key
+    ctx.storage = storage
+    ctx.omd_key = omd_key
+    ctx.settings["name"] = "User"
     save_user_settings(ctx)
     return results
 
@@ -307,6 +336,4 @@ def bind(ctx: UserContext, account_id: str) -> UserContext:
     ctx.settings["username"] = displayname
     save_user_settings(ctx)
     return ctx
-
-
 

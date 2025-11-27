@@ -22,9 +22,9 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
         if ctx.history:
             return ctx.history
 
-        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            url = f"{GATEWAY_URL}/{ctx.settings['storage']}/chats/{chat}.json?nocache={int(time.time())}"
-            token = ctx.settings["omd_key"]
+        if ctx.storage and ctx.omd_key:
+            url = f"{GATEWAY_URL}/{ctx.storage}/chats/{chat}.json?nocache={int(time.time())}"
+            token = ctx.omd_key
             headers = {"Authorization": f"token:{token}"}
             print(f"[loading history]: {ctx.user_id} {url} {token}")
             resp = requests.get(url, headers=headers, timeout=10)
@@ -46,15 +46,16 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                 return  history
         
     except Exception as e:
-        print(f"[history] Empty history: {ctx.user_id} {ctx.settings.get("storage")} {chat} {e}")
+        print(f"[history] Empty history: {ctx.user_id} {ctx.storage} {chat} {e}")
         return []
     
 
 def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
-        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            dest = f"{ctx.settings['storage']}/chats"
-            upload_data_to_storage(ctx.settings['omd_key'], dest, f"{chat}.json", history, "application/json")
+        if ctx.storage and ctx.omd_key:
+            print(f"[history] Uploading history: {ctx.user_id} {ctx.storage} {chat}")
+            dest = f"{ctx.storage}/chats"
+            upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")
         else:
             # локальный fallback
             path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
@@ -83,8 +84,8 @@ def load_chats_index(ctx: UserContext) -> dict:
     иначе используем локальный fallback.
     """
     try:
-        storage = ctx.settings.get("storage")
-        omd_key = ctx.settings.get("omd_key")
+        storage = ctx.storage
+        omd_key = ctx.omd_key
         print(f"[history] Load index: {ctx.user_id} {storage}")
 
         if storage and omd_key:
@@ -117,8 +118,8 @@ def save_chats_index(ctx: UserContext, chats: dict):
     иначе локальный fallback.
     """
     try:
-        storage = ctx.settings.get("storage")
-        omd_key = ctx.settings.get("omd_key")
+        storage = ctx.storage
+        omd_key = ctx.omd_key
 
         if storage and omd_key:
             dest = f"{storage}/chats"

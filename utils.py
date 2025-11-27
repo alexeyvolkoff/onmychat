@@ -128,7 +128,7 @@ def resize_and_base64encode(image_path: str) -> str:
 
 async def get_image_from_source(ctx, img_source: str):
     b64_image = None
-    omd_key = ctx.settings.get("omd_key")
+    omd_key = ctx.omd_key
     if img_source:
         if re.match(r"^https?://", img_source):
             async with aiohttp.ClientSession() as session:

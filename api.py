@@ -87,6 +87,7 @@ class GenerateInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
+    message_index: int | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -98,12 +99,14 @@ class UpdateAssistantInput(BaseModel):
     assistant_title: str | None = None
     assistant_model: str | None = None
 
+class SignoutInput(BaseModel):
+    omd_key: str
+
 
 # ==== Хелпер ====
 
-def get_ctx(omd_key: str):
-    ctx = user_context.get_context_by_account(omd_key)
-    return ctx
+def get_ctx(omd_key: str, storage: str = ""):
+    return user_context.get_context_by_account(omd_key, storage)
 
 
 def serve_file(filepath: str, request: Request, size: int = None) -> Response:
@@ -177,7 +180,7 @@ async def assistant_info(omd_key: str):
             "nsfw": ctx.settings.get("nsfw", False),
             "model": ctx.settings.get("assistant_model", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
-            "omd_key": ctx.settings.get("omd_key") or omd_key
+            "omd_key": ctx.omd_key or omd_key
         }
         return assistant
 
@@ -194,9 +197,9 @@ async def assistant_avatar(
     ctx = get_ctx(omd_key)
     try:
         # Check for custom avatar in remote storage
-        if ctx.settings.get("storage") and ctx.settings.get("omd_key"):
-            storage_id = ctx.settings["storage"]
-            storage_key = ctx.settings["omd_key"]
+        if ctx.storage and ctx.omd_key:
+            storage_id = ctx.storage
+            storage_key = ctx.omd_key
             
             # Clean up URL construction
             base_url = user_context.GATEWAY_URL.rstrip("/")
@@ -275,7 +278,7 @@ async def get_generated_file(
     size: int | None = Query(None, description="Target size in pixels")
 ):
     ctx = get_ctx(omd_key)
-    storage = ctx.settings.get("storage")
+    storage = ctx.storage
 
     if not storage:
         # Локальный файл
@@ -413,10 +416,10 @@ async def get_memory(omd_key: str, collection: str, mem_id: str):
 
 @app.get("/chats")
 async def chats_endpoint(omd_key: str, storage: str = ""):
-    ctx = get_ctx(omd_key)
+    ctx = get_ctx(omd_key, storage)
     try:
-        if not ctx.settings.get("storage") and storage:
-            logging.info(f"Creating profile for user {ctx.user_id}, {ctx.type}, storage: {storage}")    
+        if not ctx.storage and storage:
+            logging.info(f"Creating profile for user {ctx.user_id}, {ctx.type}, storage: {storage}")
             user_context.create_profile(ctx, omd_key, storage)
 
         from dialog_history import load_chats_index
@@ -677,7 +680,20 @@ async def recognize_endpoint(
 async def generate_character_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_image(ctx, data.prompt)
+        result = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
+        
+        # Update history if index provided
+        if data.message_index is not None:
+            history = core_service.load_history(ctx, data.chat)
+            if 0 <= data.message_index < len(history):
+                msg = history[data.message_index]
+                # Ensure it's an assistant message with image
+                if msg.get("role") == "assistant" and "image" in msg:
+                    msg["image"]["path"] = result
+                    history[data.message_index] = msg
+                    core_service.save_history(ctx, history, data.chat)
+                    logging.info(f"Updated image for message {data.message_index} in chat {data.chat}")
+
         return {"image": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -760,3 +776,10 @@ async def update_assistant(request: Request):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/notify/signout")
+async def notify_signout(data: SignoutInput):
+    if data.omd_key in user_context.bindings["by_account"]:
+        del user_context.bindings["by_account"][data.omd_key]
+        logging.info(f"Signed out user with key {data.omd_key}")
+    return {"status": "ok"}

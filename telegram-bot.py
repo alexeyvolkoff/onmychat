@@ -65,7 +65,7 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_image_from_request(ctx, img_source: str,  update: Update):
     photos = update.message.photo
-    omd_key = ctx.settings.get("omd_key")
+    omd_key = ctx.omd_key
     b64_image = None
 
     if photos:
@@ -327,7 +327,7 @@ async def get_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nsfw = "enabled" if ctx.settings.get("nsfw", False) else "disabled"
     knowledge = ctx.settings.get("kb_id", "")
     style = ctx.settings.get("style", "realistic")
-    storage = ctx.settings.get("storage", "")
+    storage = ctx.storage
 
     msg = (
         f"*User settings:*\n"
@@ -370,13 +370,13 @@ async def setstorage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     storage = context.args[0]
 
-    ctx.settings["storage"] = storage
+    ctx.storage = storage
     save_user_settings(ctx)
     await update.message.reply_text(f"✅ Storage for your data: `{storage}`", parse_mode="Markdown")
  
     #move personal data
-    if ctx.settings.get("omd_key"):
-        ctx = core.bind_account(ctx, ctx.settings["omd_key"])
+    if ctx.omd_key:
+        ctx = core.bind_account(ctx, ctx.omd_key)
         await update.message.reply_text(f"✅ Personal data moved to storage: `{storage}`", parse_mode="Markdown")
 
 
