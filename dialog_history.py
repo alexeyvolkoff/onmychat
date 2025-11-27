@@ -53,7 +53,6 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
 def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
         if ctx.storage and ctx.omd_key:
-            print(f"[history] Uploading history: {ctx.user_id} {ctx.storage} {chat}")
             dest = f"{ctx.storage}/chats"
             upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")
         else:

@@ -692,7 +692,6 @@ async def generate_character_image(data: GenerateInput):
                     msg["image"]["path"] = result
                     history[data.message_index] = msg
                     core_service.save_history(ctx, history, data.chat)
-                    logging.info(f"Updated image for message {data.message_index} in chat {data.chat}")
 
         return {"image": result}
     except Exception as e:

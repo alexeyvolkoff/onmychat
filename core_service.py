@@ -1075,7 +1075,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = False) -> str:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -1087,7 +1087,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         negative_prompt = NEGATIVE_PROMPTS["nsfw"] + "," + negative_prompt
 
 
-    logging.info(f"Generating image for user with Chat ID: {user_id} ")
+    logging.info(f"Generating image for user: {user_id}")
     logging.info(f"Prompt: {prompt}")
     with open(WORKFLOW_CHARACTER_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
