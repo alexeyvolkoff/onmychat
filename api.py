@@ -508,7 +508,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
                 safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                 if safety_result != "SAFE":
                     logging.info(f"Image generation safety check failed: {safety_result}")
-                    yield f"data: {json.dumps({'content': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                    yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
                     return
         else:
             raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
