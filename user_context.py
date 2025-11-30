@@ -60,9 +60,9 @@ DEFAULT_USER_PROMPT = (
 def load_user_settings(user_id, omd_key=None, storage=None) :
     # Check cache first
     if user_id in bindings["profiles"]:
-        logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
+        #logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
         return bindings["profiles"][user_id]
-    logging.info(f"[DEBUG] Cache miss for {user_id}")
+    #ogging.info(f"[DEBUG] Cache miss for {user_id}")
 
     path = f"{USER_DATA_DIR}/{user_id}/settings.json"
     if os.path.exists(path):
