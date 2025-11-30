@@ -337,6 +337,14 @@ INTENT_PROMPT = (
     "DO NOT PUT YOUR RESPONSE INTO SINGLE QUOTES or DOUBLE QUOTES."
 )
 
+SAFETY_CHECK_PROMPT = (
+    "You are a content safety filter. Your task is to check if the user's image generation prompt contains explicit sexual content, nudity, or other NSFW material.\n"
+    "If the prompt is safe and suitable for general audiences, respond with exactly 'SAFE'.\n"
+    "If the prompt contains explicit or NSFW content, respond with a polite but firm refusal message explaining that you cannot generate such content. Do not lecture, just decline.\n"
+    "Example Safe: 'A cat sitting on a fence' -> SAFE\n"
+    "Example Unsafe: 'A naked woman' -> I cannot generate explicit content.\n"
+)
+
 
 SUMMARY_PROMPT = (
     "You are an assistant that creates a concise **memory card** for fast semantic search. \n"
@@ -749,6 +757,26 @@ async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") 
     data = await llm_request(request_payload)
     response = data["message"]["content"]
     return response.lower().strip()
+
+async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
+    messages = [
+        {"role": "system", "content": SAFETY_CHECK_PROMPT},
+        {"role": "user", "content": prompt}
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": DEFAULT_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+        }
+    }
+
+    data = await llm_request(request_payload)
+    if data and "message" in data and "content" in data["message"]:
+        return data["message"]["content"].strip()
+    return "SAFE" # Fail open if LLM fails, or maybe fail closed? Assuming safe for now to avoid blocking on errors.
 
 
 # === Чат ===

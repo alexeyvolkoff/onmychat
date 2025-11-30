@@ -474,8 +474,10 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             if len(args) > 1:
                 request = args[1].strip()
                 skip_history = False
+        
 
             ctx.settings["nsfw"] = nsfw_enabled
+            logging.info(f"User: {ctx.user_id} swithed NSFW mode to {nsfw_enabled}")
             user_context.save_user_settings(ctx)
             instruction = (
                 "User has switched NSFW mode '{}'.\nPlease, act accordingly."
@@ -501,6 +503,13 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         elif prompt.startswith("/generate"):
             intent = "generate"
             img_prompt = prompt[len("/generate"):].strip()
+            if not ctx.settings.get("nsfw", False):
+                logging.info(f"Checking image generation safety: {img_prompt}")
+                safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                if safety_result != "SAFE":
+                    logging.info(f"Image generation safety check failed: {safety_result}")
+                    yield f"data: {json.dumps({'content': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                    return
         else:
             raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
             lines = raw_intent.strip().split("\n", 1)

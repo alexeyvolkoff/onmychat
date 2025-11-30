@@ -60,7 +60,9 @@ DEFAULT_USER_PROMPT = (
 def load_user_settings(user_id, omd_key=None, storage=None) :
     # Check cache first
     if user_id in bindings["profiles"]:
+        logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
         return bindings["profiles"][user_id]
+    logging.info(f"[DEBUG] Cache miss for {user_id}")
 
     path = f"{USER_DATA_DIR}/{user_id}/settings.json"
     if os.path.exists(path):
@@ -128,6 +130,7 @@ def save_user_settings(ctx: UserContext):
 
     # Update memory cache (with username if present)
     bindings["profiles"][ctx.user_id] = ctx.settings
+    logging.info(f"[DEBUG] Updated cache for {ctx.user_id}: {ctx.settings.get('nsfw')}")
 
     # Prepare settings for saving (exclude username)
     settings_to_save = ctx.settings.copy()
@@ -137,6 +140,12 @@ def save_user_settings(ctx: UserContext):
     if ctx.omd_key and ctx.omd_key in bindings["by_account"]:
         if ctx.storage:
             bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
+
+    # Always save to local disk as cache/backup
+    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
+    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
     # Save to storage if configured
     if ctx.storage and ctx.omd_key:
@@ -151,11 +160,6 @@ def save_user_settings(ctx: UserContext):
             logging.info(f"Saved settings to storage for user {ctx.user_id}")
         except Exception as e:
             logging.warning(f"Failed to save settings to storage: {e}")
-    else:        
-        os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
-        path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
 
 def load_bindings():
@@ -215,6 +219,7 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
              binding["storage"] = storage
 
         settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
+        logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
         return ctx 
     
