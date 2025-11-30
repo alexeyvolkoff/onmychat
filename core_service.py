@@ -16,7 +16,7 @@ from utils import clean_response, upload_to_storage, get_image_from_source
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
-from user_context import UserContext
+from user_context import UserContext, DEFAULT_USER_PROMPT
 from datetime import datetime, timezone
 import re
 

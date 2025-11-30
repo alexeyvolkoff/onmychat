@@ -179,20 +179,6 @@ def load_bindings():
 
 
 
-def save_bindings():
-    """Сохранить биндинги в файл."""
-    os.makedirs("user_data", exist_ok=True)
-    try:
-        # Telegram ID конвертим обратно в строки
-        data = {
-            "by_telegram": {str(k): v for k, v in bindings["by_telegram"].items()},
-            "by_account": bindings["by_account"]
-        }
-        with open(BINDINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[bindings] Save error: {e}")
-
 
 def get_context(telegram_id: int) -> UserContext:
     """Вернуть контекст пользователя по его telegram_id."""
@@ -248,20 +234,23 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
             if profile_storage:
                 storage = profile_storage
             
-            # We don't know storage yet if not passed or in profile, it will be set later via create_profile or update
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username, "storage": storage}
             
-            settings = load_user_settings(username, omd_key=account_id)
+            settings = load_user_settings(username, storage=storage, omd_key=account_id)
             settings["username"] = displayname
             ctx = UserContext(type="omd", user_id=username, settings=settings, history=[], omd_key=account_id, storage=storage)
             return ctx
     except Exception as e:
-        logging.warning(f"Unbound OMD key: {account_id} {e}")
+        logging.warning(f"Unbound OMD key: {account_id}")
 
     # если ничего не получилось — временный контекст
     user_id=f"temp_{account_id}"
-    settings = load_user_settings(user_id)
-    ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[])
+    
+    if storage:
+         bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id, "storage": storage}
+
+    settings = load_user_settings(user_id, storage=storage, omd_key=account_id)
+    ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
     return ctx
 
 
@@ -329,7 +318,6 @@ def bind(ctx: UserContext, account_id: str) -> UserContext:
     telegram_id = str(ctx.user_id)
 
     bindings["by_telegram"][telegram_id] = {"account_id": account_id, "username": username}
-    save_bindings()
     ctx.type="omd" 
     ctx.user_id=username
     ctx.settings["omd_key"] = account_id
