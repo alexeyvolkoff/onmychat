@@ -71,7 +71,7 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
     else:
         settings = {
             "nsfw": False,
-            "style": "realistic",
+            "style": "perfect",
             "system_prompt": DEFAULT_USER_PROMPT,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
@@ -114,7 +114,8 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
                 )
              except Exception as e:
                 logging.warning(f"Failed to upload local settings: {e}")
-
+                # Update memory cache even if upload failed
+                bindings["profiles"][user_id] = settings
     # Update memory cache
     bindings["profiles"][user_id] = settings
     return settings

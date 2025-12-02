@@ -1214,10 +1214,10 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.info(f"Using default LoRA: {assistant_model} ({key})")
 
     # Activate LoRAs and set strength
-    lora_count = len(active_lora_keys)
+    #lora_count = len(active_lora_keys)
     target_strength = 1.0
-    if (style.startswith("perfect") or style.startswith("perfection")) and lora_count > 1:
-        target_strength = 0.6
+    #if (style.startswith("perfect") or style.startswith("perfection")) and lora_count > 1:
+    #    target_strength = 0.6
     
     for key in active_lora_keys:
         workflow_json["103"]["inputs"][key]["on"] = True
