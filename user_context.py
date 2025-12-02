@@ -220,7 +220,7 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
              binding["storage"] = storage
 
         settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
-        logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
+        #logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
         return ctx 
     
