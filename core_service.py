@@ -637,157 +637,452 @@ async def llm_request(payload: dict, headers: dict = None):
         logging.error(f"LLM error: {e}")
         return None
 
-
-# === Chats naming ==== #
-async def generate_chat_title(message: str, chats) -> str:
-
-    existing_titles = [chat_data.get("title") for chat_data in chats.values() if "title" in chat_data]
-    existing_titles_str = "\n".join(f"- {t}" for t in existing_titles) if existing_titles else "None"
-    """
-    Спросить у LLM короткое имя для чата.
-    """
-    prompt = (
-        "You are asked to generate a short (2–4 words) title for a chat conversation "
-        "based on the following first message. "
-        "Start the title with the emoji that depicts the topic. Avoid emojis in the rest of the title.\n"
-        "Return ONLY the title starting with emoji, in one line, no explanations.\n\n"
-        f"Message: {message}\n"
-        "Avoid using already existing names and titles:\n"
-        f"Existing chats:\n{existing_titles_str}"
-    )
-
-    payload = {
-        "messages": [
-            {"role": "system", "content": "You are a naming assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        "model": SFW_MODEL, 
-        "stream": False,
-        "options": {"temperature": 0.3}
-    }
-
-    data = await llm_request(payload)
-
-    if not data:
-        return "💬 New chat"
-
-    return data["message"]["content"].strip() or "💬 New chat"
-
-
-
-async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
-    """
-    Убедиться, что чат есть в chats.json и файлы подготовлены.
-    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
-    """
-    chats = load_chats_index(ctx)
-    if (not chats or len(chats) < 2) and ctx.type == "temp":
-        ctx.settings["newUser"] = True
-        print(f"[chats] New user detected {ctx.user_id} {len(chats)} {chat})")
-
-    wasNewUser = ctx.settings.get("newUser", False)
-    print(f"[chats] User status: {ctx.user_id} {wasNewUser}")
-
-    if chat not in chats:
-        title = f"Chat {chat}"
-
-        if not chat or chat == "default" and first_message:
-            if len(chats) > 0 and wasNewUser:
-                ctx.settings["newUser"] = False
-                ctx.settings["system_prompt"] = DEFAULT_USER_PROMPT
-                user_context.save_user_settings(ctx)    
-                print(f"[chats] Remember recurrent user: {ctx.user_id} {len(chats)} {chat})")
-            try:
-                title = await generate_chat_title(first_message, chats)
-                chat =  re.sub(r'^[^\w]+', '', title).strip()
-                chat = chat.lower().replace(" ", "_")
-            except Exception as e:
-                print(f"[chats] Title generation error: {e}")
-
-        chats[chat] = {
-            "title": title,
-            "file": f"{chat}.json",
-            "name": chat,
-            "created": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        }
-
-    else:
-        # обновляем дату, если чат уже существует
-        chats[chat]["updated"] = datetime.utcnow().isoformat() + "Z"
-
-    save_chats_index(ctx, chats)
-
-    return chats[chat]
-
-
-# === Intent ===
-async def classify_user_intent(ctx:user_context, prompt: str, chat = "default") -> str:
-       
-    #model =  NSFW_MODEL if ctx.settings.get("nsfw", False) else SFW_MODEL
-    history = load_history(ctx, chat)
-
-    if ctx.settings.get("nsfw", False):
-        instruction = f"*IMPORTANT NOTICE:*\n{NSFW_PREPHASE}\n*INSTRUCTION:*\n{INTENT_PROMPT}" 
-    else:  
-        instruction = f"*INSTRUCTION:*\n{INTENT_PROMPT}"
-
-    system_prompt = "*This is a chat pre-processor task. Create machine-readable intent and optional memorization output according to further instructions and provided context. Do not respond to the message itself or express opinions or thoughts*\n"
-    system_prompt += f"*Facts about your character:*\n{ctx.settings.get("system_prompt", "")}\n*Memoryzation rules:*{MEMORIZATION_PROMPT}"
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        #{"role": "user", "content": prompt},
-    ]
-    # Добавляем историю
-    messages.extend(history[-20:])
-    # Промпт
-    messages.append({"role": "system", "content": instruction})
-    messages.append({"role": "user", "content": prompt})
-
-    request_payload = {
-        "messages": messages,
-        "model": DEFAULT_MODEL,
-        "stream": False,
-        "options": {
-          "temperature": 0.1,
-        }
-    }
-
-    data = await llm_request(request_payload)
-    response = data["message"]["content"]
-    return response.lower().strip()
-
-async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
-    messages = [
-        {"role": "system", "content": SAFETY_CHECK_PROMPT},
-        {"role": "user", "content": prompt}
-    ]
-
-    request_payload = {
-        "messages": messages,
-        "model": DEFAULT_MODEL,
-        "stream": False,
-        "options": {
-            "temperature": 0.1,
-        }
-    }
-
-    data = await llm_request(request_payload)
-    if data and "message" in data and "content" in data["message"]:
+```
         return data["message"]["content"].strip()
     return "SAFE" # Fail open if LLM fails, or maybe fail closed? Assuming safe for now to avoid blocking on errors.
 
 
 # === Чат ===
+async def _perform_prompt_stream(
+    ctx: UserContext,
+    instruction: str,
+    message: str,
+    chat: str,
+    skip_history: bool,
+    is_rag: bool,
+    img_source: str = None,
+    mem_id: str = None,
+    think: bool = False,
+    event: str = None
+):
+    nsfw_enabled = ctx.settings.get("nsfw", False)
+    model = DEFAULT_MODEL
+    b64_image = None
+
+    history = load_history(ctx, chat)
+
+    system_prompt = ""
+    # === ВСПОМНИМ ФАКТЫ ===
+    strict_fact = ""
+    facts_text = ""
+    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
+    logging.info(f"Loading facts: {collection} {is_rag}")
+    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
+    if facts:
+        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
+    if is_rag:
+        # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
+        logging.info(f"RAG request: {collection}")
+        prep_prompt = (
+            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
+            "Do not guess. If nothing is found, reply with 'No information'."
+        )
+
+        rag_system_prompt = prep_prompt
+
+        if facts_text:
+            rag_system_prompt += facts_text
+
+        prep_messages = [
+            {"role": "system", "content": rag_system_prompt},
+            {"role": "user", "content": message}
+        ]
+        prep_payload = {
+            "messages": prep_messages,
+            "model": SFW_MODEL,
+            "stream": False,
+            "options": {
+               "temperature": 0.1,
+            }
+        }
+        data = await llm_request(prep_payload)
+        if not data:
+            yield {"error": "⚠️ RAG query failed."}
+            return
+
+        rag_resp = data["message"]["content"].strip()
+        if rag_resp and not rag_resp.startswith("No information"):
+            strict_fact = rag_resp
+
+        # Инжект фактов и источников в system prompt
+        if strict_fact:
+            facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
+
+    if nsfw_enabled:
+        system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
+    else:
+        system_prompt = f"{BASE_SYSTEM_PROMPT}"
+
+
+    # Check if the user is new or recurrent one, and prepare chat info
+    chat_info = await ensure_chat(ctx, chat, message)
+
+    # Персонализация
+    user_prompt = ctx.settings.get("system_prompt", "")
+
+    if ctx.settings.get("newUser", False):
+         user_prompt = user_context.get_default_system_prompt()
+         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
+    else:
+         username = ctx.settings.get("username", "User")
+         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
+
+    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
+
+    # Факты
+    if facts_text:
+        logging.info(facts_text)
+        system_prompt += facts_text
+
+    # Инструкция
+    instruction_prompt = "*Instruction:*\n" + instruction
+
+    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
+
+    # Reminder
+    if think:
+        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."
+
+    if nsfw_enabled:
+        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
+
+
+    # === ОСНОВНОЙ ЗАПРОС ===
+    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
+
+    # Добавляем новый запрос
+    user_message = {
+        "role": "user",
+        "content": message,
+    }
+
+    instruction_message = {
+        "role": "system",
+        "content": instruction_prompt,
+    }
+
+    if img_source:
+        b64_image = await get_image_from_source(ctx, img_source)
+
+    if b64_image:
+        user_message["images"] = [b64_image]
+        model = DEFAULT_MODEL
+        if img_source.startswith("/"):
+            user_message["image"] = {"path": img_source}
+
+    if mem_id:
+       user_message["mem_id"] = mem_id
+
+    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
+
+    # Добавляем инструкцию
+    messages.append(instruction_message)
+    # Добавляем пользовательский промпт
+    messages.append(user_message)
+
+    main_payload = {
+        "messages": messages,
+        "model": model,
+        "stream": True, # Always stream for _perform_prompt_stream
+        "options": {
+            "temperature": 0.85,          # немного выше для разнообразия
+            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
+            "frequency_penalty": 0.6,     # штраф за частое повторение слов
+            "presence_penalty": 0.5,      # штраф за повторение идей/тем
+        }
+    }
+
+    if think and REASONONG_SUPPORTED:
+        main_payload["think"] = True
+
+    full_response_content = ""
+    full_thinking_content = ""
+
+    try:
+        async for chunk in llm_request_stream(main_payload):
+            if "content" in chunk["message"]:
+                content_chunk = chunk["message"]["content"]
+                full_response_content += content_chunk
+                yield {"content": content_chunk, "event": event}
+            if "thinking" in chunk["message"]:
+                thinking_chunk = chunk["message"]["thinking"]
+                full_thinking_content += thinking_chunk
+                yield {"thinking": thinking_chunk, "event": event}
+    except Exception as e:
+        logging.error(f"Error during LLM streaming: {e}")
+        yield {"error": f"Error during LLM streaming: {e}", "event": event}
+        return
+
+    # Post-processing and history saving after stream completes
+    llm_response = full_response_content
+    llm_response = clean_response(llm_response)
+    llm_think_response = full_thinking_content
+
+    # Add sources block
+    links = []
+    if doc_ids:
+        seen = set()
+        for doc in doc_ids:
+            if doc in seen:
+                continue
+            seen.add(doc)
+            links.append(doc)
+
+    # result object for final history save
+    response_for_history = {}
+    response_for_history["content"] = llm_response.strip()
+    if links:
+        response_for_history["sources"] = links
+    if strict_fact:
+        response_for_history["facts"] = strict_fact
+    if llm_think_response:
+        response_for_history["thinking"] = llm_think_response
+
+    # === Add to history
+    if not skip_history:
+        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
+        history.append(msg_to_save)
+    history_entry = {
+        "role": "assistant",
+        "content": llm_response
+    }
+    if strict_fact:
+        history_entry["facts"] = strict_fact
+    if links:
+        history_entry["sources"] = links
+    if llm_think_response:
+        history_entry["thinking"] = llm_think_response
+
+    history.append(history_entry)
+
+    chat_name = chat_info.get("name", chat)
+    save_history(ctx, history, chat_name)
+
+    # Yield final metadata
+    final_metadata = {"chatinfo": chat_info, "event": event}
+    if links:
+        final_metadata["sources"] = links
+    if strict_fact:
+        final_metadata["facts"] = strict_fact
+    if llm_think_response:
+        final_metadata["thinking"] = llm_think_response
+
+    yield final_metadata
+
+
+async def _perform_prompt_sync(
+    ctx: UserContext,
+    instruction: str,
+    message: str,
+    chat: str,
+    skip_history: bool,
+    is_rag: bool,
+    img_source: str = None,
+    mem_id: str = None,
+    think: bool = False
+) -> dict:
+    nsfw_enabled = ctx.settings.get("nsfw", False)
+    model = DEFAULT_MODEL
+    b64_image = None
+
+    history = load_history(ctx, chat)
+
+    system_prompt = ""
+    # === ВСПОМНИМ ФАКТЫ ===
+    strict_fact = ""
+    facts_text = ""
+    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
+    logging.info(f"Loading facts: {collection} {is_rag}")
+    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
+    if facts:
+        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
+    if is_rag:
+        # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
+        logging.info(f"RAG request: {collection}")
+        prep_prompt = (
+            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
+            "Do not guess. If nothing is found, reply with 'No information'."
+        )
+
+        rag_system_prompt = prep_prompt
+
+        if facts_text:
+            rag_system_prompt += facts_text
+
+        prep_messages = [
+            {"role": "system", "content": rag_system_prompt},
+            {"role": "user", "content": message}
+        ]
+        prep_payload = {
+            "messages": prep_messages,
+            "model": SFW_MODEL,
+            "stream": False,
+            "options": {
+               "temperature": 0.1,
+            }
+        }
+        data = await llm_request(prep_payload)
+        if not data:
+            return {"error": "⚠️ RAG query failed."}
+
+        rag_resp = data["message"]["content"].strip()
+        if rag_resp and not rag_resp.startswith("No information"):
+            strict_fact = rag_resp
+
+        # Инжект фактов и источников в system prompt
+        if strict_fact:
+            facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
+
+    if nsfw_enabled:
+        system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
+    else:
+        system_prompt = f"{BASE_SYSTEM_PROMPT}"
+
+
+    # Check if the user is new or recurrent one, and prepare chat info
+    chat_info = await ensure_chat(ctx, chat, message)
+
+    # Персонализация
+    user_prompt = ctx.settings.get("system_prompt", "")
+
+    if ctx.settings.get("newUser", False):
+         user_prompt = user_context.get_default_system_prompt()
+         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
+    else:
+         username = ctx.settings.get("username", "User")
+         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
+
+    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
+
+    # Факты
+    if facts_text:
+        logging.info(facts_text)
+        system_prompt += facts_text
+
+    # Инструкция
+    instruction_prompt = "*Instruction:*\n" + instruction
+
+    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
+
+    # Reminder
+    if think:
+        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."
+
+    if nsfw_enabled:
+        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
+
+
+    # === ОСНОВНОЙ ЗАПРОС ===
+    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
+
+    # Добавляем новый запрос
+    user_message = {
+        "role": "user",
+        "content": message,
+    }
+
+    instruction_message = {
+        "role": "system",
+        "content": instruction_prompt,
+    }
+
+    if img_source:
+        b64_image = await get_image_from_source(ctx, img_source)
+
+    if b64_image:
+        user_message["images"] = [b64_image]
+        model = DEFAULT_MODEL
+        if img_source.startswith("/"):
+            user_message["image"] = {"path": img_source}
+
+    if mem_id:
+       user_message["mem_id"] = mem_id
+
+    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
+
+    # Добавляем инструкцию
+    messages.append(instruction_message)
+    # Добавляем пользовательский промпт
+    messages.append(user_message)
+
+    main_payload = {
+        "messages": messages,
+        "model": model,
+        "stream": False, # Always non-stream for _perform_prompt_sync
+        "options": {
+            "temperature": 0.85,          # немного выше для разнообразия
+            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
+            "frequency_penalty": 0.6,     # штраф за частое повторение слов
+            "presence_penalty": 0.5,      # штраф за повторение идей/тем
+        }
+    }
+
+    if think and REASONONG_SUPPORTED:
+        main_payload["think"] = True
+
+    data = await llm_request(main_payload)
+    if not data:
+        return {"error": "LLM request failed."}
+
+    llm_response = data["message"]["content"]
+    llm_response = clean_response(llm_response)
+    llm_think_response = None
+    if data["message"].get("thinking"):
+        llm_think_response = data["message"]["thinking"]
+
+    # Добавляем блок с источниками — только в отображаемый ответ
+    links = []
+    if doc_ids:
+        seen = set()
+        for doc in doc_ids:
+            if doc in seen:
+                continue  # пропускаем дубликаты
+            seen.add(doc)
+            # Формируем ссылку без экранирования, она будет безопасно обработана позже
+            links.append(doc)
+
+    # result object
+    response = {}
+    response["content"] = llm_response.strip()
+    if links:  # добавляем блок только если есть ссылки
+        response["sources"] = links
+    if strict_fact:
+        response["facts"] = strict_fact
+    if llm_think_response:
+        response["thinking"] = llm_think_response
+    # === Добавляем в историю
+    if not skip_history:
+        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
+        history.append(msg_to_save)
+    history_entry = {
+        "role": "assistant",
+        "content": llm_response
+    }
+    if strict_fact:
+        history_entry["facts"] = strict_fact
+    if links:
+        history_entry["sources"] = links
+    if llm_think_response:
+        history_entry["thinking"] = llm_think_response
+
+    history.append(history_entry)
+
+    chat_name = chat_info.get("name", chat)
+    save_history(ctx, history, chat_name)
+    response["chatinfo"] = chat_info
+    return response
+
+
 async def perform_prompt(ctx: UserContext,
                          instruction: str,
                          message: str,
                          is_rag: bool=False,
                          skip_history: bool=False,
-                         chat: str = "default", 
-                         mem_id: str = "", 
-                         img_source: str = "",
+                         chat: str = "default",
+                         mem_id: str = None,
+                         img_source: str = None,
                          stream: bool = False,
                          think: bool = False) -> str | AsyncGenerator:
 
