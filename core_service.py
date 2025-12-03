@@ -637,9 +637,9 @@ async def llm_request(payload: dict, headers: dict = None):
         logging.error(f"LLM error: {e}")
         return None
 
-```
-        return data["message"]["content"].strip()
-    return "SAFE" # Fail open if LLM fails, or maybe fail closed? Assuming safe for now to avoid blocking on errors.
+
+
+
 
 
 # === Чат ===
