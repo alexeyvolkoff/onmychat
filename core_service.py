@@ -12,7 +12,7 @@ from typing import AsyncGenerator
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage, get_image_from_source
+from utils import clean_response, upload_to_storage, upload_data_to_storage, get_image_from_source
 
 from dialog_history import load_history, save_history, load_chats_index, save_chats_index
 import user_context
@@ -1236,10 +1236,19 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         # Копируем файл юзеру на устройство
         dest = f"{ctx.storage}/generated"
         upload_to_storage(ctx.omd_key, dest, filename, img_path)
+        # Save prompt as description (Readme.md)
+        readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+        upload_data_to_storage(ctx.omd_key, dest, readme_filename, prompt, "text/markdown")
+
     else:    
         # Копируем файл в user_data
         dest_path = os.path.join(user_folder, filename)
         shutil.copy2(img_path, dest_path)
+        # Save prompt as description (Readme.md)
+        readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+        readme_path = os.path.join(user_folder, readme_filename)
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(prompt)
     if update_history:
         history = load_history(ctx, chat)
         history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
