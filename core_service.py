@@ -1533,6 +1533,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         upload_to_storage(ctx.omd_key, dest, filename, img_path)
         # Save prompt as description (Readme.md)
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+        logging.info(f"Saving prompt as description: {prompt} {readme_filename}")
         upload_data_to_storage(ctx.omd_key, dest, readme_filename, prompt, "text/markdown")
 
     else:    
