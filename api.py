@@ -705,7 +705,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
 
             # 2️⃣ картинка
             logging.info(f"Generating image for prompt {img_prompt}")
-            path = await core_service.generate_image(ctx, img_prompt, chat)
+            path = await core_service.generate_image(ctx, img_prompt, chat, use_default_lora = False)
             yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}, 'done': True})}\n\n"
             return
 
@@ -718,7 +718,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
                 "If no *Known facts* provided, espond freely as a helpful conversational assistant."
             )
         # 3️⃣ ответ
-        async for chunk in core_service.perform_prompt(
+        async for chunk in await core_service.perform_prompt(
             ctx,
             instruction=instruction,
             message=request,
@@ -728,7 +728,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             mem_id=mem_id,
             think=think,
             img_source=img_source,
-            event=event
+            event=event,
+            stream=True
         ):
             yield f"data: {json.dumps(chunk)}\n\n"
 

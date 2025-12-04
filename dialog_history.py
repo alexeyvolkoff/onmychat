@@ -138,3 +138,4 @@ def save_chats_index(ctx: UserContext, chats: dict):
 
     except Exception as e:
         print(f"[chats] Save error: {ctx.user_id} {e}")
+

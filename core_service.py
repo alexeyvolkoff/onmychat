@@ -1084,7 +1084,8 @@ async def perform_prompt(ctx: UserContext,
                          mem_id: str = None,
                          img_source: str = None,
                          stream: bool = False,
-                         think: bool = False) -> str | AsyncGenerator:
+                         think: bool = False,
+                         event: str = None) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1283,7 +1284,7 @@ async def perform_prompt(ctx: UserContext,
     if stream:
         async def gen():
             if strict_fact:
-                yield {"facts": strict_fact, "done": False}
+                yield {"facts": strict_fact, "done": False, "event": event}
             accumulated_response = ""
             accumulated_thinking = ""
             thinking = False
@@ -1301,6 +1302,7 @@ async def perform_prompt(ctx: UserContext,
                         full_data["message"]["thinking"] = accumulated_thinking
                     response = await process_response(full_data)
                     response["done"] = True
+                    response["event"] = event
                     yield response
                 elif data.get("message"):   
                     if data["message"].get("thinking"):
@@ -1311,13 +1313,13 @@ async def perform_prompt(ctx: UserContext,
                         delta = data["message"]["content"]
                         thinking = False
                         accumulated_response += delta
-                    yield {"delta": delta, "done": False, "thinking": thinking}
+                    yield {"delta": delta, "done": False, "thinking": thinking, "event": event}
                 elif data.get("error"):    
-                    logging.warning(f"{data["error"]}")
-                    yield {"error": data["error"], "done": True}
+                    logging.warning(f"{data['error']}")
+                    yield {"error": data["error"], "done": True, "event": event}
                 else:
                     logging.warning("Empty response")
-                    yield {"error": "Empty response", "done": True}
+                    yield {"error": "Empty response", "done": True, "event": event}
         return gen()    
     else:
         logging.info(f"Requesting LLM {model}")
@@ -1326,6 +1328,121 @@ async def perform_prompt(ctx: UserContext,
         return response
 
 # === Генерация картинок ===
+
+# === Chats naming ==== #
+async def generate_chat_title(message: str) -> str:
+    """
+    Спросить у LLM короткое имя для чата.
+    """
+    prompt = (
+        "You are asked to generate a short (2–3 words) title for a chat conversation "
+        "based on the following first message. Title should start with a suitable emoji separated by space. "
+        "Return ONLY the title, no explanations.\n\n"
+        f"Message: {message}"
+    )
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a naming assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "model": SFW_MODEL, 
+        "stream": False,
+        "options": {"temperature": 0.3}
+    }
+
+    data = await llm_request(payload)
+    if not data:
+        return "New chat"
+    return data["message"]["content"].strip() or "New chat"
+
+
+async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
+    """
+    Убедиться, что чат есть в chats.json и файлы подготовлены.
+    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
+    """
+    chats = load_chats_index(ctx)
+
+    if chat not in chats:
+        title = f"Chat {chat}"
+
+        if (chat == "default" or not chat) and first_message:
+            try:
+                title = await generate_chat_title(first_message)
+                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
+                chat = re.sub(r'[^\w]+', '', chat).strip()
+            except Exception as e:
+                print(f"[chats] Title generation error: {e}")
+
+        chats[chat] = {
+            "title": title,
+            "file": f"{chat}.json",
+            "name": chat,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "updated": datetime.now(timezone.utc).isoformat()
+        }
+
+        
+    else:
+        # обновляем дату, если чат уже существует
+        chats[chat]["updated"] = datetime.now(timezone.utc).isoformat()
+
+    save_chats_index(ctx, chats)
+
+    return chats[chat]
+
+
+# === Intent ===
+async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
+    system_prompt = INTENT_PROMPT
+    history = load_history(ctx, chat)
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    # Use limited history for context to avoid confusing the classifier with too much old conversation
+    messages.extend(history[-5:]) 
+    messages.append({"role": "user", "content": prompt})
+    
+    request_payload = {
+        "messages": messages,
+        "model": DEFAULT_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.1, # Low temperature for classification
+        }
+    }
+    
+    data = await llm_request(request_payload)
+    
+    if data and "message" in data and "content" in data["message"]:
+        return data["message"]["content"]
+    
+    logging.warning(f"Classification failed, response: {data}")
+    return "chat\nFallback" 
+
+
+async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
+    system_prompt = SAFETY_CHECK_PROMPT
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+    
+    request_payload = {
+        "messages": messages,
+        "model": DEFAULT_MODEL,
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+        }
+    }
+    
+    data = await llm_request(request_payload)
+    
+    if data and "message" in data and "content" in data["message"]:
+        return data["message"]["content"]
+    
+    return "SAFE" # Default fallback
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
     user_prompt =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
@@ -1399,7 +1516,7 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> str:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> str:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -1501,7 +1618,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.info(f"Found LoRA tag: {tag} ({key})")
 
     # Fallback to assistant_model if no tags found
-    if not active_lora_keys:
+    if not active_lora_keys and use_default_lora:
         assistant_model = ctx.settings.get("assistant_model", "").lower()
         if assistant_model in lora_map:
             key = lora_map[assistant_model]
