@@ -1372,6 +1372,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
                 title = await generate_chat_title(first_message)
                 chat = title.lower().replace(" ", "_")  # имя файла без пробелов
                 chat = re.sub(r'[^\w]+', '', chat).strip()
+                chat = chat.lstrip('_')  # Удаляет "_" слева (в начале)
             except Exception as e:
                 print(f"[chats] Title generation error: {e}")
 
@@ -1650,7 +1651,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         upload_to_storage(ctx.omd_key, dest, filename, img_path)
         # Save prompt as description (Readme.md)
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-        logging.info(f"Saving prompt as description: {prompt} {readme_filename}")
+        #logging.info(f"Saving prompt as description: {prompt} {readme_filename}")
         upload_data_to_storage(ctx.omd_key, dest, readme_filename, prompt, "text/markdown")
 
     else:    

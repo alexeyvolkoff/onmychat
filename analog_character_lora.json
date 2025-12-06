@@ -89,6 +89,7 @@
       },
       "lora_1": {
         "on": false,
+        "nsfw": true,
         "name": "Busty",
         "type": "style",
         "lora": "Round_Breasts_XL_XV7-000038.safetensors",
@@ -96,13 +97,15 @@
       },
       "lora_2": {
         "on": false,
+        "nsfw": true,
         "name": "Seductive",
         "type": "style",
-        "lora": "Seductive Lips.safetensors",
+        "lora": "Hot_Poses_beautiful_Expressions-000001.safetensors",
         "strength": 1
       },
       "lora_3": {
         "on": false,
+        "nsfw": false,
         "name": "Real Humans",
         "type": "style",
         "lora": "real-humans-PublicPrompts.safetensors",
@@ -148,6 +151,13 @@
         "name": "Bianca",
         "type": "character",
         "lora": "BIANCA-XSTAR-XL.safetensors",
+        "strength": 1
+      },
+      "lora_10": {
+        "on": false,
+        "name": "Lenore",
+        "type": "character",
+        "lora": "Pony_Doll.safetensors",
         "strength": 1
       },
       "➕ Add Lora": "",

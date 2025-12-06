@@ -537,6 +537,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
     ctx = get_ctx(omd_key)
 
     async def event_generator():
+        nonlocal chat
         # defaults
         intent = "chat"
         event = None
@@ -545,6 +546,12 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         mem_id = None
         think = False
         img_source = None
+
+        # Initialize chat if default and it's a command
+        if (not chat or chat == "default") and prompt.startswith("/"):
+             chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+             yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
+
         # perform commands
         if prompt.startswith("/nsfw"):
             skip_history = True
