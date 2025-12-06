@@ -243,8 +243,9 @@ async def assistant_avatar(
 
 
 @app.get("/assistant/loras")
-async def get_loras():
-    return core_service.get_available_loras()
+async def get_loras(omd_key: str):
+    ctx = get_ctx(omd_key)
+    return core_service.get_available_loras(ctx)
 
 @app.get("/assistant/model/{lora_name}/avatar")
 async def model_avatar(
@@ -550,6 +551,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         # Initialize chat if default and it's a command
         if (not chat or chat == "default") and prompt.startswith("/"):
              chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+             chat = chat_info["name"]  # Update chat variable with new chat name
              yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
 
         # perform commands
