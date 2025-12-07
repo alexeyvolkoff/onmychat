@@ -1755,7 +1755,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             f.write(formatted_prompt)
     if update_history:
         history = load_history(ctx, chat)
-        history.append({"role": "assistant", "image": {"prompt": img_prompt, "path": filename, "title": img_title}})
+        history.append({"role": "assistant", "content": img_prompt, "image": {"path": filename, "title": img_title}})
         save_history(ctx, history, chat)
     return filename, img_title
 

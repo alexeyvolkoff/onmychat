@@ -635,7 +635,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             logging.info(f"Generating image for prompt {prompt}")
 
             path, title = await core_service.generate_character_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}})}\n\n"
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}})}\n\n"
 
             skip_history = True
             #Set specific instructions
@@ -655,7 +655,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             logging.info(f"Generating image for prompt {prompt}")
 
             path, title = await core_service.generate_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}})}\n\n"
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}})}\n\n"
             skip_history = True
             #Set specific instructions
             instruction = (
@@ -723,7 +723,7 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             
             logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
             path, title = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}, 'done': True})}\n\n"
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}, 'done': True})}\n\n"
             return
 
         # 3️⃣ основной стрим чата

@@ -17,6 +17,32 @@ HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"]) or 200  # Используетс�
 def _get_path(user_id: str, chat: str) -> str:
     return  f"{USER_DATA_DIR}/{user_id}/chats/{chat}.json"
 
+# Вспомогательная функция: переносит prompt из image в content
+def _inject_image_prompts(history: list) -> list:
+    """
+    Переносит prompt из image в content и удаляет его из image.
+    """
+    if not history:
+        return []
+
+    for msg in history:
+        if msg.get("role") == "assistant" and "image" in msg:
+            image_data = msg["image"]
+            
+            # Проверяем, что есть поле prompt
+            if isinstance(image_data, dict) and "prompt" in image_data:
+                # .pop() забирает значение и удаляет ключ из словаря
+                prompt_text = image_data.pop("prompt") 
+                
+                # Добавляем текст в content
+                existing_content = msg.get("content", "")
+                if existing_content:
+                    msg["content"] = f"{existing_content}\n{prompt_text}"
+                else:
+                    msg["content"] = prompt_text
+                    
+    return history
+
 def load_history(ctx: UserContext, chat: str = "default") -> list:
     try:
         if ctx.history:
@@ -30,6 +56,7 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
                 history = json.loads(resp.content.decode("utf-8"))
+                history = _inject_image_prompts(history)
                 # save chat history in context
                 ctx.history = history   
                 return  history
@@ -41,6 +68,7 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                 return []
             with open(path, "r", encoding="utf-8") as f:
                 history = json.load(f)
+                history = _inject_image_prompts(history)
                 # save chat history in context
                 ctx.history = history   
                 return  history
