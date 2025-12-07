@@ -219,7 +219,7 @@ NEGATIVE_PROMPTS = {
 }
 
 INTENT_PROMPT = (
-    "*IT IS NOT A CONVERSATION*\n"
+    "*YOU ARE INTENT DETECTOR AI. IT IS NOT A CONVERSATION*\n"
     "Just evaluate user's prompt and classify the user's intent from the provided prompt. Possible intents are: show, view, explain, recognize, import, chat.\n"
     "*Respond with exactly one of intents like 'chat' or 'recognize:<path_or_url>' or 'import:<path_or_url>' in first line and the reason why you have desided like this in the second line.\n"
     "NOT RANDOM, READ THE RULES CAREFULLY.\n"
@@ -1406,7 +1406,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     
     messages = [{"role": "system", "content": system_prompt}]
     # Use limited history for context to avoid confusing the classifier with too much old conversation
-    messages.extend(history[-5:]) 
+    messages.extend(history[-2:]) 
     messages.append({"role": "user", "content": prompt})
     
     request_payload = {
