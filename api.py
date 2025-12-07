@@ -798,7 +798,8 @@ async def recognize_endpoint(
 async def generate_character_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
+        # generate_image returns (filename, title)
+        filename, title = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
         
         # Update history if index provided
         if data.message_index is not None:
@@ -807,11 +808,12 @@ async def generate_character_image(data: GenerateInput):
                 msg = history[data.message_index]
                 # Ensure it's an assistant message with image
                 if msg.get("role") == "assistant" and "image" in msg:
-                    msg["image"]["path"] = result
+                    msg["image"]["path"] = filename
+                    msg["image"]["title"] = title
                     history[data.message_index] = msg
                     core_service.save_history(ctx, history, data.chat)
 
-        return {"image": result}
+        return {"image": filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -820,8 +822,9 @@ async def generate_character_image(data: GenerateInput):
 async def generate_general_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_image(ctx, data.prompt)
-        return {"image": result}
+        # generate_image returns (filename, title)
+        filename, title = await core_service.generate_image(ctx, data.prompt)
+        return {"image": filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
