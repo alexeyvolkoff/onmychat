@@ -634,8 +634,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
-            path = await core_service.generate_character_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
+            path, title = await core_service.generate_character_image(ctx, img_prompt, chat)
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}})}\n\n"
 
             skip_history = True
             #Set specific instructions
@@ -654,8 +654,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
-            path = await core_service.generate_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}})}\n\n"
+            path, title = await core_service.generate_image(ctx, img_prompt, chat)
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}})}\n\n"
             skip_history = True
             #Set specific instructions
             instruction = (
@@ -709,13 +709,21 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
         elif intent == "generate":
+            # Ensure chat exists and update timestamp
+            chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
+            
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
-            # 2️⃣ картинка
-            logging.info(f"Generating image for prompt {img_prompt}")
-            path = await core_service.generate_image(ctx, img_prompt, chat, use_default_lora = False)
-            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path}, 'done': True})}\n\n"
+            # 2️⃣ Generate title from raw prompt
+            img_title = await core_service.generate_title_from_prompt(img_prompt)
+            
+            # Format prompt with title for generate_image to parse
+            formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
+            
+            logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
+            path, title = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
+            yield f"data: {json.dumps({'image':{'prompt': img_prompt, 'path': path, 'title': title}, 'done': True})}\n\n"
             return
 
         # 3️⃣ основной стрим чата

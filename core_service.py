@@ -121,7 +121,7 @@ MEMORIZATION_PROMPT = (
 
 SYSTEM_INSTRUCTION_CHARACTER = (
         "*This is not a conversational request, simply create an image prompt*.\n"
-        "Return only 'Image: prompt', no comments, no replies, no thoughts\n"
+        "Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line\n"
         "Craft a vivid and detailed prompt for generating a realistic, cinematic scene from the short user input: {}\n "
         "The image should depict your character performing the requested action, described in the third person, based on a short user input.\n"
         "Translate to English, add your character appearance, visual details, environment, style, "
@@ -161,7 +161,7 @@ SYSTEM_INSTRUCTION_CHARACTER = (
 
         "Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. \n"
         "Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.\n"        
-        "Return ONLY the enhanced prompt in form of 'Image: prompt', without any additional text or comments."
+        "Format: 'Title: title\nImage: prompt', without any additional text or comments."
 )
 
 SYSTEM_INSTRUCTION_GENERAL = (
@@ -170,11 +170,10 @@ SYSTEM_INSTRUCTION_GENERAL = (
         "of the requested object or scene from the short user input: {}.\n"
         "(as you see it from aside). (Avoid placing yourself into the scene). \n"
         "Translate to English, add visual details, environment according to the conversation context. \n"
-        "Respond with cinematic scene description put into image generation prompt 'Image: prompt'. \n"
         "Put important features of the scene in parentheses like (sunset) or (city skyline). \n"
         "Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. \n"
         "Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.\n"        
-        "*Respond only with Image: prompt*, without any additional text or comments."
+        "*Format*: First line 'Title: short title' (3-4 words max), next line 'Image: prompt', without any additional text or comments."
 )
 
 
@@ -1525,7 +1524,86 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> str:
+def extract_title_and_prompt(response: str) -> tuple[str, str]:
+    """Extract title and image prompt from LLM response.
+    Expected format: 'Title: title\nImage: prompt'
+    Returns (prompt, title). If title not found, generates one from first words.
+    """
+    lines = response.strip().split('\n')
+    title = ""
+    img_prompt = ""
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith("Title:"):
+            title = line[6:].strip()
+        elif line.startswith("Image:"):
+            img_prompt = line[6:].strip()
+    
+    # Fallback: if no Title found, use image prompt or generate from prompt
+    if not title and img_prompt:
+        # Generate title from first few words
+        words = img_prompt.replace('<', '').replace('>', '').split()
+        clean_words = [w for w in words if not w.startswith('<')][:4]
+        title = ' '.join(clean_words[:4])
+    
+    # Fallback: if no Image found, use entire response
+    if not img_prompt:
+        img_prompt = response.strip()
+        if not title:
+            words = img_prompt.replace('<', '').replace('>', '').split()
+            title = ' '.join(words[:4])
+    
+    return img_prompt, title
+
+
+async def generate_title_from_prompt(prompt: str) -> str:
+    """Generate a descriptive title from a raw user prompt.
+    For short prompts (≤4 words), returns cleaned prompt.
+    For long prompts, uses LLM to generate 3-4 word title.
+    """
+    # Clean tags from prompt
+    clean_prompt = prompt.replace('<', '').replace('>', '')
+    words = [w for w in clean_prompt.split() if not w.startswith('<')]
+    
+    # For short prompts, use the cleaned prompt itself
+    if len(words) <= 4:
+        return ' '.join(words)
+    
+    # For long prompts, generate a descriptive title using LLM
+    title_prompt = (
+        "Create a short descriptive title (3-4 words maximum) for this image generation prompt. "
+        "Return ONLY the title, no quotes, no explanations.\n\n"
+        f"Prompt: {prompt}"
+    )
+    
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a title generation assistant."},
+            {"role": "user", "content": title_prompt}
+        ],
+        "model": SFW_MODEL,
+        "stream": False,
+        "options": {"temperature": 0.3}
+    }
+    
+    try:
+        data = await llm_request(payload)
+        if data and "message" in data and "content" in data["message"]:
+            title = data["message"]["content"].strip()
+            logging.info(f"Generated title from raw prompt: {title}")
+            return title
+        else:
+            # Fallback to first few words if LLM fails
+            return ' '.join(words[:4])
+    except Exception as e:
+        logging.warning(f"Title generation failed: {e}")
+        # Fallback to first few words
+        return ' '.join(words[:4])
+
+
+
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> tuple[str, str]:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -1653,14 +1731,20 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
 
     # Имя файла без пути
     filename = os.path.basename(img_path)
+    
+    # Extract title from prompt (prompt may contain "Title: ..." from LLM)
+    img_prompt, img_title = extract_title_and_prompt(prompt)
+    
+    # Format for markdown file
+    formatted_prompt = f"#{img_title}\n\n{img_prompt}"
+    
     if ctx.storage and ctx.omd_key:
         # Копируем файл юзеру на устройство
         dest = f"{ctx.storage}/generated"
         upload_to_storage(ctx.omd_key, dest, filename, img_path)
         # Save prompt as description (Readme.md)
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-        #logging.info(f"Saving prompt as description: {prompt} {readme_filename}")
-        upload_data_to_storage(ctx.omd_key, dest, readme_filename, prompt, "text/markdown")
+        upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_prompt, "text/markdown")
 
     else:    
         # Копируем файл в user_data
@@ -1670,18 +1754,18 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
         readme_path = os.path.join(user_folder, readme_filename)
         with open(readme_path, "w", encoding="utf-8") as f:
-            f.write(prompt)
+            f.write(formatted_prompt)
     if update_history:
         history = load_history(ctx, chat)
-        history.append({"role": "assistant", "image": {"prompt": prompt, "path": filename}})
+        history.append({"role": "assistant", "image": {"prompt": img_prompt, "path": filename, "title": img_title}})
         save_history(ctx, history, chat)
-    return filename
+    return filename, img_title
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> str:
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str]:
     return await generate_image(ctx, prompt, chat)
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'):
+async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str]:
     return await generate_image(ctx, prompt, chat)
 
 # img is base64 image #
