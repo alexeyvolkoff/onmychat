@@ -194,6 +194,8 @@ IMPROVEMENT_PROMPT = "(focused subject, subject_focus, masterpiece, best_quality
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
     "realistic_nsfw": SETTINGS["REALISTIC_MODEL_NSFW"],
+    "semi-real": SETTINGS["SEMI_REAL_MODEL"],
+    "semi-real_nsfw": SETTINGS["SEMI_REAL_MODEL_NSFW"],
     "perfection": SETTINGS["PERFECT_MODEL"],
     "perfection_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
     "perfect": SETTINGS["PERFECT_MODEL"],
