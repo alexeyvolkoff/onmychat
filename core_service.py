@@ -194,18 +194,14 @@ IMPROVEMENT_PROMPT = "(focused subject, subject_focus, masterpiece, best_quality
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
     "realistic_nsfw": SETTINGS["REALISTIC_MODEL_NSFW"],
-    "semi-real": SETTINGS["SEMI_REAL_MODEL"],
-    "semi-real_nsfw": SETTINGS["SEMI_REAL_MODEL_NSFW"],
-    "perfection": SETTINGS["PERFECT_MODEL"],
-    "perfection_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
     "perfect": SETTINGS["PERFECT_MODEL"],
     "perfect_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
     "fantasy": SETTINGS["FANTASY_MODEL"],
     "fantasy_nsfw": SETTINGS["FANTASY_MODEL_NSFW"],
-    "dream": SETTINGS["FANTASY_MODEL"],
-    "dream_nsfw": SETTINGS["FANTASY_MODEL_NSFW"],
     "tooned": SETTINGS["TOONED_MODEL"],
     "tooned_nsfw": SETTINGS["TOONED_MODEL_NSFW"],
+    "pleasure": SETTINGS["PLEASURE_MODEL"],
+    "pleasure_nsfw": SETTINGS["PLEASURE_MODEL_NSFW"],
 }
 
 NEGATIVE_PROMPTS = {
