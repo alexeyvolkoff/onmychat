@@ -194,6 +194,8 @@ IMPROVEMENT_PROMPT = "(focused subject, subject_focus, masterpiece, best_quality
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
     "realistic_nsfw": SETTINGS["REALISTIC_MODEL_NSFW"],
+    "realistic2": SETTINGS["REALISTIC2_MODEL"],
+    "realistic2_nsfw": SETTINGS["REALISTIC2_MODEL_NSFW"],
     "perfect": SETTINGS["PERFECT_MODEL"],
     "perfect_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
     "fantasy": SETTINGS["FANTASY_MODEL"],
@@ -205,9 +207,9 @@ STYLE_MODELS = {
 }
 
 NEGATIVE_PROMPTS = {
-        "base": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth), missing fingers,"
-                "(bad anatomy:2), strawberry, curvy, extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
-                "malformed, disconnected limbs, wrong number of limbs, bad teeth, "
+        "base": "((score_6, score_5, score_4, score_7)):1.5),(watermark),((poorly lit model)), (bad teeth, bad mouth), missing fingers, four fingers, extra fingers, extra hands, bad hands, extra eyebrows,(poor low details),ahegao, low contrast, oversaturated, undersaturated, "
+                "(bad anatomy:2), floating limbs, unnatural posture, curvy, extra limbs, extra legs, multiple legs, missing limbs, deformed, deformed body, disfigured, mutated, "
+                "malformed, merged limbs, disconnected limbs, wrong number of limbs, bad teeth, "
                 "ugly face,ugly eyes,bad eyes, deformed eyes,cross-eyed,low res, blurry face,muscular female,bad anatomy,gaping, "
                 "(worst quality:2),(low quality:2),(normal quality:2),(missing arms),monochrome, grayscale, extra fingers, "
                 "extra hands, bad hands, extra eyebrows,(poor low details),ahegao, low contrast, oversaturated, undersaturated, "
