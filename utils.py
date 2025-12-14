@@ -200,6 +200,11 @@ def upload_data_to_storage(omd_key: str, dest: str, filename: str, data, mime: s
     url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
 
     resp = requests.put(url, headers=headers, data=body)
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        logging.error(f"Upload failed: {e} | Response: {resp.text}")
+        raise e
     return resp.json()
 
 

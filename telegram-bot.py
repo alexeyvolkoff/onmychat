@@ -76,7 +76,7 @@ async def get_image_from_request(ctx, img_source: str,  update: Update):
         await photo_file.download_to_drive(file_path)
         b64_image = resize_and_base64encode(file_path)
     elif img_source:
-        b64_image = await get_image_from_source(ctc, img_source)
+        b64_image = await get_image_from_source(ctx, img_source)
     return b64_image                
 
     

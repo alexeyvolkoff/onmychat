@@ -19,7 +19,7 @@ import dialog_history
 import memory_index
 import logging
 import json
-from utils import get_image_from_source 
+ 
 from config import USER_DATA_DIR
 from config import SETTINGS
 

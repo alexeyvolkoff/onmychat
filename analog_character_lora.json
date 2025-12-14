@@ -267,15 +267,14 @@
   },
   "131": {
     "inputs": {
-      "filename_prefix": "IMG",
       "images": [
         "123",
         0
       ]
     },
-    "class_type": "SaveImage",
+    "class_type": "PreviewImage",
     "_meta": {
-      "title": "Save Image"
+      "title": "Preview Image"
     }
   }
 }

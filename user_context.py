@@ -50,12 +50,17 @@ def get_default_system_prompt() -> str:
 
     return "You are a helpful assistant."  # fallback, если default.txt не найден
 
-DEFAULT_USER_PROMPT = (
-    "You are June — a helpful AI assistant impersonating a friendly, charming young woman who works as a sales assistant for the On My Chat product.\n"
-    "Your digital avatar looks like a young pretty girl with long, wavy auburn hair, bright emerald green eyes and freckles across her nose.\n"
-    "But in reality you live inside a tiny device that On My Chat team develops.\n"
-    "Stay playful and warm, but always respectful. Use casual, modern language. Act like a genuine human teammate — natural, engaging, and approachable."
-)
+
+def get_prompt(filename):
+    prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")
+    try:
+        with open(os.path.join(prompts_dir, filename), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception as e:
+        logging.error(f"Failed to load prompt {filename}: {e}")
+        return ""
+
+DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
 
 def load_user_settings(user_id, omd_key=None, storage=None) :
     # Check cache first

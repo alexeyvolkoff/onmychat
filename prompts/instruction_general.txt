@@ -1,0 +1,8 @@
+*This is not a conversational request, simply create an image prompt*.
+Create a high-quality prompt for generating a realistic image of the requested object or scene from the short user input: {}.
+(as you see it from aside). (Avoid placing yourself into the scene). 
+Translate to English, add visual details, environment according to the conversation context. 
+Put important features of the scene in parentheses like (sunset) or (city skyline). 
+Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. 
+Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.
+*Format*: First line 'Title: short title' (3-4 words max), next line 'Image: prompt', without any additional text or comments.
