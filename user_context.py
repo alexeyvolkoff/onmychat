@@ -42,14 +42,6 @@ class UserContext:
     omd_key: str = ""
     storage: str = ""
 
-# === Настройки пользователя ===
-def get_default_system_prompt() -> str:
-    if os.path.exists(DEFAULT_SYSTEM_PROMPT_FILE):
-        with open(DEFAULT_SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-
-    return "You are a helpful assistant."  # fallback, если default.txt не найден
-
 
 def get_prompt(filename):
     prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")
@@ -60,6 +52,7 @@ def get_prompt(filename):
         logging.error(f"Failed to load prompt {filename}: {e}")
         return ""
 
+DEFAULT_UNONBOARDED_PROMPT = get_prompt("default.txt")
 DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
 
 def load_user_settings(user_id, omd_key=None, storage=None) :

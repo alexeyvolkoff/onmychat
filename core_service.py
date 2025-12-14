@@ -265,8 +265,6 @@ async def generate_image_workflow(workflow) -> bytes:
                     logging.info(f"Prompt ID: {prompt_id}")
 
                 # Listen for messages
-                target_node_id = None
-                output_images = []
                 final_image_data = None
                 final_filename = None
                 
@@ -291,8 +289,6 @@ async def generate_image_workflow(workflow) -> bytes:
                                 # If we have an image, great. If not, maybe we missed it or it is coming?
                                 # Usually 'executed' comes before 'executing' (finished).
                                 break
-                            else:
-                                logging.info(f"Node executing: {data_content['node']}")
                                 
                         elif msg_type == "executed":
                             data_content = data["data"]
@@ -500,7 +496,7 @@ async def _perform_prompt_stream(
     user_prompt = ctx.settings.get("system_prompt", "")
 
     if ctx.settings.get("newUser", False):
-         user_prompt = user_context.get_default_system_prompt()
+         user_prompt = user_context.DEFAULT_UNONBOARDED_PROMPT
          system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:
          username = ctx.settings.get("username", "User")
@@ -726,7 +722,7 @@ async def _perform_prompt_sync(
     user_prompt = ctx.settings.get("system_prompt", "")
 
     if ctx.settings.get("newUser", False):
-         user_prompt = user_context.get_default_system_prompt()
+         user_prompt = user_context.DEFAULT_UNONBOARDED_PROMPT
          system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:
          username = ctx.settings.get("username", "User")
@@ -932,7 +928,7 @@ async def perform_prompt(ctx: UserContext,
     user_prompt = ctx.settings.get("system_prompt", "")
 
     if ctx.settings.get("newUser", False):
-         user_prompt = user_context.get_default_system_prompt()
+         user_prompt = user_context.DEFAULT_USER_PROMPT
          system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
          username = ctx.settings.get("username", "User")
