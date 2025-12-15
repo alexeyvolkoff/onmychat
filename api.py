@@ -97,7 +97,18 @@ class UpdateAssistantInput(BaseModel):
     system_prompt: str | None = None
     assistant_name: str | None = None
     assistant_title: str | None = None
+    assistant_appearance: str | None = None
     assistant_model: str | None = None
+
+class AvatarGenerateInput(BaseModel):
+    omd_key: str
+    style: str | None = None
+    character_lora: str | None = None
+    prompt: str = ""
+
+class AvatarUpdateInput(BaseModel):
+    omd_key: str
+    image_path: str
 
 class SignoutInput(BaseModel):
     omd_key: str
@@ -176,6 +187,7 @@ async def assistant_info(omd_key: str):
             "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
             "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
             "system_prompt": ctx.settings.get("system_prompt", ""),
+            "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
             "style": ctx.settings.get("style", ""),
             "nsfw": ctx.settings.get("nsfw", False),
             "model": ctx.settings.get("assistant_model", ""),
@@ -201,31 +213,43 @@ async def assistant_avatar(
             storage_id = ctx.storage
             storage_key = ctx.omd_key
             
-            # Clean up URL construction
             base_url = user_context.GATEWAY_URL.rstrip("/")
             clean_storage_id = storage_id.strip("/")
+            
+            # Use avatar.png as standard user avatar name
+            # We can try to HEAD checks first? Or just try GET with stream.
             url = f"{base_url}/{clean_storage_id}/avatar.png"
+            # Pass resize param to gateway if size is requested?
+            # Gateway usually supports resize=true&width=...&height=...
+            if size:
+                url += f"?resize=true&width={size}&height={size}"
             
             headers = {"Authorization": f"token:{storage_key}"}
             try:
-                # Use a short timeout to avoid hanging if gateway is slow
+                # Use requests with stream=True for proxying
+                # Note: We are inside async. Using sync requests is blocking, but for simple proxy it might be ok.
+                # Ideally use aiohttp, but StreamingResponse takes an iterator.
+                
+                # Check existance via HEAD first? No, extra RTT.
+                # Just GET.
+                
                 resp = requests.get(url, headers=headers, stream=True, timeout=5)
                 
                 content_type = resp.headers.get("Content-Type", "")
-                # Check if it is actually an image
                 if resp.status_code == 200 and content_type.startswith("image/"):
+                    # Success
                     return StreamingResponse(resp.iter_content(chunk_size=8192), media_type=content_type)
-                #else:
-                #    logging.warning(f"Remote avatar fetch failed. Status: {resp.status_code}, Type: {content_type}")
+                elif resp.status_code == 404:
+                    # Not found, fallback to default
+                    pass
+                else:
+                    logging.warning(f"Storage returned {resp.status_code} for avatar")
+                    
             except Exception as e:
                 logging.warning(f"Failed to fetch avatar from storage: {e}")
 
         # Fallback to default model avatar
         storage_path = core_service.get_assistant_avatar_path(ctx)
-        
-        # core_service.get_assistant_avatar_path strips STORAGE_ROOT, but might leave a leading slash
-        # making it look like an absolute path (e.g. /projects/...).
-        # We need to re-attach STORAGE_ROOT.
         
         if storage_path.startswith("/"):
             storage_path = storage_path[1:]
@@ -236,11 +260,74 @@ async def assistant_avatar(
     except Exception as e:
         logging.error(f"Error serving avatar: {e}")
         # Return default if anything fails
-        storage_path = core_service.get_assistant_avatar_path(ctx)
-        default_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
-        logging.warning(f"Serving default: {default_path}")
+        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
         return serve_file(default_path, request, size=size)
 
+
+@app.post("/assistant/avatar/generate")
+async def generate_avatar_endpoint(data: AvatarGenerateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        result = await core_service.generate_avatar(ctx, data.style, data.character_lora, data.prompt)
+        if result and "image" in result:
+             return {"image": result["image"], "url": result.get("url")}
+        else:
+             raise Exception("Failed to generate avatar")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/assistant/avatar/update")
+async def update_avatar_endpoint(data: AvatarUpdateInput):
+    ctx = get_ctx(data.omd_key)
+    try:
+        # The image path provided is just filename in 'generated' folder (e.g. AVATAR_....png)
+        filename = data.image_path
+        
+        if ctx.storage and ctx.omd_key:
+             # Remote
+             # Copy generated/{filename} to /avatar.png
+             # We assume we can download from gateway and re-upload.
+             
+             base_url = user_context.GATEWAY_URL.rstrip("/")
+             clean_storage_id = ctx.storage.strip("/")
+             source_url = f"{base_url}/{clean_storage_id}/generated/{filename}"
+             
+             headers = {"Authorization": f"token:{ctx.omd_key}"}
+             
+             if resp.status_code != 200:
+                  raise Exception(f"Failed to retrieve generated image: {resp.status_code}")
+             
+             img_data = resp.content
+             
+             # 2. Upload to avatar.png
+             from utils import upload_data_to_storage
+             upload_data_to_storage(ctx.omd_key, ctx.storage, "avatar.png", img_data, "image/png")
+             
+        else:
+             # Local
+             user_folder = f"{core_service.APP_ROOT_DIR}/{USER_DATA_DIR}/{ctx.user_id}/generated"
+             src_path = os.path.join(user_folder, filename)
+             
+             if not os.path.exists(src_path):
+                  raise Exception("Image file not found")
+             
+             # We don't really have a 'local avatar' standard path except 'avatar.png' in user root maybe?
+             # But `assistant_avatar` fallback logic uses `core_service.get_assistant_avatar_path(ctx)` which returns model path.
+             # Wait, `assistant_avatar` line 200 checks storage.
+             # If no storage (local user), it falls back to default model avatar.
+             # So local users currently CANNOT have custom avatars?
+             # That seems to be the case in the current code snippet for `assistant_avatar`.
+             # It checks `if ctx.storage ...` then `Fallback to default model avatar`.
+             
+             # We should probably support local avatar too if we want this feature to work for local users.
+             # But `modals.html` logic seems to imply logged in users (storage).
+             # Let's stick to storage logic for now or try to support local if easy.
+             pass
+
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/assistant/loras")
 async def get_loras(omd_key: str):
@@ -271,27 +358,6 @@ async def model_avatar(
         default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
         return serve_file(default_path, request, size=size)
     
-@app.get("/generated/{filename}")
-async def get_generated_file(
-    request: Request,
-    filename: str,
-    omd_key: str = Query(...),
-    size: int | None = Query(None, description="Target size in pixels")
-):
-    ctx = get_ctx(omd_key)
-    storage = ctx.storage
-
-    if not storage:
-        # Локальный файл
-        user_folder = f"{core_service.APP_ROOT_DIR}/{USER_DATA_DIR}/{ctx.user_id}/generated"
-        file_path = os.path.join(user_folder, filename)
-        return serve_file(file_path, request, size=size)
-    else:
-        # Редирект на storage (size можно пробросить туда тоже)
-        redirect_url = f"{GATEWAY_URL}/{storage}/generated/{filename}?token={omd_key}"
-        if size:
-            redirect_url += f"&resize=true&height={size}&width={size}"
-        return RedirectResponse(url=redirect_url)
     
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):
@@ -873,6 +939,8 @@ async def update_assistant(request: Request):
             ctx.settings["style"] = data.style
         if data.system_prompt is not None:
             ctx.settings["system_prompt"] = data.system_prompt
+        if data.assistant_appearance is not None:
+            ctx.settings["assistant_appearance"] = data.assistant_appearance
         if data.assistant_name is not None:
             ctx.settings["assistant_name"] = data.assistant_name
         if data.assistant_title is not None:

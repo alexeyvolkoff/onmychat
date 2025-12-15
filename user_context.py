@@ -54,12 +54,16 @@ def get_prompt(filename):
 
 DEFAULT_UNONBOARDED_PROMPT = get_prompt("default.txt")
 DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
+DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
 def load_user_settings(user_id, omd_key=None, storage=None) :
     # Check cache first
     if user_id in bindings["profiles"]:
         #logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
-        return bindings["profiles"][user_id]
+        profile = bindings["profiles"][user_id]
+        if "assistant_appearance" not in profile:
+             profile["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
+        return profile
     #ogging.info(f"[DEBUG] Cache miss for {user_id}")
 
     path = f"{USER_DATA_DIR}/{user_id}/settings.json"
@@ -73,9 +77,14 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
             "system_prompt": DEFAULT_USER_PROMPT,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
+            "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
             "assistant_model": "Domi",
             "kb_id": DEFAULT_KB_ID
         }
+
+    # Ensure defaults for new fields
+    if "assistant_appearance" not in settings:
+         settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
 
     # Try to load from storage if configured
     if storage and omd_key:
@@ -86,6 +95,11 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
         )
         if remote_settings:
             logging.info(f"Loaded settings from storage for user {user_id}")
+            
+            # Ensure defaults for remote settings too
+            if "assistant_appearance" not in remote_settings:
+                remote_settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
+            
             # Update local cache
             try:
                 os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)

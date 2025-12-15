@@ -1221,7 +1221,7 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
     return "SAFE" # Default fallback
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
-    user_prompt =  "*Personality, appearance and behaviour:*\n" + ctx.settings.get("system_prompt", "")
+    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
     #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
@@ -1711,4 +1711,141 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
 def memorize(ctx, text):
     # Добавление краткой аннотации в память
     return add_memory_card(ctx, text, collection="user", relevance="permanent")
+
+
+async def generate_avatar(ctx: UserContext, style: str, character_lora: str, prompt: str):
+    try:
+        # 1. Load Workflow
+        if not os.path.exists(WORKFLOW_PATH):
+            logging.error("Workflow file not found")
+            return None
+            
+        try:
+            with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
+                workflow = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load workflow: {e}")
+            return None
+    
+        # 2. Determine Style Checkpoint
+        style_map = {
+            "realistic": "realistic",
+            "dream": "fantasy", 
+            "perfect": "perfect",
+            "tooned": "tooned"
+        }
+        backend_style = style_map.get(style, "realistic")
+        
+        nsfw = ctx.settings.get("nsfw", False)
+        if nsfw:
+            backend_style_nsfw = backend_style + "_nsfw"
+            if backend_style_nsfw in STYLE_MODELS:
+                backend_style = backend_style_nsfw
+                
+        # STYLE_MODELS values are filenames (strings), not dicts
+        ckpt_filename = STYLE_MODELS.get(backend_style, STYLE_MODELS["realistic"])
+    
+        # 3. Setup Workflow Parameters
+        seed = random.randint(1, 9999999999)
+        
+        # Helper to find node
+        def find_nodes_by_class(class_type):
+            return [node for node in workflow.values() if node.get("class_type") == class_type]
+    
+        # Set Seed
+        for node in find_nodes_by_class("KSampler"):
+            if "inputs" in node and "seed" in node["inputs"]:
+                node["inputs"]["seed"] = seed
+                
+        # Set Resolution (512x512)
+        for node in find_nodes_by_class("EmptyLatentImage"):
+            if "inputs" in node:
+                node["inputs"]["width"] = 512
+                node["inputs"]["height"] = 512
+            
+        # Set Checkpoint
+        for node in find_nodes_by_class("CheckpointLoaderSimple"):
+            if "inputs" in node:
+                node["inputs"]["ckpt_name"] = ckpt_filename
+            
+            # Set Prompt
+        prompt_set = False
+        
+        # Add appearance to prompt
+        negative_prompt = NEGATIVE_PROMPTS["nsfw"] + ", " + NEGATIVE_PROMPTS["base"]
+        appearance = ctx.settings.get("assistant_appearance", "")
+        full_prompt = f"{prompt} {appearance}"
+        logging.info(f"Generating avatar with style={style}, character={character_lora} prompt={full_prompt}")
+        
+        workflow["4"]["inputs"]["text"] = negative_prompt
+        workflow["85"]["inputs"]["text"] = full_prompt
+    
+        # 4. Inject Character LoRA (if workflow supports it)
+        if character_lora:
+            # We look for "Power Lora Loader (rgthree)" as used in available_loras
+            lora_nodes = find_nodes_by_class("Power Lora Loader (rgthree)")
+            if lora_nodes:
+                for node in lora_nodes:
+                    inputs = node.get("inputs", {})
+                    # The loader might have inputs like lora_1, lora_2 etc which are dicts? 
+                    # based on previous analysis of available_loras, input val is dict with "name"
+                    for key, val in inputs.items():
+                        if isinstance(val, dict) and val.get("name") == character_lora:
+                            val["on"] = True
+                            logging.info(f"Enabled LoRA: {character_lora}")
+            else:
+                # If standard LoraLoader?
+                lora_nodes = find_nodes_by_class("LoraLoader")
+                if lora_nodes:
+                    # We need mapping from Name -> Filename.
+                    # This is tricky without reading analog_character_lora.json or having a map.
+                    # For now, if usage implies Power Lora Loader, we stick to that or skip.
+                    logging.warning("Character LoRA requested but no compatible LoRA loader found in workflow.")
+                        
+        # 5. Generate
+        # Reuse existing workflow generator which handles websocket and bytes retrieval
+        image_data, _ = await generate_image_workflow(workflow)
+        
+        if image_data:
+            # Upload to 'generated' folder in user storage
+            filename = f"avatar_{uuid.uuid4()}.png"
+            
+            if ctx.storage and ctx.omd_key:
+                try:
+                    dest_path = f"{ctx.storage}/generated"
+                    # upload_data_to_storage(omd_key, dest, filename, data, mime)
+                    upload_data_to_storage(ctx.omd_key, dest_path, filename, image_data, "image/png")
+                    logging.info(f"Avatar uploaded to {dest_path}/{filename}")
+                    
+                    # Construct public URL
+                    base_url = GATEWAY_URL.rstrip("/")
+                    clean_storage = ctx.storage.strip("/")
+                    full_url = f"{base_url}/{clean_storage}/generated/{filename}"
+                    
+                    return {"image": filename, "url": full_url}
+                except Exception as e:
+                    logging.error(f"Failed to upload avatar to storage: {e}")
+                    return None
+            else:
+                 # Fallback for local users (if any, though context implies OMD usage mostly)
+                 # But we want to avoid local fs if possible. 
+                 # If no storage, we might have to save locally or fail?
+                 # Let's save locally as fallback but log warning.
+                 output_dir = os.path.join(os.path.dirname(__file__), "generated")
+                 if not os.path.exists(output_dir):
+                     os.makedirs(output_dir, exist_ok=True)
+                 filepath = os.path.join(output_dir, filename)
+                 with open(filepath, "wb") as f:
+                     f.write(image_data)
+                 logging.warning(f"No storage context, saved locally to {filepath}")
+                 return {"image": filename}
+
+        else:
+            logging.error("No image data received from workflow")
+            return None
+
+    except Exception as e:
+        logging.error(f"Avatar generation crashed: {e}", exc_info=True)
+        return None
+
 
