@@ -364,8 +364,16 @@ async def model_avatar(
         logging.error(f"Error serving model avatar: {e}")
         default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
         return serve_file(default_path, request, size=size)
+        return serve_file(default_path, request, size=size)
     
     
+@app.get("/assistant/avatars")
+async def get_assistant_avatars_endpoint(omd_key: str):
+    ctx = get_ctx(omd_key)
+    avatars = await core_service.get_generated_avatars(ctx)
+    return {"status": "ok", "avatars": avatars}
+
+
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):
     ctx = get_ctx(omd_key)

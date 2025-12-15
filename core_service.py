@@ -250,8 +250,109 @@ async def get_avatar_version(ctx: UserContext) -> str:
             return str(int(mtime))
     except Exception as e:
         logging.warning(f"Failed to get local avatar version: {e}")
+        return str(int(time.time()))
 
-    return "default"
+async def get_generated_avatars(ctx: UserContext) -> list:
+    avatars = []
+    # 1. Remote
+    if ctx.storage and ctx.omd_key:
+        try:
+            storage_id = ctx.storage
+            storage_key = ctx.omd_key
+            
+            base_url = GATEWAY_URL.rstrip("/")
+            clean_storage_id = storage_id.strip("/")
+            
+            # List generated folder
+            url = f"{base_url}/{clean_storage_id}/generated?list&token={storage_key}"
+            logging.info(f"[get_generated_avatars] Listing avatars from: {url}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=5) as resp:
+                    logging.info(f"[get_generated_avatars] Response status: {resp.status}")
+                    if resp.status == 200 or resp.status == 206:
+                        try:
+                            data = await resp.json()
+                        except Exception as e:
+                             logging.warning(f"[get_generated_avatars] JSON parse failed: {e}. Trying robust decode.")
+                             text = await resp.text()
+                             try:
+                                 data = json.loads(text)
+                             except json.JSONDecodeError as je:
+                                 if "Extra data" in str(je):
+                                     logging.warning(f"[get_generated_avatars] Truncating JSON at {je.pos}")
+                                     data = json.loads(text[:je.pos])
+                                 else:
+                                     raise je
+
+                        logging.info(f"[get_generated_avatars] Raw data: {str(data)[:500]}") # Log first 500 chars
+                        
+                        items = []
+                        if "list" in data:
+                            items = data["list"]
+                        elif "result" in data:
+                            items = data["result"]
+                            
+                        for item in items:
+                            name = item.get("name", "")
+                            item_type = item.get("type", "")
+                            logging.debug(f"[get_generated_avatars] Item: {name} (type: {item_type})")
+                            
+                            if item_type != "dir" and name.startswith("avatar"):
+                                    # Construct direct URL
+                                    file_url = f"{base_url}/{clean_storage_id}/generated/{name}?token={storage_key}"
+                                    avatars.append({
+                                        "name": name,
+                                        "url": file_url,
+                                        "date": item.get("date"),
+                                        "size": item.get("size")
+                                    })
+            logging.info(f"[get_generated_avatars] Found {len(avatars)} avatars.")
+            return avatars
+        except Exception as e:
+            logging.warning(f"Failed to list remote avatars: {e}")
+            # Fallthrough to local if needed or just return empty?
+            # If storage is configured, we assume remote is source of truth.
+            return []
+
+    # 2. Local fallback
+    try:
+        # Assuming generated is adjacent to avatar.png or in user root?
+        # Standard: STORAGE_ROOT / user_id / generated
+        # Need to verify path. core_service has upload_to_storage logic.
+        # It uses 'generated/' as path.
+        # We need absolute path.
+        # upload_to_storage uses: os.path.join(STORAGE_ROOT, user_id, path)
+        
+        user_storage_path = os.path.join(STORAGE_ROOT, ctx.user_id)
+        if ctx.storage and not ctx.omd_key: # Local storage mount
+             # Logic for local mounts is complex, assume standard structure for now
+             user_storage_path = os.path.join(STORAGE_ROOT, ctx.storage.strip("/"))
+        
+        generated_dir = os.path.join(user_storage_path, "generated")
+        
+        if os.path.exists(generated_dir):
+            for filename in os.listdir(generated_dir):
+                if filename.startswith("avatar"):
+                    full_path = os.path.join(generated_dir, filename)
+                    if os.path.isfile(full_path):
+                         # Simple local URL? Or we need api to serve it?
+                         # For now, return filename. Frontend likely needs full URL.
+                         # But if local, we might need an endpoint to serve it.
+                         # Since remote is priority, basic implementation:
+                         avatars.append({
+                             "name": filename,
+                             "url": "", # Frontend might fallback
+                             "date": os.path.getmtime(full_path)
+                         })
+        
+        # Sort local by date?
+        avatars.sort(key=lambda x: x["date"], reverse=True)
+        return avatars
+
+    except Exception as e:
+        logging.warning(f"Failed to list local avatars: {e}")
+        return []
 
 
 async def generate_image_workflow(workflow) -> bytes:
