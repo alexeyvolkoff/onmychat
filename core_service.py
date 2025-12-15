@@ -213,23 +213,28 @@ async def get_avatar_version(ctx: UserContext) -> str:
             
             base_url = GATEWAY_URL.rstrip("/")
             clean_storage_id = storage_id.strip("/")
-            url = f"{base_url}/{clean_storage_id}/avatar.png"
+            # Manual URL construction to ensure token is passed correctly
+            # Use GET instead of HEAD as HEAD might be blocked or malformed for this gateway
+            timestamp = str(int(time.time()))
+            url = f"{base_url}/{clean_storage_id}/avatar.png?token={storage_key}&_t={timestamp}"
             
-            headers = {"Authorization": f"token:{storage_key}"}
+            logging.info(f"[get_avatar_version] Checking remote (GET): {url}")
             
             async with aiohttp.ClientSession() as session:
-                async with session.head(url, headers=headers, timeout=2) as resp:
+                async with session.get(url, timeout=5) as resp:
+                    logging.info(f"[get_avatar_version] Response status: {resp.status}")
                     if resp.status == 200:
                         # Use ETag or Last-Modified
                         etag = resp.headers.get("ETag")
                         last_modified = resp.headers.get("Last-Modified")
+                        logging.info(f"[get_avatar_version] ETag: {etag}, Last-Modified: {last_modified}")
                         if etag:
                             return etag.strip('"')
                         if last_modified:
                             # Simple hash of last modified string
                             return str(hash(last_modified))
         except Exception as e:
-            logging.warning(f"Failed to get remote avatar version: {e}")
+            logging.warning(f"[get_avatar_version] Failed to get remote avatar version: {e}")
 
     # 2. Fallback to local
     try:
@@ -240,6 +245,8 @@ async def get_avatar_version(ctx: UserContext) -> str:
         full_path = os.path.join(STORAGE_ROOT, storage_path)
         if os.path.exists(full_path):
             mtime = os.path.getmtime(full_path)
+            logging.info(f"[get_avatar_version] Local avatar local version: {mtime}")
+
             return str(int(mtime))
     except Exception as e:
         logging.warning(f"Failed to get local avatar version: {e}")

@@ -109,6 +109,8 @@ class AvatarGenerateInput(BaseModel):
 class AvatarUpdateInput(BaseModel):
     omd_key: str
     image_path: str
+    style: str | None = None
+    assistant_model: str | None = None
 
 class SignoutInput(BaseModel):
     omd_key: str
@@ -219,21 +221,15 @@ async def assistant_avatar(
             # Use avatar.png as standard user avatar name
             # We can try to HEAD checks first? Or just try GET with stream.
             url = f"{base_url}/{clean_storage_id}/avatar.png"
-            # Pass resize param to gateway if size is requested?
-            # Gateway usually supports resize=true&width=...&height=...
+            params = {"token": storage_key}
             if size:
-                url += f"?resize=true&width={size}&height={size}"
+                params["resize"] = "true"
+                params["width"] = size
+                params["height"] = size
             
-            headers = {"Authorization": f"token:{storage_key}"}
             try:
                 # Use requests with stream=True for proxying
-                # Note: We are inside async. Using sync requests is blocking, but for simple proxy it might be ok.
-                # Ideally use aiohttp, but StreamingResponse takes an iterator.
-                
-                # Check existance via HEAD first? No, extra RTT.
-                # Just GET.
-                
-                resp = requests.get(url, headers=headers, stream=True, timeout=5)
+                resp = requests.get(url, params=params, stream=True, timeout=5)
                 
                 content_type = resp.headers.get("Content-Type", "")
                 if resp.status_code == 200 and content_type.startswith("image/"):
@@ -281,6 +277,15 @@ async def generate_avatar_endpoint(data: AvatarGenerateInput):
 async def update_avatar_endpoint(data: AvatarUpdateInput):
     ctx = get_ctx(data.omd_key)
     try:
+        # Update settings if provided
+        if data.style:
+            ctx.settings["style"] = data.style
+        if data.assistant_model:
+            ctx.settings["assistant_model"] = data.assistant_model
+        
+        if data.style or data.assistant_model:
+            user_context.save_user_settings(ctx)
+
         # The image path provided is just filename in 'generated' folder (e.g. AVATAR_....png)
         filename = data.image_path
         
@@ -293,7 +298,8 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
              clean_storage_id = ctx.storage.strip("/")
              source_url = f"{base_url}/{clean_storage_id}/generated/{filename}"
              
-             headers = {"Authorization": f"token:{ctx.omd_key}"}
+             # Fetch the image
+             resp = requests.get(source_url, params={"token": ctx.omd_key})
              
              if resp.status_code != 200:
                   raise Exception(f"Failed to retrieve generated image: {resp.status_code}")
@@ -324,8 +330,9 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
              # But `modals.html` logic seems to imply logged in users (storage).
              # Let's stick to storage logic for now or try to support local if easy.
              pass
-
-        return {"status": "ok"}
+ 
+        version = await core_service.get_avatar_version(ctx)
+        return {"status": "ok", "avatar_version": version}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
