@@ -265,27 +265,21 @@ async def get_generated_avatars(ctx: UserContext) -> list:
             
             # List generated folder
             url = f"{base_url}/{clean_storage_id}/generated?list&token={storage_key}"
-            logging.info(f"[get_generated_avatars] Listing avatars from: {url}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=5) as resp:
-                    logging.info(f"[get_generated_avatars] Response status: {resp.status}")
                     if resp.status == 200 or resp.status == 206:
                         try:
                             data = await resp.json()
                         except Exception as e:
-                             logging.warning(f"[get_generated_avatars] JSON parse failed: {e}. Trying robust decode.")
                              text = await resp.text()
                              try:
                                  data = json.loads(text)
                              except json.JSONDecodeError as je:
                                  if "Extra data" in str(je):
-                                     logging.warning(f"[get_generated_avatars] Truncating JSON at {je.pos}")
                                      data = json.loads(text[:je.pos])
                                  else:
                                      raise je
-
-                        logging.info(f"[get_generated_avatars] Raw data: {str(data)[:500]}") # Log first 500 chars
                         
                         items = []
                         if "list" in data:
@@ -296,7 +290,6 @@ async def get_generated_avatars(ctx: UserContext) -> list:
                         for item in items:
                             name = item.get("name", "")
                             item_type = item.get("type", "")
-                            logging.debug(f"[get_generated_avatars] Item: {name} (type: {item_type})")
                             
                             if item_type != "dir" and name.startswith("avatar"):
                                     # Construct direct URL
@@ -307,7 +300,6 @@ async def get_generated_avatars(ctx: UserContext) -> list:
                                         "date": item.get("date"),
                                         "size": item.get("size")
                                     })
-            logging.info(f"[get_generated_avatars] Found {len(avatars)} avatars.")
             return avatars
         except Exception as e:
             logging.warning(f"Failed to list remote avatars: {e}")
