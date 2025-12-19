@@ -884,7 +884,7 @@ async def generate_character_image(data: GenerateInput):
         
         # Update history if index provided
         if data.message_index is not None:
-            history = core_service.load_history(ctx, data.chat)
+            history = dialog_history.load_history(ctx, chat=data.chat)
             if 0 <= data.message_index < len(history):
                 msg = history[data.message_index]
                 # Ensure it's an assistant message with image
@@ -892,7 +892,7 @@ async def generate_character_image(data: GenerateInput):
                     msg["image"]["path"] = filename
                     msg["image"]["title"] = title
                     history[data.message_index] = msg
-                    core_service.save_history(ctx, history, data.chat)
+                    dialog_history.save_history(ctx, history, chat=data.chat)
 
         return {"image": filename}
     except Exception as e:

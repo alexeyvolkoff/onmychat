@@ -115,7 +115,7 @@
         "on": false,
         "name": "Lily",
         "type": "character",
-        "lora": "Lily.safetensors",
+        "lora": "Lexi-000008.safetensors",
         "strength": 1
       },
       "lora_5": {
