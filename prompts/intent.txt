@@ -53,13 +53,16 @@ DO NOT CLASSIFY AS 'show' OR 'view' IF YOU HAVE ANY DOUBT.
    - Example: "/Put on a sundress" → show
    - Example: "/Lie down on the sofa"→ show
    - Example: "/Cross your arms"→ show
+ Do NOT classify as 'show' if user requests to show an object, animal or any scene  not involving you.
+   - Example: "Show a cat" → view
+   - Example: "We took a sit "→ chat
  Do NOT classify as 'show' user states your or their action in the role play or scenario without explicit request for image with the verb 'show'.
    - Example: "I come up to you and take you by the hand" → chat
    - Example: "We took a sit "→ chat
  DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!
  Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.
 
-4. 'view' rules:
+4. 'show' objects and 'view' rules:
 Classify as 'view' if user ASKS to generate or show an image of an *object*, *animal*, *plant*, *item*, *interior*, *landscape* or *scene which does not involve you*.'
  Only classify as 'view' if the message EXPLICITLY contains the word 'view' or 'generate' or 'imagine' (case-insensitive) NOT 'looks like', DO NOT GUESS.
  Any other verb (prepared, see, look, check, present, etc.) MUST NOT trigger 'view'

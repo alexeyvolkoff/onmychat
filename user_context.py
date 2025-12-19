@@ -73,7 +73,7 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
     else:
         settings = {
             "nsfw": False,
-            "style": "perfect",
+            "style": "realistic",
             "system_prompt": DEFAULT_USER_PROMPT,
             "assistant_name": DEFAULT_ASSISTANT_NAME,
             "assistant_title": DEFAULT_ASSISTANT_TITLE,
