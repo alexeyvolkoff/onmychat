@@ -36,8 +36,10 @@ DO NOT CLASSIFY AS 'show' OR 'view' IF YOU HAVE ANY DOUBT.
    - Example: "Show me how <you do something>" → show
    Do NOT classify as 'show' if the user only complements your look without asking to show an image.
    - Example: "You look great wearing this dress" → chat
-   Do NOT classify as 'show' user just states your or their action in the role play or scenario without explicit request for image with the verb 'show'.
-   - Example: "I watch you leave the room" → chat
+   Do NOT classify as 'show' if user just states the action in the role play or scenario without explicit request for image.
+   - Example: "*I came up to you and took you by the hand*" → chat
+   - Example: "We took a sit"→ chat
+   - Example: "*I watch you leave the room*" → chat
    Do NOT classify as 'show' if user discusses a hypotetical, future scenario, or past event without explicit request for image with 'show'.
    - Example: "What if we go to the club?" → chat
    - Example: "It whould be nice to see you again!" → chat
@@ -55,10 +57,6 @@ DO NOT CLASSIFY AS 'show' OR 'view' IF YOU HAVE ANY DOUBT.
    - Example: "/Cross your arms"→ show
  Do NOT classify as 'show' if user requests to show an object, animal or any scene  not involving you.
    - Example: "Show a cat" → view
-   - Example: "We took a sit "→ chat
- Do NOT classify as 'show' user states your or their action in the role play or scenario without explicit request for image with the verb 'show'.
-   - Example: "I come up to you and take you by the hand" → chat
-   - Example: "We took a sit "→ chat
  DO NOT CLASSIFY AS SHOW IF THERE IS NO EXPLICIT action request or no EXPLICIT picture request!
  Do NOT classify as 'show' if the following requests: '/generate', '/image', '/view', /ask', '/recognize', '/explain', '/think', '/imagine', '/generate', '/depict', '/learn', '/import'.
 
