@@ -1755,42 +1755,52 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
 async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     key = ctx.omd_key or ctx.settings.get("omd_key", "")
 
-    # Определяем, это OMD или нет
+    logging.info(f"[import] importing: {url_or_path}")
     raw_text = ""
-    if url_or_path.startswith("/") or GATEWAY_URL in url_or_path:
+    # Определяем, это OMD или нет
+    is_omd = url_or_path.startswith("/") or GATEWAY_URL in url_or_path
+    
+    if is_omd:
         if url_or_path.startswith("/"):
             url_or_path = f"{GATEWAY_URL}{url_or_path}"
         if not key:
             raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
+        
         raw_text = await fetch_document_text(url_or_path, key)
-        if raw_text.startswith("Failed to fetch document:") or raw_text.startswith("Unsupported file type:"):
-            logging.error(f"[import] failed: {raw_text}")    
-            return {
-                "id": "error",
-                "error": True,
-                "text": raw_text
-            }
     else:
+        # External URL or fallback
+        raw_text = await fetch_document_text(url_or_path)
 
+    if raw_text.startswith("Failed to fetch document:") or raw_text.startswith("Unsupported file type:"):
+        logging.error(f"[import] failed fetch: {raw_text}")    
+        return {
+            "id": "error",
+            "error": True,
+            "text": raw_text
+        }
+
+    # If it's an external HTML or we just want to ensure it's plain text via pandoc
+    if not is_omd or url_or_path.lower().endswith(".html") or url_or_path.lower().endswith(".htm"):
+        # We use pandoc to clean up HTML or other formats if needed
+        # Note: fetch_document_text for OMD might already return clean text if ?totext was used,
+        # but for external URLs it returns raw HTML.
+        
         cmd = [
             "pandoc",
             "-f", "html",
             "-t", "plain",
-            "--request-header", "User-Agent:Mozilla/5.0",
-            url_or_path
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            logging.info(f"[import] converting with pandoc (input length: {len(raw_text)})")
+            result = subprocess.run(cmd, input=raw_text, capture_output=True, text=True, check=True)
             raw_text = result.stdout
         except Exception as e:
-            logging.error(f"[import] dailed: {e}")    
-            raw_text = f"Error during import: {e}"
-            mem_card = {
+            logging.error(f"[import] pandoc failed: {e}")    
+            return {
                 "id": "error",
                 "error": True,
-                "text": raw_text
+                "text": f"Error during conversion: {e}"
             }
-            return mem_card
 
     # Векторизация и сохранение чанков
     chunk_and_vectorize_to_file(
