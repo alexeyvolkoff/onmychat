@@ -452,7 +452,7 @@ async def update_memory(data: MemoryUpdate, omd_key: str = Header(..., alias="X-
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/memory/import")
-async def update_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-OMD-Key")):
+async def import_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-OMD-Key")):
     ctx = get_ctx(omd_key)  
     try:
         card = await core_service.import_doc(
@@ -460,8 +460,9 @@ async def update_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-
             url_or_path=data.document_id,
             collection=data.collection
         )
-        if not card:
-            raise HTTPException(status_code=404, detail="Import failed")
+        if card.get("error"):
+            return {"status": "error", "card": card}
+            
         return {"status": "ok", "card": card}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

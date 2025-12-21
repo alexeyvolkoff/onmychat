@@ -1753,7 +1753,7 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
 
 # === Импорт и память ===
 async def import_doc(ctx: UserContext, url_or_path, collection="user"):
-    key = ctx.settings.get("omd_key", "")
+    key = ctx.omd_key or ctx.settings.get("omd_key", "")
 
     # Определяем, это OMD или нет
     raw_text = ""
@@ -1763,6 +1763,13 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         if not key:
             raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
         raw_text = await fetch_document_text(url_or_path, key)
+        if raw_text.startswith("Failed to fetch document:") or raw_text.startswith("Unsupported file type:"):
+            logging.error(f"[import] failed: {raw_text}")    
+            return {
+                "id": "error",
+                "error": True,
+                "text": raw_text
+            }
     else:
 
         cmd = [
