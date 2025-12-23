@@ -736,6 +736,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
             logging.info(f"Generating image for prompt {prompt}")
 
+            # 3️⃣ Generate image
+            
             path, title = await core_service.generate_image(ctx, img_prompt, chat)
             yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}})}\n\n"
             skip_history = True
