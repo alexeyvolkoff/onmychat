@@ -394,18 +394,18 @@ async def generate_image_workflow(workflow) -> bytes:
                             data_content = data["data"]
                             if data_content["prompt_id"] == prompt_id:
                                 outputs = data_content.get("output", {})
-                                logging.info(f"Outputs received: {outputs.keys()}")
+                                #logging.info(f"Outputs received: {outputs.keys()}")
                                 
                                 # outputs is directly the dictionary of outputs for the executed node
                                 if "images" in outputs:
                                     images = outputs["images"]
-                                    logging.info(f"Images found: {images}")
+                                    #logging.info(f"Images found: {images}")
                                     for image in images:
                                         filename = image.get("filename")
                                         subfolder = image.get("subfolder", "")
                                         img_type = image.get("type", "output")
                                         
-                                        logging.info(f"Fetching image: {filename} [{img_type}]")
+                                        #logging.info(f"Fetching image: {filename} [{img_type}]")
                                         
                                         params = {"filename": filename, "subfolder": subfolder, "type": img_type}
                                         async with session.get(f"{COMFY_API_URL}/view", params=params) as img_resp:
