@@ -1605,9 +1605,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if not img_data:
         raise Exception("Image generation failed")
 
-    # Папка для пользователя
+    # Local user folder (only used if no remote storage)
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
-    os.makedirs(user_folder, exist_ok=True)
     
     # Extract title from prompt (prompt may contain "Title: ..." from LLM)
     img_prompt, img_title = extract_title_and_prompt(prompt)
@@ -1615,18 +1614,18 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     # Format for markdown file
     formatted_prompt = f"#{img_title}\n\n{img_prompt}"
     
-    # Rename filename if it comes from ComfyUI temp
+    # Create unique filename by appending timestamp to index
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Try to extract index from ComfyUI temp filename if present
     # Pattern: ComfyUI_temp_..._00005_.png
-    # Extract index
     match = re.search(r"_(\d{5})_\.png$", filename)
     if match:
         index = match.group(1)
-        filename = f"IMG_{index}.png"
+        filename = f"IMG_{index}_{timestamp}.png"
     else:
-        # Fallback if pattern doesn't match but we want clean names
+        # Fallback for other ComfyUI temp patterns or unexpected names
         if filename.startswith("ComfyUI_temp"):
-             # timestamp fallback
-             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
              filename = f"IMG_{timestamp}.png"
 
     if ctx.storage and ctx.omd_key:
@@ -1653,6 +1652,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     else:    
         logging.info("No storage/key found, saving locally.")
         # Копируем файл в user_data (local)
+        os.makedirs(user_folder, exist_ok=True)
         dest_path = os.path.join(user_folder, filename)
         with open(dest_path, "wb") as f:
             f.write(img_data)

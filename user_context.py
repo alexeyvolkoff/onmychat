@@ -100,19 +100,18 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
             if "assistant_appearance" not in remote_settings:
                 remote_settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
             
-            # Update local cache
-            try:
-                os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(remote_settings, f, ensure_ascii=False, indent=2)
-                # Update memory cache
-                bindings["profiles"][user_id] = remote_settings
-                return remote_settings
-            except Exception as e:
-                logging.warning(f"Failed to update local settings cache: {e}")
-                # Update memory cache even if local save failed
-                bindings["profiles"][user_id] = remote_settings
-                return remote_settings
+            # Update local cache only if NOT using remote storage exclusively
+            if not (storage and omd_key):
+                try:
+                    os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(remote_settings, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    logging.warning(f"Failed to update local settings cache: {e}")
+            
+            # Update memory cache
+            bindings["profiles"][user_id] = remote_settings
+            return remote_settings
         else:
              # If remote settings are missing or invalid, upload local settings
              logging.info(f"Remote settings not found or invalid, uploading local settings for user {user_id}")
@@ -154,11 +153,12 @@ def save_user_settings(ctx: UserContext):
         if ctx.storage:
             bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
 
-    # Always save to local disk as cache/backup
-    os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
-    path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
+    # Save to local disk as cache/backup ONLY if no remote storage
+    if not (ctx.storage and ctx.omd_key):
+        os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
+        path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
     # Save to storage if configured
     if ctx.storage and ctx.omd_key:
