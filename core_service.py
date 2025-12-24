@@ -534,7 +534,10 @@ async def _perform_prompt_stream(
     model = DEFAULT_MODEL
     b64_image = None
 
-    history = load_history(ctx, chat)
+    if chat == "default":
+        history = []
+    else:
+        history = load_history(ctx, chat)
 
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -761,7 +764,10 @@ async def _perform_prompt_sync(
     model = DEFAULT_MODEL
     b64_image = None
 
-    history = load_history(ctx, chat)
+    if chat == "default":
+        history = []
+    else:
+        history = load_history(ctx, chat)
 
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -967,7 +973,10 @@ async def perform_prompt(ctx: UserContext,
     model = DEFAULT_MODEL
     b64_image = None
 
-    history = load_history(ctx, chat)
+    if chat == "default":
+        history = []
+    else:
+        history = load_history(ctx, chat)
     
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -1239,7 +1248,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     """
     chats = load_chats_index(ctx)
 
-    if chat not in chats:
+    if chat not in chats or chat == "default":
         title = f"Chat {chat}"
 
         if (chat == "default" or not chat) and first_message:
