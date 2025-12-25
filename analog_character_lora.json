@@ -15,10 +15,10 @@
   "5": {
     "inputs": {
       "seed": 885015153121275,
-      "steps": 10,
+      "steps": 8,
       "cfg": 1,
       "sampler_name": "lcm",
-      "scheduler": "exponential",
+      "scheduler": "beta",
       "denoise": 1,
       "model": [
         "103",
