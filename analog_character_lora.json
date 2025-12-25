@@ -18,7 +18,7 @@
       "steps": 8,
       "cfg": 1,
       "sampler_name": "lcm",
-      "scheduler": "beta",
+      "scheduler": "exponential",
       "denoise": 1,
       "model": [
         "103",
@@ -130,7 +130,7 @@
         "name": "Judith",
         "type": "character",
         "lora": "JudithCB_r2-000011.safetensors",
-        "strength": 1
+        "strength": 0.95
       },
       "lora_7": {
         "on": false,
