@@ -45,8 +45,13 @@ def _inject_image_prompts(history: list) -> list:
 
 def load_history(ctx: UserContext, chat: str = "default") -> list:
     try:
+
+        if not chat or chat == "default":
+            return []
+
         if ctx.history:
             return ctx.history
+
 
         if ctx.storage and ctx.omd_key:
             url = f"{GATEWAY_URL}/{ctx.storage}/chats/{chat}.json?nocache={int(time.time())}"
@@ -80,6 +85,10 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
 
 def save_history(ctx: UserContext, history: list, chat: str = "default"):
     try:
+        if not chat or chat == "default":
+             # logging.warning("Attempted to save history for empty or default chat name")
+             return
+
         if ctx.storage and ctx.omd_key:
             dest = f"{ctx.storage}/chats"
             upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")

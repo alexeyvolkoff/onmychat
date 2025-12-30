@@ -36,6 +36,7 @@ OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 SFW_MODEL = SETTINGS["SFW_MODEL"]
 NSFW_MODEL = SETTINGS["NSFW_MODEL"]
+MCP_MODEL = SETTINGS.get("MCP_MODEL", "google/function-gemma")
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -99,6 +100,463 @@ INTENT_PROMPT = get_prompt("intent.txt")
 SAFETY_CHECK_PROMPT = get_prompt("safety_check.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
+DEFAULT_MCP_INSTRUCTIONS = (
+    "You are a file system agent. Your ONLY goal is to execute file operations requested by the user.\n"
+    "CRITICAL RULES:\n"
+    "1. EXPLORE FIRST: If the user mentions a folder or a source file, you MUST call list_omd_files or read_omd_file in the FIRST turn.\n"
+    "2. FILE SYSTEM PRIORITY: If a path is provided (e.g. /Device/...), you MUST explore the file system. Do NOT use search_memory for file tasks unless file exploration fails.\n"
+    "3. NO EARLY WRITES: It is FORBIDDEN to use write_omd_file on Turn 1 if any source paths are mentioned. You must gather data first.\n"
+    "4. NO HALLUCINATIONS: Do NOT guess file content. Use only text obtained from previous tool outputs.\n"
+    "5. SELF-CORRECT: If you receive an error about using the wrong tool, immediately retry with the correct tool.\n"
+    "6. CONTINUE UNTIL COMPLETE: After listing files, you MUST continue with read_omd_file and then write_omd_file if needed. Do NOT stop after just listing.\n"
+    "7. STEP-BY-STEP: List folder -> Read file -> (then and only then) Write result."
+)
+
+
+# Native Tool Definitions for Ollama
+MCP_TOOLS = [
+  {
+    "type": "function",
+    "function": {
+      "name": "list_omd_files",
+      "description": "List files in a specific directory. ALWAYS use this first if the user refers to a folder (e.g. 'in /Data').",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The absolute path EXACTLY as written by user, e.g. /Linux-desktop/Private/Data"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_omd_file",
+      "description": "Read the content of a file. Use the exact absolute path from list_omd_files results.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The EXACT absolute path of the file to read, e.g. /Linux-desktop/Private/Data/file.txt"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+      "type": "function",
+      "function": {
+          "name": "write_omd_file",
+          "description": "Write content to a file. FORBIDDEN to use on Turn 1 if source data is needed from other files. Use read_omd_file first.",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "path": {
+                      "type": "string",
+                      "description": "The absolute path INCLUDING FILENAME, e.g. /Linux-desktop/Private/Data/invoice.txt"
+                  },
+                  "content": {
+                      "type": "string",
+                      "description": "The text content to write to the file"
+                  }
+              },
+              "required": ["path", "content"]
+          }
+      }
+  },
+  {
+      "type": "function",
+      "function": {
+          "name": "search_memory",
+          "description": "Search user memory for facts, details or information. Use ONLY if the file system tools fail to provide info.",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "query": {
+                      "type": "string",
+                      "description": "The search query"
+                  }
+              },
+              "required": ["query"]
+          }
+      }
+  }
+]
+
+# === MCP TOOLS ===
+async def list_supported_tools(ctx: UserContext) -> str:
+    # Construct description from MCP_TOOLS to ensure it's always accurate
+    output = "Currently supported System Tools:\n"
+    for tool in MCP_TOOLS:
+        name = tool["function"]["name"]
+        desc = tool["function"]["description"]
+        output += f"- {name}: {desc}\n"
+    return output
+
+async def list_omd_files(ctx: UserContext, path: str) -> str:
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+    
+    try:
+        storage_id = ctx.storage.strip("/")
+        storage_key = ctx.omd_key
+        base_url = GATEWAY_URL.rstrip("/")
+        
+        # OMD API for listing: GET /<storage>/<path>?list&token=<key>
+        # OMD API for listing: GET /<storage>/<path>?list&token=<key>
+        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+        # Strip leading slash for processing but keep it for comparison
+        clean_path = path if not path.startswith("/") else path[1:]
+        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+        
+        # OMD Path Logic:
+        # If path starts with /, it is relative to Gateway root. 
+        # If it matches root_folder (device), we use it as is.
+        # If not, we still allow it as Gateway-absolute.
+        
+        if path.startswith("/") or path.startswith(root_folder):
+            url_path = path.lstrip("/")
+            url = f"{base_url}/{url_path}?list&token={storage_key}"
+            path = "/" + url_path
+        else:
+            # Relative to storage_id
+            url = f"{base_url}/{storage_id}/{clean_path}?list&token={storage_key}"
+            path = f"/{storage_id}/{clean_path}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # OMD Gateway list format
+                    items = data.get("list", [])
+                    if not items and "result" in data:
+                        items = data["result"]
+                    
+                    if not items:
+                        return f"Result: Directory {path} is empty or does not exist."
+                        
+                    result_str = f"Files in {path}:\n"
+                    for item in items:
+                        name = item.get("name", "")
+                        type_ = item.get("type", "file")
+                        size = item.get("size", "0")
+                        result_str += f"- [{type_}] {name} ({size})\n"
+                    return result_str
+                else:
+                    return f"Error: Could not list directory {path} (Status {resp.status})"
+    except Exception as e:
+        return f"Exception listing files: {e}"
+
+async def read_omd_file(ctx: UserContext, path: str) -> str:
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+
+    try:
+        storage_id = ctx.storage.strip("/")
+        base_url = GATEWAY_URL.rstrip("/")
+        
+        clean_path = path if not path.startswith("/") else path[1:]
+        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+
+        if path.startswith("/") or path.startswith(root_folder):
+            url_path = path.lstrip("/")
+            url = f"{base_url}/{url_path}"
+        else:
+            url = f"{base_url}/{storage_id}/{clean_path}"
+        
+        # Use fetch_document_text which handles PDFs via ?totext parameter
+        return await fetch_document_text(url, ctx.omd_key)
+
+    except Exception as e:
+        return f"Exception reading file: {e}"
+
+async def search_memory_tool(ctx: UserContext, query: str) -> str:
+    try:
+        # Re-using existing sync search_memories but wrapping it if needed.
+        # core_service imports search_memories.
+        # search_memories(ctx, query, collection=..., mem_id=..., top_k=3)
+        # We search both user and generic collection if possible? Or just default kb_id.
+        collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
+        
+        # It's a sync function in memory_index.py? 
+        # Imported as: from memory_index import search_memories
+        # We should check if it's async. core_service calls it without await in inject_facts? 
+        # Line 463: personal = search_memories(...)
+        # So it is synchronous. We can run it in executor if it's slow, but for now direct call.
+        
+        results = search_memories(ctx, query, collection=collection, top_k=5)
+        if not results:
+            return "No relevant memories found."
+            
+        output = f"Memory Search Results for '{query}':\n"
+        for i, res in enumerate(results, 1):
+             text = res.get('text', '')
+             output += f"{i}. {text}\n"
+        return output
+    except Exception as e:
+        return f"Error searching memory: {e}"
+
+async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+
+    try:
+        from utils import upload_data_to_storage
+        # Using the sync util function for now, but wrapping might be better. 
+        # Given it's a "tool" that might take time, we accept it might block slightly 
+        # or we could rely on OMD being fast. For proper async, should rewrite upload in aiohttp.
+        # But to be safe and consistent with existing upload logic including headers construction:
+        
+        # We need to construct 'dest'. upload_data_to_storage takes (omd_key, dest, filename, data)
+        # It constructs url as GATEWAY_URL/dest/filename
+        # So we need to split path.
+        
+        storage_id = ctx.storage.strip("/")
+        full_path = f"{storage_id}/{path}" # e.g. storage/user/docs/file.txt
+        
+        directory = os.path.dirname(full_path)
+        filename = os.path.basename(full_path)
+        
+        # upload_data_to_storage(omd_key, dest, filename, data)
+        # It does PUT {GATEWAY_URL}/{dest}/{filename}
+        
+        # CAUTION: core_service is async, upload_data_to_storage is sync and uses requests.
+        # If this blocks too long, it's bad. But for now, let's use it directly to reuse logic.
+        
+        # Need to separate storage_id from the rest for 'dest' argument if needed?
+        # upload_data_to_storage doc says: dest — полный путь (например "storage/user123/history/chat1.json")
+        # And constructs: url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"
+        # So 'dest' should be the directory path relative to gateway root (which includes storage id)
+        
+        # Wait, if I pass directory as dest, it appends filename.
+        # directory e.g. "storage/user123/docs"
+        
+        # We can implement a simple async put here to avoid blocking.
+        storage_key = ctx.omd_key
+        base_url = GATEWAY_URL.rstrip("/")
+        if not storage_key or not storage_id:
+             return "Error: OMD storage not linked."
+             
+        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+        clean_path = path if not path.startswith("/") else path[1:]
+        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+        
+        if path.startswith("/") or path.startswith(root_folder):
+            url_path = path.lstrip("/")
+            dest_url = f"{base_url}/{url_path}"
+            path = "/" + url_path
+        else:
+            dest_url = f"{base_url}/{storage_id}/{clean_path}"
+            path = f"/{storage_id}/{clean_path}"
+             
+        # Fallback if path looks like a directory
+        if not os.path.splitext(path)[1]:
+             dest_url = dest_url.rstrip("/") + "/new_file.txt"
+             path = path.rstrip("/") + "/new_file.txt"
+             logging.info(f"[write_omd_file] No extension found, appending default filename: {path}")
+             
+        headers = {
+            "authorization": f"token:{storage_key}",
+            "Response": "json",
+            "Content-Type": "text/plain; charset=utf-8"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+             async with session.put(dest_url, data=content.encode("utf-8"), headers=headers) as resp:
+                 if resp.status in [200, 201, 204]:
+                     return f"Successfully wrote to {path}"
+                 else:
+                     text = await resp.text()
+                     return f"Error writing file: Status {resp.status} - {text}"
+
+    except Exception as e:
+        return f"Exception writing file: {e}"
+
+async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
+    # 1. Path Extraction Heuristic (Help the model find the path)
+    potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
+    path_hint = ""
+    
+    # Check if the message suggests directory operation ("in /folder", "from /folder")
+    is_likely_directory = any(keyword in message.lower() for keyword in [' in /', ' from /', 'folder', 'directory'])
+    
+    if potential_paths:
+        if is_likely_directory:
+            path_hint = f"\nSYSTEM HINT: The user mentioned directory paths: {', '.join(potential_paths)}. You MUST use list_omd_files FIRST to see what files are there. Do NOT guess filenames."
+        else:
+            path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. YOU MUST explore these paths using list_omd_files OR read_omd_file BEFORE any write action. Do not invent content."
+
+    # 2. Native Tool Call Loop (Multi-Turn)
+    system_instruction = DEFAULT_MCP_INSTRUCTIONS
+
+    # [OPTIMIZATION] Avoid redundant history loading if possible
+    # We pass the system_instruction as a fixed pilot prompt.
+    # We do NOT include full history here to keep the tool agent focused on the IMMEDIATE task.
+    messages = [
+        {"role": "system", "content": system_instruction + "\nCRITICAL: Respond ONLY with tool calls. Do NOT apologize. Do NOT explain. If no more tools are needed, respond with 'NO_TOOL'."},
+        {"role": "user", "content": f"User Request: {message}\nFocus only on file operations.\n{path_hint}"}
+    ]
+    
+    all_tool_results = ""
+    max_turns = 5
+    
+    for turn in range(max_turns):
+        # [AGGRESSIVE DIRECTORY ENFORCEMENT]
+        # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
+        available_tools = MCP_TOOLS
+        if turn == 0 and is_likely_directory and potential_paths:
+            # Force listing by offering ONLY list_omd_files
+            available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] == "list_omd_files"]
+            logging.info(f"[MCP] Turn 1 with directory path - forcing list_omd_files only")
+        elif potential_paths:
+            # Still remove search_memory if paths present (but not Turn 1 directory)
+            available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] != "search_memory"]
+            
+        payload = {
+            "model": MCP_MODEL,
+            "messages": messages,
+            "stream": False,
+            "tools": available_tools,
+            "options": {
+                "temperature": 0.0 # Deterministic
+            }
+        }
+        
+        response_data = await llm_request(payload)
+        if not response_data or "message" not in response_data:
+            break
+            
+        msg = response_data["message"]
+        tool_calls = msg.get("tool_calls", [])
+        
+        # [SILENT AGENT]
+        # ALWAYS strip conversational content - agent should ONLY use tools
+        # This prevents it from "concluding" prematurely
+        if msg.get("content"):
+            msg["content"] = ""
+              
+        messages.append(msg)
+        
+        if not tool_calls:
+            # No tools called - agent is done or stuck
+            break
+            
+        # Execute tool calls
+        found_new_info = False
+        
+        # [SEQUENTIAL ENFORCEMENT]
+        # We only take the FIRST tool call. This forces the agent to wait for results 
+        # before making the next logical jump (preventing hallucinations).
+        tool = tool_calls[0]
+        func = tool.get("function", {})
+        name = func.get("name")
+        args = func.get("arguments", {})
+        call_id = tool.get("id")
+        
+        logging.info(f"[MCP][Turn {turn+1}] Sequential Tool Call: {name}({args})")
+        
+        res = ""
+        if name == "list_omd_files":
+            res = await list_omd_files(ctx, args.get("path", ""))
+        elif name == "read_omd_file":
+            res = await read_omd_file(ctx, args.get("path", ""))
+        elif name == "write_omd_file":
+            # [TURN 1 SHIELD]
+            # Prevent early writes if source paths are mentioned but not yet processed.
+            if turn == 0 and potential_paths:
+                 res = "Error: It is FORBIDDEN to write on Turn 1 when source paths are mentioned. You MUST use list_omd_files or read_omd_file first to gather data and avoid hallucination."
+                 logging.warning(f"[MCP] Turn 1 Write Blocked: {args.get('path')}")
+            else:
+                content = args.get("content", "")
+                # [PLACEHOLDER SHIELD]
+                # If the content looks like a placeholder from the prompt (e.g. starts with [), reject it.
+                if content.strip().startswith("[") or content.strip() == "...":
+                     res = "Error: Do NOT use placeholders in write_omd_file. You must use read_omd_file first to get the actual content."
+                else:
+                     res = await write_omd_file(ctx, args.get("path", ""), content)
+        elif name == "search_memory":
+            # [TURN 1 SEARCH SHIELD]
+            # Prevent using memory search on Turn 1 if user provided an explicit file path.
+            if turn == 0 and potential_paths:
+                 res = "Error: A file path was provided. You MUST use list_omd_files or read_omd_file first. Do NOT use search_memory if you have a path to explore."
+                 logging.warning(f"[MCP] Turn 1 Search Blocked (Path present)")
+            else:
+                query = args.get("query", "")
+                if query:
+                    res = await search_memory_tool(ctx, query)
+        
+        if res:
+            all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
+            msg_entry = {"role": "tool", "content": str(res)}
+            if call_id:
+                 msg_entry["tool_call_id"] = call_id
+            messages.append(msg_entry)
+            found_new_info = True
+            
+            # After successful list, parse filenames and inject explicit instruction
+            if name == "list_omd_files" and "Files in" in res:
+                # Extract directory path and filenames from result
+                # Parse lines like "- [file] filename.ext (size)"
+                file_matches = re.findall(r'- \[file\] (.+?) \(\d+\)', res)
+                if file_matches:
+                    # Use the first file found
+                    filename = file_matches[0]
+                    # Extract directory from result header
+                    dir_match = re.search(r'Files in (.+):', res)
+                    directory = dir_match.group(1) if dir_match else args.get("path", "")
+                    full_path = f"{directory}/{filename}"
+                    
+                    messages.append({
+                        "role": "user", 
+                        "content": f"Files found. Now call read_omd_file with path: {full_path}"
+                    })
+                else:
+                    messages.append({
+                        "role": "user", 
+                        "content": "Files listed. Use read_omd_file with the exact filename from above."
+                    })
+            
+            # After successful read, prompt to write the new file
+            elif name == "read_omd_file" and "Error" not in res:
+                # Extract the directory from the original path
+                original_path = args.get("path", "")
+                directory = "/".join(original_path.split("/")[:-1]) if "/" in original_path else ""
+                
+                messages.append({
+                    "role": "user",
+                    "content": f"File read successfully. Now create the new modified document using write_omd_file with .odt extension. Use directory: {directory}, filename format: Kontron_invoice_YYYY-MM-DD.odt"
+                })
+        else:
+            msg_entry = {"role": "tool", "content": "Error: Tool returned no result."}
+            if call_id:
+                 msg_entry["tool_call_id"] = call_id
+            messages.append(msg_entry)
+
+        if not found_new_info:
+            break
+            
+        # [TURN RESET]
+        # We break the tool list loop here (we only used one tool) and allow the 
+        # main 'turn' loop to call the model again with the new knowledge.
+
+    # Suppression filter for final MCP log
+    last_content = messages[-1].get("content", "").strip() if messages and messages[-1].get("role") == "assistant" else ""
+    refusal_keywords = [
+        "i cannot", "i'm sorry", "i am sorry", "cannot assist", 
+        "current capabilities are limited", "cannot generate",
+        "do not have access", "as an ai model", "just a chatty assistant",
+        "cannot help with"
+    ]
+    if last_content and not any(phrase in last_content.lower() for phrase in refusal_keywords):
+        logging.info(f"[MCP] Agent Conclusion: {last_content[:100]}...")
+    
+    return all_tool_results
 
 # === Онбординг успешен - перенос песрональных данных ===
 def bind_account(ctx: UserContext, omd_key: str):
@@ -518,444 +976,6 @@ async def llm_request(payload: dict, headers: dict = None):
 
 
 # === Чат ===
-async def _perform_prompt_stream(
-    ctx: UserContext,
-    instruction: str,
-    message: str,
-    chat: str,
-    skip_history: bool,
-    is_rag: bool,
-    img_source: str = None,
-    mem_id: str = None,
-    think: bool = False,
-    event: str = None
-):
-    nsfw_enabled = ctx.settings.get("nsfw", False)
-    model = DEFAULT_MODEL
-    b64_image = None
-
-    if chat == "default":
-        history = []
-    else:
-        history = load_history(ctx, chat)
-
-    system_prompt = ""
-    # === ВСПОМНИМ ФАКТЫ ===
-    strict_fact = ""
-    facts_text = ""
-    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-    logging.info(f"Loading facts: {collection} {is_rag}")
-    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
-    if facts:
-        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
-    if is_rag:
-        # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
-        logging.info(f"RAG request: {collection}")
-        prep_prompt = (
-            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
-            "Do not guess. If nothing is found, reply with 'No information'."
-        )
-
-        rag_system_prompt = prep_prompt
-
-        if facts_text:
-            rag_system_prompt += facts_text
-
-        prep_messages = [
-            {"role": "system", "content": rag_system_prompt},
-            {"role": "user", "content": message}
-        ]
-        prep_payload = {
-            "messages": prep_messages,
-            "model": SFW_MODEL,
-            "stream": False,
-            "options": {
-               "temperature": 0.1,
-            }
-        }
-        data = await llm_request(prep_payload)
-        if not data:
-            yield {"error": "⚠️ RAG query failed."}
-            return
-
-        rag_resp = data["message"]["content"].strip()
-        if rag_resp and not rag_resp.startswith("No information"):
-            strict_fact = rag_resp
-
-        # Инжект фактов и источников в system prompt
-        if strict_fact:
-            facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
-
-    if nsfw_enabled:
-        system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
-    else:
-        system_prompt = f"{BASE_SYSTEM_PROMPT}"
-
-
-    # Check if the user is new or recurrent one, and prepare chat info
-    chat_info = await ensure_chat(ctx, chat, message)
-
-    # Персонализация
-    user_prompt = ctx.settings.get("system_prompt", "")
-
-    if ctx.settings.get("newUser", False):
-         user_prompt = user_context.DEFAULT_UNONBOARDED_PROMPT
-         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
-    else:
-         username = ctx.settings.get("username", "User")
-         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
-
-    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
-
-    # Факты
-    if facts_text:
-        logging.info(facts_text)
-        system_prompt += facts_text
-
-    # Инструкция
-    instruction_prompt = "*Instruction:*\n" + instruction
-
-    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
-
-    # Reminder
-    if think:
-        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."
-
-    if nsfw_enabled:
-        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
-
-
-    # === ОСНОВНОЙ ЗАПРОС ===
-    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
-
-    # Добавляем новый запрос
-    user_message = {
-        "role": "user",
-        "content": message,
-    }
-
-    instruction_message = {
-        "role": "system",
-        "content": instruction_prompt,
-    }
-
-    if img_source:
-        b64_image = await get_image_from_source(ctx, img_source)
-
-    if b64_image:
-        user_message["images"] = [b64_image]
-        model = DEFAULT_MODEL
-        if img_source.startswith("/"):
-            user_message["image"] = {"path": img_source}
-
-    if mem_id:
-       user_message["mem_id"] = mem_id
-
-    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
-
-    # Добавляем инструкцию
-    messages.append(instruction_message)
-    # Добавляем пользовательский промпт
-    messages.append(user_message)
-
-    main_payload = {
-        "messages": messages,
-        "model": model,
-        "stream": True, # Always stream for _perform_prompt_stream
-        "options": {
-            "temperature": 0.85,          # немного выше для разнообразия
-            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
-            "frequency_penalty": 0.6,     # штраф за частое повторение слов
-            "presence_penalty": 0.5,      # штраф за повторение идей/тем
-        }
-    }
-
-    if think and REASONONG_SUPPORTED:
-        main_payload["think"] = True
-
-    full_response_content = ""
-    full_thinking_content = ""
-
-    try:
-        async for chunk in llm_request_stream(main_payload):
-            if "content" in chunk["message"]:
-                content_chunk = chunk["message"]["content"]
-                full_response_content += content_chunk
-                yield {"content": content_chunk, "event": event}
-            if "thinking" in chunk["message"]:
-                thinking_chunk = chunk["message"]["thinking"]
-                full_thinking_content += thinking_chunk
-                yield {"thinking": thinking_chunk, "event": event}
-    except Exception as e:
-        logging.error(f"Error during LLM streaming: {e}")
-        yield {"error": f"Error during LLM streaming: {e}", "event": event}
-        return
-
-    # Post-processing and history saving after stream completes
-    llm_response = full_response_content
-    llm_response = clean_response(llm_response)
-    llm_think_response = full_thinking_content
-
-    # Add sources block
-    links = []
-    if doc_ids:
-        seen = set()
-        for doc in doc_ids:
-            if doc in seen:
-                continue
-            seen.add(doc)
-            links.append(doc)
-
-    # result object for final history save
-    response_for_history = {}
-    response_for_history["content"] = llm_response.strip()
-    if links:
-        response_for_history["sources"] = links
-    if strict_fact:
-        response_for_history["facts"] = strict_fact
-    if llm_think_response:
-        response_for_history["thinking"] = llm_think_response
-
-    # === Add to history
-    if not skip_history:
-        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
-        history.append(msg_to_save)
-    history_entry = {
-        "role": "assistant",
-        "content": llm_response
-    }
-    if strict_fact:
-        history_entry["facts"] = strict_fact
-    if links:
-        history_entry["sources"] = links
-    if llm_think_response:
-        history_entry["thinking"] = llm_think_response
-
-    history.append(history_entry)
-
-    chat_name = chat_info.get("name", chat)
-    save_history(ctx, history, chat_name)
-
-    # Yield final metadata
-    final_metadata = {"chatinfo": chat_info, "event": event}
-    if links:
-        final_metadata["sources"] = links
-    if strict_fact:
-        final_metadata["facts"] = strict_fact
-    if llm_think_response:
-        final_metadata["thinking"] = llm_think_response
-
-    yield final_metadata
-
-
-async def _perform_prompt_sync(
-    ctx: UserContext,
-    instruction: str,
-    message: str,
-    chat: str,
-    skip_history: bool,
-    is_rag: bool,
-    img_source: str = None,
-    mem_id: str = None,
-    think: bool = False
-) -> dict:
-    nsfw_enabled = ctx.settings.get("nsfw", False)
-    model = DEFAULT_MODEL
-    b64_image = None
-
-    if chat == "default":
-        history = []
-    else:
-        history = load_history(ctx, chat)
-
-    system_prompt = ""
-    # === ВСПОМНИМ ФАКТЫ ===
-    strict_fact = ""
-    facts_text = ""
-    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-    logging.info(f"Loading facts: {collection} {is_rag}")
-    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
-    if facts:
-        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
-    if is_rag:
-        # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
-        logging.info(f"RAG request: {collection}")
-        prep_prompt = (
-            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
-            "Do not guess. If nothing is found, reply with 'No information'."
-        )
-
-        rag_system_prompt = prep_prompt
-
-        if facts_text:
-            rag_system_prompt += facts_text
-
-        prep_messages = [
-            {"role": "system", "content": rag_system_prompt},
-            {"role": "user", "content": message}
-        ]
-        prep_payload = {
-            "messages": prep_messages,
-            "model": SFW_MODEL,
-            "stream": False,
-            "options": {
-               "temperature": 0.1,
-            }
-        }
-        data = await llm_request(prep_payload)
-        if not data:
-            return {"error": "⚠️ RAG query failed."}
-
-        rag_resp = data["message"]["content"].strip()
-        if rag_resp and not rag_resp.startswith("No information"):
-            strict_fact = rag_resp
-
-        # Инжект фактов и источников в system prompt
-        if strict_fact:
-            facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
-
-    if nsfw_enabled:
-        system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
-    else:
-        system_prompt = f"{BASE_SYSTEM_PROMPT}"
-
-
-    # Check if the user is new or recurrent one, and prepare chat info
-    chat_info = await ensure_chat(ctx, chat, message)
-
-    # Персонализация
-    user_prompt = ctx.settings.get("system_prompt", "")
-
-    if ctx.settings.get("newUser", False):
-         user_prompt = user_context.DEFAULT_UNONBOARDED_PROMPT
-         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
-    else:
-         username = ctx.settings.get("username", "User")
-         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
-
-    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
-
-    # Факты
-    if facts_text:
-        logging.info(facts_text)
-        system_prompt += facts_text
-
-    # Инструкция
-    instruction_prompt = "*Instruction:*\n" + instruction
-
-    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
-
-    # Reminder
-    if think:
-        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."
-
-    if nsfw_enabled:
-        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
-
-
-    # === ОСНОВНОЙ ЗАПРОС ===
-    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
-
-    # Добавляем новый запрос
-    user_message = {
-        "role": "user",
-        "content": message,
-    }
-
-    instruction_message = {
-        "role": "system",
-        "content": instruction_prompt,
-    }
-
-    if img_source:
-        b64_image = await get_image_from_source(ctx, img_source)
-
-    if b64_image:
-        user_message["images"] = [b64_image]
-        model = DEFAULT_MODEL
-        if img_source.startswith("/"):
-            user_message["image"] = {"path": img_source}
-
-    if mem_id:
-       user_message["mem_id"] = mem_id
-
-    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
-
-    # Добавляем инструкцию
-    messages.append(instruction_message)
-    # Добавляем пользовательский промпт
-    messages.append(user_message)
-
-    main_payload = {
-        "messages": messages,
-        "model": model,
-        "stream": False, # Always non-stream for _perform_prompt_sync
-        "options": {
-            "temperature": 0.85,          # немного выше для разнообразия
-            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
-            "frequency_penalty": 0.6,     # штраф за частое повторение слов
-            "presence_penalty": 0.5,      # штраф за повторение идей/тем
-        }
-    }
-
-    if think and REASONONG_SUPPORTED:
-        main_payload["think"] = True
-
-    data = await llm_request(main_payload)
-    if not data:
-        return {"error": "LLM request failed."}
-
-    llm_response = data["message"]["content"]
-    llm_response = clean_response(llm_response)
-    llm_think_response = None
-    if data["message"].get("thinking"):
-        llm_think_response = data["message"]["thinking"]
-
-    # Добавляем блок с источниками — только в отображаемый ответ
-    links = []
-    if doc_ids:
-        seen = set()
-        for doc in doc_ids:
-            if doc in seen:
-                continue  # пропускаем дубликаты
-            seen.add(doc)
-            # Формируем ссылку без экранирования, она будет безопасно обработана позже
-            links.append(doc)
-
-    # result object
-    response = {}
-    response["content"] = llm_response.strip()
-    if links:  # добавляем блок только если есть ссылки
-        response["sources"] = links
-    if strict_fact:
-        response["facts"] = strict_fact
-    if llm_think_response:
-        response["thinking"] = llm_think_response
-    # === Добавляем в историю
-    if not skip_history:
-        msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
-        history.append(msg_to_save)
-    history_entry = {
-        "role": "assistant",
-        "content": llm_response
-    }
-    if strict_fact:
-        history_entry["facts"] = strict_fact
-    if links:
-        history_entry["sources"] = links
-    if llm_think_response:
-        history_entry["thinking"] = llm_think_response
-
-    history.append(history_entry)
-
-    chat_name = chat_info.get("name", chat)
-    save_history(ctx, history, chat_name)
-    response["chatinfo"] = chat_info
-    return response
-
-
 async def perform_prompt(ctx: UserContext,
                          instruction: str,
                          message: str,
@@ -982,11 +1002,28 @@ async def perform_prompt(ctx: UserContext,
     # === ВСПОМНИМ ФАКТЫ ===
     strict_fact = ""
     facts_text = ""
+    doc_ids = []
+    facts = []
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     logging.info(f"Loading facts: {collection} {is_rag}")
-    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
-    if facts:
-        facts_text = "\n\n*Known facts:*\n" + "\n".join(facts) if facts else ""
+
+    # === MCP Intent Check ===
+    mcp_result = await check_and_execute_mcp(ctx, message)
+    
+    # Flag that we are working with documents
+    is_work_mode = False 
+
+    if mcp_result:
+        facts_text += f"\n\n*System Tool Output (Trusted Data):*\n{mcp_result}"
+        # Trigger work mode if tools were attempted. 
+        # Even if they failed or found nothing, we should stay in professional "Work Mode".
+        is_work_mode = True
+
+    # Only load KB facts if MCP didn't run OR if a specific memory ID is being queried
+    if not mcp_result or mem_id:
+        facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
+        if facts:
+            facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         logging.info(f"RAG request: {collection}")
@@ -1023,8 +1060,19 @@ async def perform_prompt(ctx: UserContext,
         # Инжект фактов и источников в system prompt
         if strict_fact:
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
-    
-    if nsfw_enabled:
+        
+    # Apply Work Mode override if file operations were attempted
+    if is_work_mode:
+        # COMPLETELY override personality during file operations
+        system_prompt = (
+            "You are a professional document processing assistant.\n"
+            "Be concise, factual, and professional. Do not roleplay. Do not use emojis or pet names.\n\n"
+            "ABSOLUTE RULE: You are FORBIDDEN from generating fake tool results.\n"
+            "Do NOT create `*System Tool Output*`, `tool_code`, or any simulated MCP blocks.\n"
+            "Only reference the *System Tool Output (Trusted Data):* section provided above.\n"
+            "If tools did not complete the task, inform the user honestly - do not pretend."
+        )
+    elif nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
     else:  
         system_prompt = f"{BASE_SYSTEM_PROMPT}"
@@ -1032,6 +1080,24 @@ async def perform_prompt(ctx: UserContext,
 
     # Check if the user is new or recurrent one, and prepare chat info
     chat_info = await ensure_chat(ctx, chat, message)
+    chat_name = chat_info.get("name", chat or "default")
+
+    # === SAVE USER MESSAGE IMMEDIATELY ===
+    # This prevents message loss if the stream is interrupted or if another message comes in
+    if not skip_history:
+        # Re-load fresh history to be safe against race conditions
+        history = load_history(ctx, chat_name)
+        user_message_to_save = {
+            "role": "user",
+            "content": message
+        }
+        if mem_id:
+             user_message_to_save["mem_id"] = mem_id
+        
+        # Don't duplicate if already there (e.g. retry or rapid double-click)
+        if not history or history[-1].get("content") != message or history[-1].get("role") != "user":
+            history.append(user_message_to_save)
+            save_history(ctx, history, chat_name)
 
     # Персонализация
     user_prompt = ctx.settings.get("system_prompt", "")
@@ -1053,7 +1119,10 @@ async def perform_prompt(ctx: UserContext,
     # Инструкция
     instruction_prompt = "*Instruction:*\n" + instruction
 
-    instruction_prompt += "\nThe conversation is continuous; avoid redundancy and self-repetition, avoid repeating phrasing or actions from previous turns."
+    instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
+    
+    # [HALLUCINATION SHIELD]
+    instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output (MCP)*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content."
 
     # Reminder
     if think:
@@ -1090,7 +1159,7 @@ async def perform_prompt(ctx: UserContext,
     if mem_id:
        user_message["mem_id"] = mem_id
 
-    logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
+    # logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
 
     # Добавляем инструкцию
     messages.append(instruction_message)
@@ -1141,28 +1210,27 @@ async def perform_prompt(ctx: UserContext,
             response["facts"] = strict_fact
         if llm_think_response:    
             response["thinking"] = llm_think_response
-        # === Добавляем в историю
+        # === Добавляем ответ ассистента в историю
         if not skip_history:
-            msg_to_save = {k: v for k, v in user_message.items() if k != "images"}
-            history.append(msg_to_save)
-        history_entry = {
-            "role": "assistant", 
-            "content": llm_response
-        }     
-        if strict_fact:    
-            history_entry["facts"] = strict_fact
-        if links:
-            history_entry["sources"] = links
-        if llm_think_response:    
-            history_entry["thinking"] = llm_think_response
+            # Re-load history to get the latest (including the user message we just saved + any parallel ones)
+            history = load_history(ctx, chat_name)
+            history_entry = {
+                "role": "assistant", 
+                "content": llm_response
+            }     
+            if strict_fact:    
+                history_entry["facts"] = strict_fact
+            if links:
+                history_entry["sources"] = links
+            if llm_think_response:    
+                history_entry["thinking"] = llm_think_response
 
-        history.append(history_entry)
+            history.append(history_entry)
 
-        #chat_info = await ensure_chat(ctx, chat, message)
-        chat_name = chat_info.get("name", chat)
-        save_history(ctx, history, chat_name)
-        response["chatinfo"] = chat_info
-        return response
+            #chat_info = await ensure_chat(ctx, chat, message)
+            save_history(ctx, history, chat_name)
+            response["chatinfo"] = chat_info
+            return response
 
 
     if stream:
@@ -1247,6 +1315,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     Если чат = default → сгенерировать нормальное название на основе первого сообщения.
     """
     chats = load_chats_index(ctx)
+    chat = chat or "default"
 
     if chat not in chats or chat == "default":
         title = f"Chat {chat}"
@@ -1280,6 +1349,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 
 # === Intent ===
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
+    chat = chat or "default"
     system_prompt = INTENT_PROMPT
     history = load_history(ctx, chat)
     
@@ -1330,6 +1400,7 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
     return "SAFE" # Default fallback
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
+    chat = chat or "default"
     user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
     #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1787,6 +1858,11 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
             "error": True,
             "text": raw_text
         }
+    
+    # Reject directory listings (JSON results) from being imported as documents
+    if raw_text.strip().startswith('{"list":') or raw_text.strip().startswith('{"result":'):
+        logging.info(f"[import] identified as directory listing, skipping import.")
+        return None
 
     # If it's an external HTML or we just want to ensure it's plain text via pandoc
     if not is_omd or url_or_path.lower().endswith(".html") or url_or_path.lower().endswith(".htm"):

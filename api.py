@@ -376,6 +376,7 @@ async def get_assistant_avatars_endpoint(omd_key: str):
 
 @app.get("/history")
 async def history_endpoint(omd_key: str, chat: str = "default"):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         history = dialog_history.load_history(ctx, chat=chat)
@@ -390,6 +391,7 @@ def delete_history(chat: str, number: int, omd_key: str = Header(..., alias="X-O
     """
     Удаляет сообщение по индексу (0-based) из истории указанного чата пользователя.
     """
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
 
     try:
@@ -513,6 +515,7 @@ async def chats_endpoint(omd_key: str, storage: str = ""):
 
 @app.post("/chats/{chat}/archive")
 async def archive_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         from dialog_history import load_chats_index, save_chats_index
@@ -529,6 +532,7 @@ async def archive_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key"))
 
 @app.post("/chats/{chat}/restore")
 async def restore_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         from dialog_history import load_chats_index, save_chats_index
@@ -544,6 +548,7 @@ async def restore_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key"))
 
 @app.delete("/chats/{chat}")
 async def delete_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         from dialog_history import load_chats_index, save_chats_index, reset_history
@@ -585,6 +590,7 @@ async def delete_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
 
 @app.post("/chats/{chat}/nsfw")
 async def toggle_chat_nsfw(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         from dialog_history import load_chats_index, save_chats_index
@@ -617,6 +623,7 @@ async def chat_endpoint(data: ChatInput):
 
 @app.get("/chat/stream")
 async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
 
     async def event_generator():
@@ -630,10 +637,10 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
         think = False
         img_source = None
 
-        # Initialize chat if default and it's a command
-        if (not chat or chat == "default") and prompt.startswith("/"):
+        # Initialize chat if it's the first message of a new session
+        if not chat or chat == "default":
              chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-             chat = chat_info["name"]  # Update chat variable with new chat name
+             chat = chat_info["name"]
              yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
 
         # perform commands
@@ -664,49 +671,72 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             
             # yield f"data: {json.dumps({'event': 'reload_chats'})}\n\n"
             event = 'reload_chats'
-
-        elif prompt.startswith("/show"):
-            intent = "show"   
-        elif prompt.startswith("/view") or prompt.startswith("/imagine"): 
-            intent = "view"   
-        elif prompt.startswith("/import") or prompt.startswith("/learn"):  
-            m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
-            file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-            if file_path_or_url:
-                intent = f"import:{file_path_or_url}"
-        elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
-            m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
-            file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-            if file_path_or_url:
-                intent = f"recognize:{file_path_or_url}"
-        elif prompt.startswith("/think") or prompt.startswith("/explain"):  
-            intent = "explain"   
-            think = prompt.startswith("/think")
-        elif prompt.startswith("/generate"):
-            intent = "generate"
-            img_prompt = prompt[len("/generate"):].strip()
-            if not ctx.settings.get("nsfw", False):
-                logging.info(f"Checking image generation safety: {img_prompt}")
-                safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                if safety_result != "SAFE":
-                    logging.info(f"Image generation safety check failed: {safety_result}")
-                    yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
-                    return
         else:
+            # 1. Broad Intent Detection First
             raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
             lines = raw_intent.strip().split("\n", 1)
-            logging.info(f"Intent detected: {raw_intent} NSFW: {ctx.settings["nsfw"]}")
-            intent = lines[0].strip()
-            # --- ВЫРЕЗАЕМ ПАМЯТЬ ---
+            intent_raw = lines[0].strip().lower()
+            
+            # Whitelist and sanitize intent
+            allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat"]
+            intent = "chat"
+            for allowed in allowed_intents:
+                if intent_raw.startswith(allowed):
+                    intent = allowed
+                    break
+            
+            logging.info(f"Intent detected: {intent} \n(raw: {raw_intent[:50]}...)")
+            
+            # 2. Extract Memory Facts immediately
             memory_fact = memory_index.extract_memory_from_response(raw_intent)
             if memory_fact:
                 try:
                     logging.info(f"Memorizing: {memory_fact}")
-                    memory_index.add_memory_card(ctx, memory_fact,  collection="user", relevance="permanent")
+                    memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="permanent")
                     yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
-                    
                 except Exception as e:
                     logging.error(f"Vectorization error: {e}")
+
+            # 3. Handle Special Primary Intents (Slash overrides)
+            if prompt.startswith("/show"):
+                intent = "show"
+            elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
+                intent = "view"
+            elif prompt.startswith("/tools") or intent == "tools":
+                # Provide an immediate, reliable list of tools
+                tools_list = await core_service.list_supported_tools(ctx)
+
+                # Ensure history is saved for this interaction
+                history = dialog_history.load_history(ctx, chat)
+                history.append({"role": "user", "content": prompt})
+                history.append({"role": "assistant", "content": tools_list})
+                dialog_history.save_history(ctx, history, chat)
+
+                yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
+                return
+            elif prompt.startswith("/import") or prompt.startswith("/learn"):  
+                m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                if file_path_or_url:
+                    intent = f"import:{file_path_or_url}"
+            elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
+                m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                if file_path_or_url:
+                    intent = f"recognize:{file_path_or_url}"
+            elif prompt.startswith("/think") or prompt.startswith("/explain"):  
+                intent = "explain"   
+                think = prompt.startswith("/think")
+            elif prompt.startswith("/generate"):
+                intent = "generate"
+                img_prompt = prompt[len("/generate"):].strip()
+                if not ctx.settings.get("nsfw", False):
+                    logging.info(f"Checking image generation safety: {img_prompt}")
+                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                    if safety_result != "SAFE":
+                        logging.info(f"Image generation safety check failed: {safety_result}")
+                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                        return
     
         if intent == "show":
             # 1️⃣ статус
@@ -781,14 +811,24 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             new_knowledge = ""     
             if card: 
                 new_knowledge = card.get("text")
-            if new_knowledge:
+            
+            if not new_knowledge:
+                # FALLBACK: If import failed or was a directory, treat as chat so MCP can handle it
+                logging.info(f"Import yielded no knowledge. Falling back to chat intent.")
+                intent = "chat"
+                request = prompt
+                instruction = (
+                    "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
+                    "If no *Known facts* provided, respond freely as a helpful conversational assistant."
+                )
+            else:
                 yield f"data: {json.dumps({'new_knowledge': new_knowledge})}\n\n"    
-            logging.info(f"*New knowledge:*\n{new_knowledge}")
-            instruction=(
-                f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
-            )
-            request = prompt
-            mem_id = card.get("id")
+                logging.info(f"*New knowledge:*\n{new_knowledge}")
+                instruction=(
+                    f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
+                )
+                request = prompt
+                mem_id = card.get("id")
         elif intent.startswith("image"):
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
@@ -815,8 +855,8 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
             skip_history = False
             request = prompt
             instruction = (
-                "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
-                "If no *Known facts* provided, espond freely as a helpful conversational assistant."
+                "If *System Tool Output* (MCP) results are provided, they are the source of truth. Use them to provide a final answers. "
+                "If no relevant tool results are provided, respond freely as a helpful conversational assistant."
             )
         # 3️⃣ ответ
         async for chunk in await core_service.perform_prompt(
@@ -869,6 +909,7 @@ async def recognize_endpoint(
     prompt: str = Form(""),
     file: UploadFile = File(...)
 ):
+    chat = chat or "default"
     ctx = get_ctx(omd_key)
     try:
         img_bytes = await file.read()
@@ -880,6 +921,7 @@ async def recognize_endpoint(
 
 @app.post("/generate/image/character")
 async def generate_character_image(data: GenerateInput):
+    data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     try:
         # generate_image returns (filename, title)
@@ -918,6 +960,7 @@ async def generate_general_image(data: GenerateInput):
 
 @app.post("/generate/prompt/character")
 async def generate_character_image_prompt(data: GenerateInput):
+    data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     try:
         result = await core_service.generate_character_image_prompt(ctx, data.prompt, data.chat)
@@ -930,6 +973,7 @@ async def generate_character_image_prompt(data: GenerateInput):
 
 @app.post("/generate/prompt/general")
 async def generate_general_image_prompt(data: GenerateInput):
+    data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     try:
         result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat)
