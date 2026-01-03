@@ -622,7 +622,7 @@ async def chat_endpoint(data: ChatInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/chat/stream")
-async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
+async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default"):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
 
@@ -745,6 +745,17 @@ async def chat_stream(omd_key: str, prompt: str, chat: str = "default"):
                         yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
                         return
     
+        # Enforce Rights
+        ai_advanced = request.headers.get("x-omd-ai-advanced", "true") == "true"
+        restricted_intents = ["show", "view", "generate", "tools", "import", "recognize"]
+        
+        # Check primary intent or prefixed intent (e.g. import:url)
+        check_intent = intent.split(":")[0] if ":" in intent else intent
+        
+        if not ai_advanced and check_intent in restricted_intents:
+             yield f"data: {json.dumps({'delta': 'Advanced AI features (Image Generation, Tools, etc.) are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
+             return
+
         if intent == "show":
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"
