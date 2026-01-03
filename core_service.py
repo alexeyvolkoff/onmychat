@@ -989,8 +989,8 @@ async def perform_prompt(ctx: UserContext,
                          event: str = None) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
-    model = DEFAULT_MODEL
+    model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    #model = DEFAULT_MODEL
     b64_image = None
 
     if chat == "default":
@@ -1229,8 +1229,9 @@ async def perform_prompt(ctx: UserContext,
 
             #chat_info = await ensure_chat(ctx, chat, message)
             save_history(ctx, history, chat_name)
-            response["chatinfo"] = chat_info
-            return response
+            
+        response["chatinfo"] = chat_info
+        return response
 
 
     if stream:
@@ -1399,7 +1400,7 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
     
     return "SAFE" # Default fallback
 
-async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default") -> str:
+async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default", history: list = None, save_history_flag: bool = True) -> str:
     chat = chat or "default"
     user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
@@ -1413,7 +1414,8 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         image_instruction = instruction.format(prompt)
 
 
-    history = load_history(ctx, chat)
+    if history is None:
+        history = load_history(ctx, chat)
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
@@ -1447,29 +1449,30 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         # на случай, если ответ в другом формате
         response = data.get("content") or str(data)
 
-    history.append({"role": "user", "content": prompt })
-    #history.append({"role": "assistant", "content": response}) 
-    save_history(ctx, history, chat)       
+    if save_history_flag:
+        history.append({"role": "user", "content": prompt })
+        #history.append({"role": "assistant", "content": response}) 
+        save_history(ctx, history, chat)       
 
     return response.strip()
 
 
 # Generate character image, returns full path for further sending or conversion
-async def generate_character_image_prompt(ctx: UserContext, prompt, chat="default") -> str:
+async def generate_character_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None, save_history_flag: bool = True) -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  SYSTEM_INSTRUCTION_CHARACTER, prompt, chat)
+    return await generate_image_prompt(ctx,  SYSTEM_INSTRUCTION_CHARACTER, prompt, chat, history, save_history_flag)
 
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default") -> str:
+async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None, save_history_flag: bool = True) -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat)
+    return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat, history, save_history_flag)
 
 
 def extract_title_and_prompt(response: str) -> tuple[str, str]:
@@ -1738,8 +1741,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         save_history(ctx, history, chat)
     return filename, img_title
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str]:
-    return await generate_image(ctx, prompt, chat)
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> tuple[str, str]:
+    return await generate_image(ctx, prompt, chat, update_history=update_history)
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str]:
