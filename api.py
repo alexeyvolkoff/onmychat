@@ -110,6 +110,7 @@ class AvatarUpdateInput(BaseModel):
     omd_key: str
     image_path: str
     style: str | None = None
+    character_lora: str | None = None
     assistant_model: str | None = None
 
 class SignoutInput(BaseModel):
@@ -118,8 +119,8 @@ class SignoutInput(BaseModel):
 
 # ==== Хелпер ====
 
-def get_ctx(omd_key: str, storage: str = ""):
-    return user_context.get_context_by_account(omd_key, storage)
+def get_ctx(omd_key: str, storage: str = "", force_reload: bool = False):
+    return user_context.get_context_by_account(omd_key, storage, force_reload)
 
 
 def serve_file(filepath: str, request: Request, size: int = None) -> Response:
@@ -183,7 +184,8 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 
 @app.get("/assistant")
 async def assistant_info(omd_key: str):
-    ctx = get_ctx(omd_key)
+    # Force reload settings from storage to ensure we have the latest data (bypass cache)
+    ctx = get_ctx(omd_key, force_reload=True)
     try:
         assistant = {
             "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
@@ -282,8 +284,10 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
             ctx.settings["style"] = data.style
         if data.assistant_model:
             ctx.settings["assistant_model"] = data.assistant_model
+        if data.character_lora:
+            ctx.settings["character_lora"] = data.character_lora
         
-        if data.style or data.assistant_model:
+        if data.style or data.assistant_model or data.character_lora:
             user_context.save_user_settings(ctx)
 
         # The image path provided is just filename in 'generated' folder (e.g. AVATAR_....png)
@@ -722,7 +726,12 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                     if safety_result != "SAFE":
                         logging.info(f"Image generation safety check failed: {safety_result}")
-                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\\n\\n"
+                        
+                        warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
+                        if not ai_advanced:
+                             warning = "I can not generate this until you prove your age by subscribing for Premium plan"
+
+                        yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
                         return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"

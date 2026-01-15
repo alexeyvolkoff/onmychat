@@ -220,8 +220,17 @@ def fetch_json_from_storage(omd_key: str, dest: str, filename: str):
         resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code == 200:
             return resp.json()
+        elif resp.status_code == 404:
+            return None
+        else:
+            resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            return None
+        raise e
     except Exception as e:
         logging.warning(f"Failed to fetch {filename} from storage: {e}")
+        raise e
     return None
 
 

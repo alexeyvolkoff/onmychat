@@ -56,9 +56,9 @@ DEFAULT_UNONBOARDED_PROMPT = get_prompt("default.txt")
 DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
 DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
-def load_user_settings(user_id, omd_key=None, storage=None) :
+def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) :
     # Check cache first
-    if user_id in bindings["profiles"]:
+    if not force_reload and user_id in bindings["profiles"]:
         #logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
         profile = bindings["profiles"][user_id]
         if "assistant_appearance" not in profile:
@@ -88,11 +88,15 @@ def load_user_settings(user_id, omd_key=None, storage=None) :
 
     # Try to load from storage if configured
     if storage and omd_key:
-        remote_settings = fetch_json_from_storage(
-            omd_key,
-            storage,
-            "settings.json"
-        )
+        try:
+            remote_settings = fetch_json_from_storage(
+                omd_key,
+                storage,
+                "settings.json"
+            )
+        except Exception as e:
+            logging.error(f"Critical error loading remote settings: {e}")
+            raise e # Fail the request, DO NOT load defaults
         if remote_settings:
             logging.info(f"Loaded settings from storage for user {user_id}")
             
@@ -154,7 +158,8 @@ def save_user_settings(ctx: UserContext):
             bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
 
     # Save to local disk as cache/backup ONLY if no remote storage
-    if not (ctx.storage and ctx.omd_key):
+    # AND only for Telegram users (numeric IDs) - strict separation for OMD users
+    if not (ctx.storage and ctx.omd_key) and ctx.user_id.isdigit():
         os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
         path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
         with open(path, "w", encoding="utf-8") as f:
@@ -217,7 +222,7 @@ def get_context(telegram_id: int) -> UserContext:
 
 
 
-def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
+def get_context_by_account(account_id: str, storage: str = "", force_reload: bool = False) -> UserContext:
     """Вернуть контекст пользователя по account_id (omd_key).
        Если нет в bindings, пробуем спросить у OMD.
     """
@@ -231,7 +236,7 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
              # Update storage in binding if passed
              binding["storage"] = storage
 
-        settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
+        settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage, force_reload=force_reload)
         #logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
         return ctx 
@@ -254,7 +259,7 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
             
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username, "storage": storage}
             
-            settings = load_user_settings(username, storage=storage, omd_key=account_id)
+            settings = load_user_settings(username, storage=storage, omd_key=account_id, force_reload=force_reload)
             settings["username"] = displayname
             ctx = UserContext(type="omd", user_id=username, settings=settings, history=[], omd_key=account_id, storage=storage)
             return ctx
@@ -267,7 +272,7 @@ def get_context_by_account(account_id: str, storage: str = "") -> UserContext:
     if storage:
          bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id, "storage": storage}
 
-    settings = load_user_settings(user_id, storage=storage, omd_key=account_id)
+    settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)
     ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
     return ctx
 
