@@ -643,6 +643,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
              chat = chat_info["name"]
              yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
 
+        # Enforce Rights (moved up)
+        ai_advanced = request.headers.get("x-omd-ai-advanced", "true") == "true"
+
+
         # perform commands
         if prompt.startswith("/nsfw"):
             skip_history = True
@@ -651,6 +655,9 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             if args:
                 if args[0].lower() == "on":
+                    if not ai_advanced:
+                        yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\\n\\n"
+                        return
                     nsfw_enabled = True
                 elif args[0].lower() == "off":
                     nsfw_enabled = False
@@ -707,6 +714,16 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             # 3. Handle Special Primary Intents (Slash overrides)
             if prompt.startswith("/show"):
                 intent = "show"
+            elif prompt.startswith("/generate"):
+                intent = "generate"
+                img_prompt = prompt[len("/generate"):].strip()
+                if not ctx.settings.get("nsfw", False):
+                    logging.info(f"Checking image generation safety: {img_prompt}")
+                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                    if safety_result != "SAFE":
+                        logging.info(f"Image generation safety check failed: {safety_result}")
+                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\\n\\n"
+                        return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"
             elif prompt.startswith("/tools") or intent == "tools":
@@ -734,19 +751,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             elif prompt.startswith("/think") or prompt.startswith("/explain"):  
                 intent = "explain"   
                 think = prompt.startswith("/think")
-            elif prompt.startswith("/generate"):
-                intent = "generate"
-                img_prompt = prompt[len("/generate"):].strip()
-                if not ctx.settings.get("nsfw", False):
-                    logging.info(f"Checking image generation safety: {img_prompt}")
-                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                    if safety_result != "SAFE":
-                        logging.info(f"Image generation safety check failed: {safety_result}")
-                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
-                        return
     
-        # Enforce Rights
-        ai_advanced = request.headers.get("x-omd-ai-advanced", "true") == "true"
         restricted_intents = ["tools"]
         
         # Check primary intent or prefixed intent (e.g. import:url)
