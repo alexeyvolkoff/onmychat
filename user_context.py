@@ -294,7 +294,7 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
     }
 
     # Список папок, которые нужно создать
-    folders = [f"{storage}/vecs", f"{storage}/chats", f"{storage}/generated"]
+    folders = [storage, f"{storage}/vecs", f"{storage}/chats", f"{storage}/generated"]
 
     results = {}
     for folder in folders:

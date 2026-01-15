@@ -655,10 +655,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 elif args[0].lower() == "off":
                     nsfw_enabled = False
 
-            request = "get ready to play" if nsfw_enabled else "calm down for now"
+            llm_message = "get ready to play" if nsfw_enabled else "calm down for now"
 
             if len(args) > 1:
-                request = args[1].strip()
+                llm_message = args[1].strip()
                 skip_history = False
         
 
@@ -785,7 +785,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "*'Me' refers to you in the provided scene description* \n\n"
                 "Do not cite the prompt or scene description in your response, just continue the conversation describing how you feel in this scene. "
             ).format(img_prompt)
-            request = prompt
+            llm_message = prompt
         elif intent == "view":
             # 1️⃣ статус
             yield f"data: {json.dumps({'status': 'generating'})}\n\n"
@@ -806,7 +806,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "*'Me', if present, refers to you in the provided scene description*"
                 "Do not cite the prompt or scene description in your response, just continue the conversation describing this scene."
             ).format(img_prompt)
-            request = prompt
+            llm_message = prompt
 
         elif intent == "explain":    
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
@@ -816,7 +816,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
                 "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
             )
-            request = prompt
+            llm_message = prompt
             is_rag = True
         elif intent.startswith("recognize"): 
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
@@ -827,7 +827,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             instruction = (
                 "Recognize the image according to context."
             )
-            request = prompt
+            llm_message = prompt
         elif intent.startswith("import"):
             yield f"data: {json.dumps({'status': 'learning'})}\n\n"
             doc_source = None
@@ -844,7 +844,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 # FALLBACK: If import failed or was a directory, treat as chat so MCP can handle it
                 logging.info(f"Import yielded no knowledge. Falling back to chat intent.")
                 intent = "chat"
-                request = prompt
+                llm_message = prompt
                 instruction = (
                     "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
                     "If no *Known facts* provided, respond freely as a helpful conversational assistant."
@@ -855,7 +855,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 instruction=(
                     f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
                 )
-                request = prompt
+                llm_message = prompt
                 mem_id = card.get("id")
         elif intent.startswith("image"):
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
@@ -881,7 +881,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         # 3️⃣ основной стрим чата
         else:
             skip_history = False
-            request = prompt
+            llm_message = prompt
             instruction = (
                 "If *System Tool Output* (MCP) results are provided, they are the source of truth. Use them to provide a final answers. "
                 "If no relevant tool results are provided, respond freely as a helpful conversational assistant."
@@ -890,7 +890,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         async for chunk in await core_service.perform_prompt(
             ctx,
             instruction=instruction,
-            message=request,
+            message=llm_message,
             chat=chat,
             skip_history=skip_history,
             is_rag=is_rag,

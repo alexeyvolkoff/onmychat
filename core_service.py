@@ -1100,16 +1100,16 @@ async def perform_prompt(ctx: UserContext,
             save_history(ctx, history, chat_name)
 
     # Персонализация
-    user_prompt = ctx.settings.get("system_prompt", "")
-
     if ctx.settings.get("newUser", False):
-         user_prompt = user_context.DEFAULT_USER_PROMPT
-         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
+        system_prompt += user_context.DEFAULT_UNONBOARDED_PROMPT
+        system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
-         username = ctx.settings.get("username", "User")
-         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
+        username = ctx.settings.get("username", "User")
+        system_prompt += f"\n\n*User overrides*: {ctx.settings.get("system_prompt", user_context.DEFAULT_USER_PROMPT)}\n"
+        system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
-    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + user_prompt
+    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
+    logging.info(f"Model: {model}\nNSFW: {nsfw_enabled}\nSystem prompt: {system_prompt}")
 
     # Факты
     if facts_text:
