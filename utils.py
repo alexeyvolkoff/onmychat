@@ -219,7 +219,11 @@ def fetch_json_from_storage(omd_key: str, dest: str, filename: str):
     try:
         resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code == 200:
-            return resp.json()
+            try:
+                return resp.json()
+            except ValueError:
+                 logging.warning(f"Invalid JSON in {filename} from storage")
+                 return None
         elif resp.status_code == 404:
             return None
         else:
