@@ -1,0 +1,10 @@
+stages:
+  - deploy
+
+deploy_job:
+  stage: deploy
+  script:
+    - cd /home/alexey/projects/onmychat
+    - git fetch --all
+    - git checkout $CI_COMMIT_SHA
+    - sudo systemctl restart onmychat
