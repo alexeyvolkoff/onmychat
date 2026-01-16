@@ -3,6 +3,10 @@ stages:
 
 deploy_job:
   stage: deploy
+  tags:
+    - linux
+  only:
+    - main
   script:
     - cd /home/alexey/projects/onmychat
     - git fetch --all
