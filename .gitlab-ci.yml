@@ -8,7 +8,6 @@ deploy_job:
   only:
     - main
   script:
-    - cd /home/alexey/projects/onmychat
-    - git fetch --all
-    - git checkout $CI_COMMIT_SHA
+    - sudo -u alexey git -C /home/alexey/projects/onmychat fetch --all
+    - sudo -u alexey git -C /home/alexey/projects/onmychat checkout $CI_COMMIT_SHA
     - sudo systemctl restart onmychat
