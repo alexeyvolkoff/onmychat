@@ -1355,16 +1355,14 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
     chat = chat or "default"
     system_prompt = INTENT_PROMPT
-    history = load_history(ctx, chat)
-    
-    messages = [{"role": "system", "content": system_prompt}]
-    # Use limited history for context to avoid confusing the classifier with too much old conversation
-    messages.extend(history[-2:]) 
-    messages.append({"role": "user", "content": prompt})
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
     
     request_payload = {
         "messages": messages,
-        "model": MCP_MODEL,
+        "model": SFW_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.1, # Low temperature for classification

@@ -156,6 +156,7 @@ def save_user_settings(ctx: UserContext):
     if ctx.omd_key and ctx.omd_key in bindings["by_account"]:
         if ctx.storage:
             bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
+            save_bindings()
 
     # Save to local disk as cache/backup ONLY if no remote storage
     # AND only for Telegram users (numeric IDs) - strict separation for OMD users
@@ -198,6 +199,19 @@ def load_bindings():
         except Exception as e:
             print(f"[bindings] Load error: {e}")
             bindings = {"by_telegram": {}, "by_account": {}, "profiles": {}}
+
+def save_bindings():
+    """Сохранить биндинги в файл."""
+    try:
+        # Avoid saving profiles to disk in bindings file (they are separate files/remote)
+        data_to_save = {
+            "by_telegram": bindings["by_telegram"],
+            "by_account": bindings["by_account"]
+        }
+        with open(BINDINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"[bindings] Save error: {e}")
 
 
 
@@ -258,6 +272,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
                 storage = profile_storage
             
             bindings["by_account"][account_id] = {"telegram_id": None, "username": username, "storage": storage}
+            save_bindings()
             
             settings = load_user_settings(username, storage=storage, omd_key=account_id, force_reload=force_reload)
             settings["username"] = displayname
@@ -271,6 +286,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
     
     if storage:
          bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id, "storage": storage}
+         save_bindings()
 
     settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)
     ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
@@ -346,5 +362,6 @@ def bind(ctx: UserContext, account_id: str) -> UserContext:
     ctx.settings["omd_key"] = account_id
     ctx.settings["username"] = displayname
     save_user_settings(ctx)
+    save_bindings()
     return ctx
 
