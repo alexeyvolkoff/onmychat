@@ -1358,7 +1358,8 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     
     # Get last 4 messages from history
     try:
-        history = load_chat_history(ctx, chat)
+        from dialog_history import load_history
+        history = load_history(ctx, chat)
         last_messages = history[-4:] if history else []
         if last_messages:
             history_text = "\nChat History (last 4 messages):\n"
