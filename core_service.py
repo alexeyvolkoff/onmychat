@@ -100,17 +100,7 @@ INTENT_PROMPT = get_prompt("intent.txt")
 SAFETY_CHECK_PROMPT = get_prompt("safety_check.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
-DEFAULT_MCP_INSTRUCTIONS = (
-    "You are a file system agent. Your ONLY goal is to execute file operations requested by the user.\n"
-    "CRITICAL RULES:\n"
-    "1. EXPLORE FIRST: If the user mentions a folder or a source file, you MUST call list_omd_files or read_omd_file in the FIRST turn.\n"
-    "2. FILE SYSTEM PRIORITY: If a path is provided (e.g. /Device/...), you MUST explore the file system. Do NOT use search_memory for file tasks unless file exploration fails.\n"
-    "3. NO EARLY WRITES: It is FORBIDDEN to use write_omd_file on Turn 1 if any source paths are mentioned. You must gather data first.\n"
-    "4. NO HALLUCINATIONS: Do NOT guess file content. Use only text obtained from previous tool outputs.\n"
-    "5. SELF-CORRECT: If you receive an error about using the wrong tool, immediately retry with the correct tool.\n"
-    "6. CONTINUE UNTIL COMPLETE: After listing files, you MUST continue with read_omd_file and then write_omd_file if needed. Do NOT stop after just listing.\n"
-    "7. STEP-BY-STEP: List folder -> Read file -> (then and only then) Write result."
-)
+DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
 
 
 # Native Tool Definitions for Ollama
@@ -985,13 +975,17 @@ async def perform_prompt(ctx: UserContext,
                          mem_id: str = None,
                          img_source: str = None,
                          stream: bool = False,
-                         think: bool = False,
+                         intent: str = "chat",
                          event: str = None) -> str | AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
     #model = DEFAULT_MODEL
     b64_image = None
+    
+    # Internal flags
+    is_rag = intent in ["explain", "think"]
+    think = intent == "think"
 
     if chat == "default":
         history = []
@@ -1008,7 +1002,9 @@ async def perform_prompt(ctx: UserContext,
     logging.info(f"Loading facts: {collection} {is_rag}")
 
     # === MCP Intent Check ===
-    mcp_result = await check_and_execute_mcp(ctx, message)
+    mcp_result = ""
+    if intent == "tools":
+        mcp_result = await check_and_execute_mcp(ctx, message)
     
     # Flag that we are working with documents
     is_work_mode = False 
@@ -1018,6 +1014,13 @@ async def perform_prompt(ctx: UserContext,
         # Trigger work mode if tools were attempted. 
         # Even if they failed or found nothing, we should stay in professional "Work Mode".
         is_work_mode = True
+        
+        # Override/Append instruction
+        instruction += (
+             "\n\nResults from System Tools (MCP) are provided above. "
+             "They are the ABSOLUTE SOURCE OF TRUTH. Use them to answer. "
+             "If tools failed or found nothing, state that clearly."
+        )
 
     # Only load KB facts if MCP didn't run OR if a specific memory ID is being queried
     if not mcp_result or mem_id:
@@ -1361,7 +1364,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": MCP_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.1, # Low temperature for classification

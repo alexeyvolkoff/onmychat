@@ -636,9 +636,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         intent = "chat"
         event = None
         skip_history = False
-        is_rag = False
         mem_id = None
-        think = False
         img_source = None
 
         # Initialize chat if it's the first message of a new session
@@ -735,7 +733,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                         return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"
-            elif prompt.startswith("/tools") or intent == "tools":
+            elif prompt.startswith("/tools"):
                 # Provide an immediate, reliable list of tools
                 tools_list = await core_service.list_supported_tools(ctx)
 
@@ -757,9 +755,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
                 if file_path_or_url:
                     intent = f"recognize:{file_path_or_url}"
-            elif prompt.startswith("/think") or prompt.startswith("/explain"):  
-                intent = "explain"   
-                think = prompt.startswith("/think")
+            elif prompt.startswith("/think"):  
+                intent = "think"
+            elif prompt.startswith("/explain"):
+                intent = "explain"
     
         restricted_intents = ["tools"]
         
@@ -830,7 +829,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             ).format(img_prompt)
             llm_message = prompt
 
-        elif intent == "explain":    
+        elif intent == "explain" or intent == "think":    
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
     
             instruction=(
@@ -839,7 +838,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
             )
             llm_message = prompt
-            is_rag = True
         elif intent.startswith("recognize"): 
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
@@ -905,8 +903,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             skip_history = False
             llm_message = prompt
             instruction = (
-                "If *System Tool Output* (MCP) results are provided, they are the source of truth. Use them to provide a final answers. "
-                "If no relevant tool results are provided, respond freely as a helpful conversational assistant."
+                "Respond freely as a helpful conversational assistant."
             )
         # 3️⃣ ответ
         async for chunk in await core_service.perform_prompt(
@@ -915,9 +912,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             message=llm_message,
             chat=chat,
             skip_history=skip_history,
-            is_rag=is_rag,
+            intent=intent,
             mem_id=mem_id,
-            think=think,
             img_source=img_source,
             event=event,
             stream=True

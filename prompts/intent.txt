@@ -9,10 +9,10 @@ RULES:
 4. explain: For general questions, code requests, or deep explanations.
 5. recognize:<path>: For describing/analyzing the content of an image path/url.
 6. import:<path>: ONLY for EXPLICIT "import", "learn", or "add to memory" commands with a FILE path.
-   - *CRITICAL*: A directory path (e.g. /Data/) is NOT an import. Classify as 'chat'.
-   - *CRITICAL*: Using a file for a task (e.g. "Create invoice based on /file") is NOT an import. Classify as 'chat'.
+   - *CRITICAL*: A directory path (e.g. /Data/) is NOT an import. Classify as 'tools'.
+   - *CRITICAL*: Using a file for a task (e.g. "Create invoice based on /file") is NOT an import. Classify as 'tools'.
    - *NO NORMALIZATION*: Use the path EXACTLY as provided by the user. Do not remove segments like /Private/.
-7. tools: For questions about your system capabilities or supported tools.
+7. tools: For questions about system capabilities OR ANY requests involving file system paths not covered by 'learn' or 'import' (e.g. /Data, /home).
 
 EXAMPLES:
 - "How are you?" -> chat
@@ -20,8 +20,8 @@ EXAMPLES:
 - "Generate a cat" -> view
 - "Analyze this: /img.png" -> recognize:/img.png
 - "Import this file: /doc.txt" -> import:/doc.txt
-- "Create invoice based on /Data/old.pdf" -> chat (The agent will handle it)
-- "/Linux-desktop/Private/Data" -> chat (The agent will list it)
+- "Create invoice based on /Data/old.pdf" -> tools (The agent will read it)
+- "/Linux-desktop/Private/Data" -> tools (The agent will list it)
 
 If in doubt, respond with 'chat'.
 Return NOTHING except the classification and reason.
