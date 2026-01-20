@@ -1105,11 +1105,11 @@ async def perform_prompt(ctx: UserContext,
         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
         username = ctx.settings.get("username", "User")
-        system_prompt += f"\n\n*User overrides*: {ctx.settings.get("system_prompt", user_context.DEFAULT_USER_PROMPT)}\n"
+        system_prompt += f"\n\n*Personality overrides*: {ctx.settings.get("system_prompt", user_context.DEFAULT_USER_PROMPT)}\n"
         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
-    system_prompt += "\n\n*Personality, appearance and behaviour:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
-    logging.info(f"Model: {model}\nNSFW: {nsfw_enabled}\nSystem prompt: {system_prompt}")
+    system_prompt += "\n\n*Appearance overrides:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
+    logging.info(f"Model: {model}\nNSFW: {nsfw_enabled}\nUser: {username}")
 
     # Факты
     if facts_text:
