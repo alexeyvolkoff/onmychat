@@ -1355,6 +1355,26 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
     chat = chat or "default"
     system_prompt = INTENT_PROMPT
+    
+    # Get last 4 messages from history
+    try:
+        history = load_chat_history(ctx, chat)
+        last_messages = history[-4:] if history else []
+        if last_messages:
+            history_text = "\nChat History (last 4 messages):\n"
+            for msg in last_messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                # Skip assistant messages that are just tool calls or empty (optional, but good for context)
+                if content:
+                    history_text += f"{role}: {content}\n"
+            
+            # Append history to prompt, or inject into system prompt
+            # Injecting into system prompt is safer to distinguish context from current instruction
+            system_prompt += f"\n\n{history_text}\n"
+    except Exception as e:
+        logging.warning(f"Failed to load history for intent classification: {e}")
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
