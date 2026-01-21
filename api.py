@@ -11,10 +11,7 @@ import os
 import hashlib
 import email.utils
 import datetime
-import datetime
 import requests
-import subprocess
-import sys
 
 
 import core_service
