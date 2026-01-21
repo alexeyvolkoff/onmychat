@@ -11,4 +11,6 @@ deploy_job:
     - sudo -u alexey git -C /home/alexey/projects/onmychat fetch --all
     - sudo -u alexey git -C /home/alexey/projects/onmychat checkout main
     - sudo -u alexey git -C /home/alexey/projects/onmychat pull
+    - sudo -u alexey bash -c "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi"
+    - sudo -u alexey bash -c "source /home/alexey/projects/onmychat/venv/bin/activate && pip install -r /home/alexey/projects/onmychat/requirements.txt && playwright install"
     - sudo systemctl restart onmychat

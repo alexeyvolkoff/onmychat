@@ -8,3 +8,7 @@ pydantic==1.10.12
 aiohttp>=3.9
 python-multipart>=0.0.9
 Pillow>=10.0.0
+
+crawl4ai
+playwright
+duckduckgo-search

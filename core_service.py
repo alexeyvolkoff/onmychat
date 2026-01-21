@@ -1857,6 +1857,33 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
     return response.strip()
 
 # === Импорт и память ===
+
+async def scrape_with_crawl4ai(url: str) -> str:
+    """
+    Scrape a URL using Crawl4AI (Playwright-based) to get clean Markdown.
+    """
+    try:
+        # Lazy import to avoid crash if not installed
+        from crawl4ai import AsyncWebCrawler
+        
+        logging.info(f"[crawl4ai] Starting crawl for: {url}")
+        async with AsyncWebCrawler(verbose=False) as crawler:
+            result = await crawler.arun(url=url)
+            
+            if result.markdown:
+                 logging.info(f"[crawl4ai] Success, length: {len(result.markdown)}")
+                 return result.markdown
+            else:
+                 logging.warning(f"[crawl4ai] No markdown content returned")
+                 return ""
+                 
+    except ImportError:
+        logging.error("[crawl4ai] Library not installed. Please run: pip install crawl4ai playwright && playwright install")
+        return ""
+    except Exception as e:
+        logging.error(f"[crawl4ai] Error scraping {url}: {e}")
+        return ""
+
 async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     key = ctx.omd_key or ctx.settings.get("omd_key", "")
 
@@ -1873,8 +1900,15 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         
         raw_text = await fetch_document_text(url_or_path, key)
     else:
-        # External URL or fallback
-        raw_text = await fetch_document_text(url_or_path)
+        # External URL: Try Crawl4AI first for better parsing
+        if url_or_path.startswith("http"):
+            raw_text = await scrape_with_crawl4ai(url_or_path)
+        
+        # Fallback to standard fetch if Crawl4AI failed or returned empty
+        if not raw_text:
+            if url_or_path.startswith("http"):
+                 logging.info("[import] Crawl4AI yielded no result, falling back to standard fetch")
+            raw_text = await fetch_document_text(url_or_path)
 
     if raw_text.startswith("Failed to fetch document:") or raw_text.startswith("Unsupported file type:"):
         logging.error(f"[import] failed fetch: {raw_text}")    
