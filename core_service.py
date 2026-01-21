@@ -160,6 +160,25 @@ MCP_TOOLS = [
           }
       }
   },
+      }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_web",
+      "description": "Search the internet for real-time information. Use this when the user asks about current events, news, or topics not in your training data.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query to send to the search engine"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  },
   {
       "type": "function",
       "function": {
@@ -470,6 +489,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                      res = "Error: Do NOT use placeholders in write_omd_file. You must use read_omd_file first to get the actual content."
                 else:
                      res = await write_omd_file(ctx, args.get("path", ""), content)
+        elif name == "search_web":
+            res = await search_web(ctx, args.get("query", ""))
         elif name == "search_memory":
             # [TURN 1 SEARCH SHIELD]
             # Prevent using memory search on Turn 1 if user provided an explicit file path.
@@ -1855,6 +1876,71 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
     logging.info(f"Summary: {response}")    
 
     return response.strip()
+
+    return response.strip()
+
+# === Web Search Tool ===
+async def search_web(ctx: UserContext, query: str) -> str:
+    """
+    Search the web using DuckDuckGo.
+    """
+    try:
+        from duckduckgo_search import DDGS
+        
+        logging.info(f"[search] Searching web for: {query}")
+        # Synchronous library, run in executor if needed, but for now simple call
+        results = DDGS().text(query, max_results=5)
+        
+        if not results:
+            return "No results found."
+            
+        formatted_results = []
+        for r in results:
+            title = r.get("title", "")
+            href = r.get("href", "")
+            body = r.get("body", "")
+            formatted_results.append(f"- **[{title}]({href})**: {body}")
+            
+        return "\n\n".join(formatted_results)
+        
+    except ImportError:
+        return "Error: duckduckgo-search library not installed."
+    except Exception as e:
+        logging.error(f"[search] Error searching {query}: {e}")
+        return f"Error performing search: {e}"
+
+    return response.strip()
+
+# === Web Search Tool ===
+async def search_web(ctx: UserContext, query: str) -> str:
+    """
+    Search the web using DuckDuckGo.
+    """
+    try:
+        from duckduckgo_search import DDGS
+        
+        logging.info(f"[search] Searching web for: {query}")
+        # Synchronous library, run in executor if needed, but for now simple call
+        # DDGS().text is synchronous, might block event loop slightly but acceptable for now
+        results = DDGS().text(query, max_results=5)
+        
+        if not results:
+            return "No results found."
+            
+        formatted_results = []
+        for r in results:
+            title = r.get("title", "")
+            href = r.get("href", "")
+            body = r.get("body", "")
+            formatted_results.append(f"- **[{title}]({href})**: {body}")
+            
+        return "\n\n".join(formatted_results)
+        
+    except ImportError:
+        return "Error: duckduckgo-search library not installed."
+    except Exception as e:
+        logging.error(f"[search] Error searching {query}: {e}")
+        return f"Error performing search: {e}"
 
 # === Импорт и память ===
 
