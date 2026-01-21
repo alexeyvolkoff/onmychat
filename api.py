@@ -694,7 +694,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "/import": "import", "/learn": "import",
                 "/recognize": "recognize", "/detect": "recognize",
                 "/think": "think",
-                "/explain": "explain"
+                "/explain": "explain",
+                "/search": "tools"
             }
             
             intent = "chat"
