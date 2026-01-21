@@ -790,17 +790,23 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         # Check primary intent or prefixed intent (e.g. import:url)
         check_intent = intent.split(":")[0] if ":" in intent else intent
         
+        logging.info(f"AI Advanced: {ai_advanced}")
         if not ai_advanced:
              if check_intent in restricted_intents:
                   yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
                   return
+
+        logging.info(f"Check intent: {check_intent}")
+        if check_intent == "tools":
+             logging.info("Yielding searching status")
+             yield f"data: {json.dumps({'status': 'searching'})}\n\n"
              
-             if check_intent == "import":
-                  # Limit to 10 items for free accounts
-                  memories = memory_index.load_memories(ctx, collection="user")
-                  if len(memories) >= 10:
-                       yield f"data: {json.dumps({'delta': 'Free accounts are limited to 10 knowledge base items. Upgrade to Premium for unlimited storage.', 'role': 'assistant', 'done': True})}\n\n"
-                       return
+        if check_intent == "import":
+             # Limit to 10 items for free accounts
+             memories = memory_index.load_memories(ctx, collection="user")
+             if len(memories) >= 10:
+                 yield f"data: {json.dumps({'delta': 'Free accounts are limited to 10 knowledge base items. Upgrade to Premium for unlimited storage.', 'role': 'assistant', 'done': True})}\n\n"
+                 return
 
         if intent == "show":
             # 1️⃣ статус
