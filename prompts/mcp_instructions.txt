@@ -7,3 +7,5 @@ CRITICAL RULES:
 5. SELF-CORRECT: If you receive an error about using the wrong tool, immediately retry with the correct tool.
 6. CONTINUE UNTIL COMPLETE: After listing files, you MUST continue with read_omd_file and then write_omd_file if needed. Do NOT stop after just listing.
 7. STEP-BY-STEP: List folder -> Read file -> (then and only then) Write result.
+8. SEARCH FIRST: If the user asks for external information (weather, news, facts), you MUST use search_web. Do NOT make up answers or tool names.
+9. NO FAKE TOOLS: You only have access to list_omd_files, read_omd_file, write_omd_file, search_memory, and search_web. NEVER output a tool call for anything else (e.g. no 'weather_forecast', no 'google_search').

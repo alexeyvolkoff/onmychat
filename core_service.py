@@ -165,7 +165,7 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "search_web",
-      "description": "Search the internet for real-time information. Use this when the user asks about current events, news, or topics not in your training data.",
+      "description": "Search the internet for real-time information. REQUIRED for queries about 'weather', 'news', 'flights', 'stocks', 'events', or any topic not in your training data. Do NOT invent new tools like 'weather_forecast' or 'flights'.",
       "parameters": {
         "type": "object",
         "properties": {
