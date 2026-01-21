@@ -8,9 +8,7 @@ deploy_job:
   only:
     - main
   script:
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey git -C /home/alexey/projects/onmychat fetch --all
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey git -C /home/alexey/projects/onmychat checkout main
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey git -C /home/alexey/projects/onmychat pull
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey bash -c "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi"
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey bash -c "source /home/alexey/projects/onmychat/venv/bin/activate && pip install -r /home/alexey/projects/onmychat/requirements.txt && playwright install"
-    - echo "$SUDO_PASSWORD" | sudo -S systemctl restart onmychat
+    - sudo -u alexey git -C /home/alexey/projects/onmychat fetch --all
+    - sudo -u alexey git -C /home/alexey/projects/onmychat checkout main
+    - sudo -u alexey git -C /home/alexey/projects/onmychat pull
+    - sudo systemctl restart onmychat

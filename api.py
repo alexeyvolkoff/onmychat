@@ -12,6 +12,41 @@ import hashlib
 import email.utils
 import datetime
 import requests
+import subprocess
+import sys
+
+# === STARTUP DEPENDENCY CHECK ===
+try:
+    logging.getLogger().setLevel(logging.INFO)
+    logging.info("Checking dependencies...")
+    
+    # 1. Install pip requirements
+    req_file = os.path.join(os.path.dirname(__file__), "requirements.txt")
+    if os.path.exists(req_file):
+        logging.info(f"Installing dependencies from {req_file}...")
+        try:
+             subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
+             logging.info("Pip dependencies updated.")
+        except Exception as e:
+             logging.error(f"Failed to install requirements: {e}")
+
+    # 2. Install Playwright browsers (lazy check - assume if library is present, we might need browsers)
+    try:
+        import playwright
+        # Check if browsers are installed by running a dry run or just force install (idempotent-ish)
+        # We'll just run 'playwright install' which is safe to run repeatedly (checks manifest)
+        logging.info("Ensuring Playwright browsers are installed...")
+        subprocess.check_call([sys.executable, "-m", "playwright", "install"])
+        logging.info("Playwright browsers ready.")
+    except ImportError:
+        pass # Will satisfy in next restart if pip just installed it
+    except Exception as e:
+        logging.error(f"Failed to install Playwright browsers: {e}")
+
+except Exception as e:
+    # Don't crash app on startup install fail, log and proceed
+    logging.error(f"Startup dependency check failed: {e}")
+# ================================
 
 import core_service
 import user_context
