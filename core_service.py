@@ -1913,30 +1913,44 @@ async def search_web(ctx: UserContext, query: str) -> str:
 # === Web Search Tool ===
 async def search_web(ctx: UserContext, query: str) -> str:
     """
-    Search the web using DuckDuckGo.
+    Search the web using DuckDuckGo via Crawl4AI (headless browser) to bypass IP blocks.
     """
     try:
-        from duckduckgo_search import DDGS
+        from crawl4ai import AsyncWebCrawler
+        import urllib.parse
         
         logging.info(f"[search] Searching web for: {query}")
-        # Synchronous library, run in executor if needed, but for now simple call
-        # DDGS().text is synchronous, might block event loop slightly but acceptable for now
-        results = DDGS().text(query, max_results=5)
         
-        if not results:
-            return "No results found."
-            
-        formatted_results = []
-        for r in results:
-            title = r.get("title", "")
-            href = r.get("href", "")
-            body = r.get("body", "")
-            formatted_results.append(f"- **[{title}]({href})**: {body}")
-            
-        return "\n\n".join(formatted_results)
+        encoded_query = urllib.parse.quote_plus(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
         
-    except ImportError:
-        return "Error: duckduckgo-search library not installed."
+        async with AsyncWebCrawler(verbose=True) as crawler:
+            result = await crawler.arun(url=url)
+            
+            if not result.markdown:
+                return "No results found."
+            
+            # Limit response size to avoid context overflow
+            # We skip the first few lines which are usually navigation/headers
+            lines = result.markdown.split('\n')
+            
+            # Simple heuristic: find lines that look like search results (start with ##)
+            relevant_content = []
+            capturing = False
+            for line in lines:
+                if line.strip().startswith("##"):
+                    capturing = True
+                if capturing:
+                    relevant_content.append(line)
+                    if len(relevant_content) > 20: # Limit to ~20 lines of results
+                        break
+            
+            if not relevant_content:
+                # Fallback: return raw markdown snippet
+                return result.markdown[:1500]
+                
+            return "\n".join(relevant_content)
+
     except Exception as e:
         logging.error(f"[search] Error searching {query}: {e}")
         return f"Error performing search: {e}"
