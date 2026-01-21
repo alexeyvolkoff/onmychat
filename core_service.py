@@ -408,7 +408,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     # We do NOT include full history here to keep the tool agent focused on the IMMEDIATE task.
     messages = [
         {"role": "system", "content": system_instruction + "\nCRITICAL: Respond ONLY with tool calls. Do NOT apologize. Do NOT explain. If no more tools are needed, respond with 'NO_TOOL'."},
-        {"role": "user", "content": f"User Request: {message}\nFocus only on file operations.\n{path_hint}"}
+        {"role": "user", "content": f"User Request: {message}\nFocus only on file operations. If the request is about WEATHER, NEWS, FLIGHTS, stocks, or current events, use 'search_web'. YOU DO NOT HAVE OTHER TOOLS.\n{path_hint}"}
     ]
     
     all_tool_results = ""
