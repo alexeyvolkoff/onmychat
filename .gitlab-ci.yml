@@ -49,6 +49,6 @@ upgrade_job:
               sys.exit(os.waitstatus_to_exitcode(status))
       if __name__ == "__main__": run_as_user(sys.argv[1])
       EOF
-    - python3 /tmp/ci_upgrade.py "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi && source venv/bin/activate && pip install -r requirements.txt && playwright install && sudo playwright install-deps"
+    - python3 /tmp/ci_upgrade.py "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi && source venv/bin/activate && pip install -r requirements.txt && playwright install && echo \"$SUDO_PASSWORD\" | sudo -S ./venv/bin/playwright install-deps"
     - rm /tmp/ci_upgrade.py
     - sudo systemctl restart onmychat
