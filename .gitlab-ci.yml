@@ -19,6 +19,5 @@ upgrade_job:
     - linux
   when: manual
   script:
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey bash -c "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi"
-    - echo "$SUDO_PASSWORD" | sudo -S -u alexey bash -c "source /home/alexey/projects/onmychat/venv/bin/activate && pip install -r /home/alexey/projects/onmychat/requirements.txt && playwright install"
+    - python3 /home/alexey/projects/onmychat/ci_upgrade.py "cd /home/alexey/projects/onmychat && if [ ! -d venv ]; then python3 -m venv venv; fi && source venv/bin/activate && pip install -r requirements.txt && playwright install"
     - sudo systemctl restart onmychat
