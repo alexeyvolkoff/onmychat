@@ -160,8 +160,7 @@ MCP_TOOLS = [
           }
       }
   },
-      }
-  },
+
   {
     "type": "function",
     "function": {

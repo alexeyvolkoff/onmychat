@@ -38,8 +38,12 @@ SUPPORTED_CONVERT_EXTS = {"docx", "odt", "pdf", "epub", "fb2", "csv"}
 SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
 
 
+import torch
+
 warnings.filterwarnings("ignore", category=FutureWarning)
-_model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+logging.info(f"Loading SentenceTransformer on {device}")
+_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
 
 BASE_INDEX_DIR = "memory_index"
 
