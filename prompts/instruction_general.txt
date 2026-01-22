@@ -8,6 +8,7 @@ Create a high-quality SDXL prompt for the requested object or scene: {prompt}
 2.  **Structure**: `[Main Subject], [Details], [Environment], [Lighting], [Style]`.
 3.  **Perspective**: External observer view.
 4.  **Visuals**: Focus on physical descriptions, textures, colors, and lighting.
+5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
 
 **Example:**
 Title: Cyber City

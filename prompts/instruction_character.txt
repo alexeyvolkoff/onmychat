@@ -13,6 +13,7 @@ Your goal is to depict the character performing the requested action with high f
 2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`.
 3.  **Emphasis**: Use parentheses for importance: `(keyword:1.1)` or `((keyword))`. Highlight distinctive features from the description.
 4.  **Context**: Translate conversational context into visual details.
+5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
 
 **Components:**
 1.  **Subject**: Explicitly describe the character using their defined features (hair, body type, etc), anatomy, pose, and interaction.
