@@ -1,1 +1,1 @@
-(focused subject, subject_focus, masterpiece, best_quality, highres, ultra_detailed, sharp focus, detailed_eyes)
+(score_9, score_8_up, score_7_up, masterpiece, best_quality, highres, ultra_detailed, sharp focus, detailed_eyes)

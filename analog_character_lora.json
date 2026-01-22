@@ -44,8 +44,8 @@
   },
   "6": {
     "inputs": {
-      "width": 768,
-      "height": 1024,
+      "width": 896,
+      "height": 1152,
       "batch_size": 1
     },
     "class_type": "EmptyLatentImage",
@@ -109,7 +109,7 @@
         "name": "Real Humans",
         "type": "style",
         "lora": "real-humans-PublicPrompts.safetensors",
-        "strength": 1
+        "strength": 0.7
       },
       "lora_4": {
         "on": false,
@@ -188,20 +188,11 @@
       "title": "CLIP Set Last Layer"
     }
   },
-  "121": {
-    "inputs": {
-      "face_model": "june.safetensors"
-    },
-    "class_type": "ReActorLoadFaceModel",
-    "_meta": {
-      "title": "Load Face Model 🌌 ReActor"
-    }
-  },
   "123": {
     "inputs": {
       "amount": 0.5,
       "image": [
-        "125",
+        "41",
         0
       ]
     },
@@ -210,37 +201,10 @@
       "title": "🔧 Image Contrast Adaptive Sharpening"
     }
   },
-  "125": {
-    "inputs": {
-      "enabled": false,
-      "swap_model": "hyperswap_1b_256.onnx",
-      "facedetection": "retinaface_resnet50",
-      "face_restore_model": "none",
-      "face_restore_visibility": 1,
-      "codeformer_weight": 0.5,
-      "detect_gender_input": "female",
-      "detect_gender_source": "female",
-      "input_faces_index": "0",
-      "source_faces_index": "0",
-      "console_log_level": 1,
-      "input_image": [
-        "41",
-        0
-      ],
-      "face_model": [
-        "121",
-        0
-      ]
-    },
-    "class_type": "ReActorFaceSwap",
-    "_meta": {
-      "title": "ReActor 🌌 Fast Face Swap"
-    }
-  },
   "126": {
     "inputs": {
       "lora_name": "dmd2_sdxl_4step_lora.safetensors",
-      "strength_model": 0.9,
+      "strength_model": 1,
       "strength_clip": 1,
       "model": [
         "127",
