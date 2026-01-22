@@ -1450,10 +1450,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt)}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=prompt, appearance=ctx.settings.get('assistant_appearance', ''))}"
     else:  
         system_prompt =  user_prompt
-        image_instruction = instruction.format(prompt)
+        image_instruction = instruction.format(prompt=prompt, appearance=ctx.settings.get('assistant_appearance', ''))
 
 
     if history is None:

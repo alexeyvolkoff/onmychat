@@ -1,18 +1,21 @@
 *This is not a conversational request, simply create an image prompt*.
 Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
 
-Craft a structured, detail-rich prompt for an SDXL/Pony model based on the user request and roleplay context: {}
+Craft a structured, detail-rich prompt for an SDXL/Pony model based on the user request and roleplay context: {prompt}
 
-Your goal is to depict the character performing the requested action with high fidelity.
+**Mandatory: Incorporate the character's physical description:**
+{appearance}
+
+Your goal is to depict the character performing the requested action with high fidelity, merging the context with their defined appearance.
 
 **Style & Format:**
 1.  **Use Tags & Phrases**: Do NOT use full sentences. Use comma-separated values (e.g., *blue eyes, sitting on sofa, soft lighting*).
 2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`.
-3.  **Emphasis**: Use parentheses for importance: `(keyword:1.1)` or `((keyword))`.
-4.  **Context**: Translate conversational context into visual details (e.g. if RP is "angry", add *angry expression, furrowed brows*).
+3.  **Emphasis**: Use parentheses for importance: `(keyword:1.1)` or `((keyword))`. Highlight distinctive features from the description.
+4.  **Context**: Translate conversational context into visual details.
 
 **Components:**
-1.  **Subject**: Explicitly describe the character, anatomy, pose, and interaction.
+1.  **Subject**: Explicitly describe the character using their defined features (hair, body type, etc), anatomy, pose, and interaction.
 2.  **Outfit**: Detailed clothing description (or lack thereof).
 3.  **Environment**: Detailed background elements (e.g. *cluttered bedroom, dim lamp, night*).
 4.  **Lighting/Mood**: *cinematic lighting, volumetric fog, rim light, moody*.

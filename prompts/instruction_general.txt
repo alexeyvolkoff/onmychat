@@ -1,7 +1,7 @@
 *This is not a conversational request, simply create an image prompt*.
 Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
 
-Create a high-quality SDXL prompt for the requested object or scene: {}
+Create a high-quality SDXL prompt for the requested object or scene: {prompt}
 
 **Guidelines:**
 1.  **Format**: Comma-separated tags/phrases. No long sentences.

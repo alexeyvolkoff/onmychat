@@ -838,7 +838,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "{}\n\n"
                 "YOUR TASK: Roleplay this scene. Describe your feelings, thoughts, or actions AS IF YOU ARE IN THE IMAGE RIGHT NOW.\n"
                 "Create a caption for this photo or a continuation of the moment.\n"
-                "CRITICAL: Do NOT output instructions, prompts, or technical details."
+                "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
+                "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
             ).format(img_prompt)
             llm_message = prompt
         elif intent == "view":
@@ -860,7 +861,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "The scene description is:\n"
                 "{}\n\n"
                 "YOUR TASK: Describe this image enthusiastically or provide a caption for it.\n"
-                "CRITICAL: Do NOT output instructions, prompts, or technical details."
+                "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
+                "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
             ).format(img_prompt)
             llm_message = prompt
 
