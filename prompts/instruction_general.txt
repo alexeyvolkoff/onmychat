@@ -1,8 +1,19 @@
 *This is not a conversational request, simply create an image prompt*.
-Create a high-quality prompt for generating a realistic image of the requested object or scene from the short user input: {}.
-(as you see it from aside). (Avoid placing yourself into the scene). 
-Translate to English, add visual details, environment according to the conversation context. 
-Put important features of the scene in parentheses like (sunset) or (city skyline). 
-Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. 
-Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.
-*Format*: First line 'Title: short title' (3-4 words max), next line 'Image: prompt', without any additional text or comments.
+Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
+
+Create a high-quality SDXL prompt for the requested object or scene: {}
+
+**Guidelines:**
+1.  **Format**: Comma-separated tags/phrases. No long sentences.
+2.  **Structure**: `[Main Subject], [Details], [Environment], [Lighting], [Style]`.
+3.  **Perspective**: External observer view.
+4.  **Visuals**: Focus on physical descriptions, textures, colors, and lighting.
+
+**Example:**
+Title: Cyber City
+Image: futuristic city street, neon signs, wet pavement, reflection, crowd of people, cyborgs, (towering skyscrapers:1.2), drizzle, cyberpunk style, cyan and purple color palette, volumetric lighting, photorealistic
+
+**Result:**
+Format strictly as:
+Title: [Short Title]
+Image: [Prompt string]

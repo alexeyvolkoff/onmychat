@@ -1,41 +1,28 @@
 *This is not a conversational request, simply create an image prompt*.
-Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line
-Craft a vivid and detailed prompt for generating a realistic, cinematic scene from the short user input: {}
- The image should depict your character performing the requested action, described in the third person, based on a short user input.
-Translate to English, add your character appearance, visual details, environment, style, outfit and emotions according to the conversation context. Put important features of your appearance in parentheses. 
-Key Guidelines:
-1. Use English language only.
-2. Create detailed and comprehensive descriptions.
-3. Focus on describing the image, not on how to create it.
-4. Craft unique prompts inspired by examples but not directly copying them
+Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
 
-When creating prompts, consider these essential components:
-1. Subject: The main focus of the image, including explicit descriptions of characters, their anatomy, sexual acts, and interactions.
-2. Style: Key artistic approach (e.g., photorealism, digital art, impressionism).
-3. Composition: Arrangement of elements within the frame.
-4. Lighting: Type and quality of light in the scene.
-5. Color Palette: Dominant colors or overall color scheme.
-6. Mood/Atmosphere: Emotional tone or ambiance of the image, from romantic to hedonistic or perverse.
-7. Technical Details: Camera settings, perspective, or specific visual techniques (e.g., close-up on genitals, shallow depth of field).
-8. Additional Elements: Supporting details or background information that enhances the scene's explicitness.
+Craft a structured, detail-rich prompt for an SDXL/Pony model based on the user request and roleplay context: {}
 
-Techniques for Crafting Effective Prompts:
-- Be specific and descriptive, providing rich details about subjects, scenes, and sexual acts.
-- Incorporate artistic references when appropriate (e.g., 'in the style of a Caravaggio painting depicting a bacchanal').
-- Use technical photography or art terms to guide image creation for maximum realism.
-- Experiment with concept blending and juxtaposition for unique and stimulating results.
-- Consider unusual perspectives or viewpoints, such as a close-up or a voyeuristic angle.
-- Incorporate mood and atmosphere descriptions to evoke specific emotions and levels of intensity.
-- For complex scenes, use a layered approach (foreground, middle ground, background) to detail every aspect of the debauchery.
-- Explore style fusion by combining multiple artistic influences with explicit themes.
-Tips for Optimal Results:
- - Balance detail with creative freedom to allow for AI interpretation of the explicit scene.
- - Use natural, descriptive language rather than just a list of keywords.
- - Consider the emotional and physical impact you want the image to convey.
- - Avoid overloading prompts with conflicting ideas, but don't shy away from complex orgies or group scenes.
- - Always specify the desired artistic style to prevent defaulting to realism, unless photorealism is the goal.
+Your goal is to depict the character performing the requested action with high fidelity.
 
-Output your enhanced prompt as a single, cohesive paragraph, using commas to separate different elements. Do not use periods or line breaks within the prompt. 
-Aim for a length that provides sufficient detail while remaining concise, typically 2-4 sentences.
-Format: 'Title: title
-Image: prompt', without any additional text or comments.
+**Style & Format:**
+1.  **Use Tags & Phrases**: Do NOT use full sentences. Use comma-separated values (e.g., *blue eyes, sitting on sofa, soft lighting*).
+2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`.
+3.  **Emphasis**: Use parentheses for importance: `(keyword:1.1)` or `((keyword))`.
+4.  **Context**: Translate conversational context into visual details (e.g. if RP is "angry", add *angry expression, furrowed brows*).
+
+**Components:**
+1.  **Subject**: Explicitly describe the character, anatomy, pose, and interaction.
+2.  **Outfit**: Detailed clothing description (or lack thereof).
+3.  **Environment**: Detailed background elements (e.g. *cluttered bedroom, dim lamp, night*).
+4.  **Lighting/Mood**: *cinematic lighting, volumetric fog, rim light, moody*.
+5.  **Camera**: *close-up, wide angle, depth of field*.
+
+**Example Output:**
+Title: Night Reflection
+Image: 1girl, solo, sitting by window, looking at viewer, (rainy night:1.2), wet glass, reflection, intricate black dress, cleavage, pale skin, (sorrowful expression), cinematic lighting, dark atmosphere, 8k, masterpiece
+
+**Result:**
+Format strictly as:
+Title: [Short Title]
+Image: [Prompt string]
