@@ -1526,12 +1526,25 @@ def extract_title_and_prompt(response: str) -> tuple[str, str]:
     title = ""
     img_prompt = ""
     
-    for line in lines:
-        line = line.strip()
-        if line.startswith("Title:"):
-            title = line[6:].strip()
-        elif line.startswith("Image:"):
-            img_prompt = line[6:].strip()
+    # Try to find "Image:" marker and take everything after it
+    if "Image:" in response:
+        parts = response.split("Image:", 1)
+        # Search for title in the first part
+        title_part = parts[0].strip()
+        img_prompt = parts[1].strip()
+        
+        for line in title_part.split('\n'):
+             if line.strip().startswith("Title:"):
+                 title = line.strip()[6:].strip()
+                 break
+    else:
+        # Fallback loop for other formats or if Image: not found above (though check catches it)
+        for line in lines:
+            line = line.strip()
+            if line.startswith("Title:"):
+                title = line[6:].strip()
+            elif line.startswith("Image:"):
+                img_prompt = line[6:].strip()
     
     # Fallback: if no Title found, use image prompt or generate from prompt
     if not title and img_prompt:
