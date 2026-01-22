@@ -830,6 +830,8 @@ async def generate_image_workflow(workflow) -> bytes:
                 async with session.post(f"{COMFY_API_URL}/prompt", json=payload) as resp:
                     resp_data = await resp.json()
                     prompt_id = resp_data.get("prompt_id")
+                    if not prompt_id:
+                        logging.error(f"ComfyUI Error: {resp_data}")
                     logging.info(f"Prompt ID: {prompt_id}")
 
                 # Listen for messages
