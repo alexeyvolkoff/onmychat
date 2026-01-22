@@ -1706,14 +1706,14 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
 
     # Activate LoRAs and set strength
     #lora_count = len(active_lora_keys)
-    target_strength = 1.0
+    #target_strength = 1.0
     #if (style.startswith("perfect") or style.startswith("perfection")) and lora_count > 1:
     #    target_strength = 0.6
     
     for key in active_lora_keys:
         workflow_json["103"]["inputs"][key]["on"] = True
-        workflow_json["103"]["inputs"][key]["strength"] = target_strength
-        logging.info(f"Activated LoRA {key} with strength {target_strength}")
+        #workflow_json["103"]["inputs"][key]["strength"] = target_strength
+        logging.info(f"Activated LoRA {key} with strength {workflow_json["103"]["inputs"][key]["strength"]}")
 
     logging.info(f"Generating with model: {model}")
     img_data, filename = await generate_image_workflow(workflow_json)

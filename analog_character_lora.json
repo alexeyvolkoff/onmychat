@@ -199,7 +199,7 @@
   },
   "123": {
     "inputs": {
-      "amount": 0.5,
+      "amount": 0.2,
       "image": [
         "125",
         0
@@ -240,7 +240,7 @@
   "126": {
     "inputs": {
       "lora_name": "dmd2_sdxl_4step_lora.safetensors",
-      "strength_model": 1,
+      "strength_model": 0.9,
       "strength_clip": 1,
       "model": [
         "127",
