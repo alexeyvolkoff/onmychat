@@ -93,11 +93,12 @@ def save_history(ctx: UserContext, history: list, chat: str = "default"):
             dest = f"{ctx.storage}/chats"
             upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")
         else:
-            # локальный fallback
-            path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            # локальный fallback - только для непривязанных телеграм акков
+            if ctx.user_id.isdigit():
+                path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(history, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[history] Save error: {ctx.user_id} {e}")
 
@@ -167,11 +168,12 @@ def save_chats_index(ctx: UserContext, chats: dict):
                 "application/json"
             )
         else:
-            # --- локальный fallback ---
-            path = _chats_index_path(ctx.user_id)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(chats, f, ensure_ascii=False, indent=2)
+            # --- локальный fallback - только для непривязанных телеграм акков ---
+            if ctx.user_id.isdigit():
+                path = _chats_index_path(ctx.user_id)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(chats, f, ensure_ascii=False, indent=2)
 
     except Exception as e:
         print(f"[chats] Save error: {ctx.user_id} {e}")
