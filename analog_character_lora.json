@@ -130,7 +130,7 @@
         "name": "Judith",
         "type": "character",
         "lora": "JudithCB_r2-000011.safetensors",
-        "strength": 0.95
+        "strength": 1
       },
       "lora_7": {
         "on": false,
@@ -199,7 +199,7 @@
   },
   "123": {
     "inputs": {
-      "amount": 0.2,
+      "amount": 0.5,
       "image": [
         "125",
         0
