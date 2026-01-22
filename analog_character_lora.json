@@ -201,7 +201,7 @@
     "inputs": {
       "amount": 0.5,
       "image": [
-        "133",
+        "125",
         0
       ]
     },
@@ -275,70 +275,6 @@
     "class_type": "PreviewImage",
     "_meta": {
       "title": "Preview Image"
-    }
-  },
-  "132": {
-    "inputs": {
-      "model_name": "bbox/face_yolov8m.pt"
-    },
-    "class_type": "UltralyticsDetectorProvider",
-    "_meta": {
-      "title": "Ultralytics Detector Provider"
-    }
-  },
-  "133": {
-    "inputs": {
-      "guide_size": 512,
-      "guide_size_for": true,
-      "max_size": 1024,
-      "seed": 885015153121275,
-      "steps": 20,
-      "cfg": 8,
-      "sampler_name": "euler",
-      "scheduler": "normal",
-      "denoise": 0.4,
-      "feather": 5,
-      "noise_mask": true,
-      "force_inpaint": true,
-      "bbox_threshold": 0.5,
-      "bbox_dilation": 10,
-      "bbox_crop_factor": 3,
-      "sam_detection_hint": "center-1",
-      "spot_percent": 0,
-      "wildcard": "",
-      "cycle": 1,
-      "image": [
-        "125",
-        0
-      ],
-      "model": [
-        "126",
-        0
-      ],
-      "clip": [
-        "104",
-        0
-      ],
-      "vae": [
-        "127",
-        2
-      ],
-      "positive": [
-        "85",
-        0
-      ],
-      "negative": [
-        "4",
-        0
-      ],
-      "bbox_detector": [
-        "132",
-        0
-      ]
-    },
-    "class_type": "FaceDetailer",
-    "_meta": {
-      "title": "FaceDetailer"
     }
   }
 }
