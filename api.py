@@ -101,6 +101,7 @@ class UpdateAssistantInput(BaseModel):
     assistant_title: str | None = None
     assistant_appearance: str | None = None
     assistant_model: str | None = None
+    user_name: str | None = None
 
 class AvatarGenerateInput(BaseModel):
     omd_key: str
@@ -108,12 +109,79 @@ class AvatarGenerateInput(BaseModel):
     character_lora: str | None = None
     prompt: str = ""
 
+# ... (ommitted lines)
+
+@app.get("/assistant")
+async def assistant_info(omd_key: str):
+    # Force reload settings from storage to ensure we have the latest data (bypass cache)
+    ctx = get_ctx(omd_key, force_reload=True)
+    try:
+        assistant = {
+            "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
+            "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
+            "system_prompt": ctx.settings.get("system_prompt", ""),
+            "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
+            "style": ctx.settings.get("style", ""),
+            "nsfw": ctx.settings.get("nsfw", False),
+            "model": ctx.settings.get("assistant_model", ""),
+            "avatar_version": await core_service.get_avatar_version(ctx),
+            "omd_key": ctx.omd_key or omd_key,
+            "user_name": ctx.settings.get("name", "User")
+        }
+        return assistant
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ... (ommitted lines)
+
+@app.post("/updateAssistant")
+async def update_assistant(request: Request):
+    try:
+        body = await request.json()
+        logging.info(f"UpdateAssistant payload: {body}")
+        data = UpdateAssistantInput(**body)
+    except Exception as e:
+        logging.error(f"Validation error: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+
+    ctx = get_ctx(data.omd_key)
+    try:
+        # Update settings with provided values
+        if data.nsfw is not None:
+            ctx.settings["nsfw"] = data.nsfw
+        if data.style is not None:
+            ctx.settings["style"] = data.style
+        if data.system_prompt is not None:
+            ctx.settings["system_prompt"] = data.system_prompt
+        if data.assistant_appearance is not None:
+            ctx.settings["assistant_appearance"] = data.assistant_appearance
+        if data.assistant_name is not None:
+            ctx.settings["assistant_name"] = data.assistant_name
+        if data.assistant_title is not None:
+            ctx.settings["assistant_title"] = data.assistant_title
+        if data.assistant_model is not None:
+            ctx.settings["assistant_model"] = data.assistant_model
+        if data.user_name is not None:
+            ctx.settings["name"] = data.user_name
+        
+        user_context.save_user_settings(ctx)
+        
+        settings = ctx.settings.copy()
+        settings["omd_key"] = ctx.omd_key
+        
+        return {"status": "ok", "settings": settings, "avatar_version": await core_service.get_avatar_version(ctx)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 class AvatarUpdateInput(BaseModel):
     omd_key: str
     image_path: str
     style: str | None = None
     character_lora: str | None = None
     assistant_model: str | None = None
+    assistant_appearance: str | None = None
 
 class SignoutInput(BaseModel):
     omd_key: str
@@ -269,7 +337,7 @@ async def generate_avatar_endpoint(data: AvatarGenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
         # Use hardcoded prompt for avatar generation as requested
-        prompt = "social profile photo, headshot"
+        prompt = "social profile photo, office style, headshot"
         result = await core_service.generate_avatar(ctx, data.style, data.character_lora, prompt)
         if result and "image" in result:
              return {"image": result["image"], "url": result.get("url")}
@@ -290,8 +358,10 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
             ctx.settings["assistant_model"] = data.assistant_model
         if data.character_lora:
             ctx.settings["character_lora"] = data.character_lora
+        if data.assistant_appearance:
+            ctx.settings["assistant_appearance"] = data.assistant_appearance
         
-        if data.style or data.assistant_model or data.character_lora:
+        if data.style or data.assistant_model or data.character_lora or data.assistant_appearance:
             user_context.save_user_settings(ctx)
 
         # The image path provided is just filename in 'generated' folder (e.g. AVATAR_....png)
