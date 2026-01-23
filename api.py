@@ -268,7 +268,9 @@ async def assistant_avatar(
 async def generate_avatar_endpoint(data: AvatarGenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        result = await core_service.generate_avatar(ctx, data.style, data.character_lora, data.prompt)
+        # Use hardcoded prompt for avatar generation as requested
+        prompt = "social profile photo, headshot"
+        result = await core_service.generate_avatar(ctx, data.style, data.character_lora, prompt)
         if result and "image" in result:
              return {"image": result["image"], "url": result.get("url")}
         else:
