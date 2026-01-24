@@ -420,6 +420,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     max_turns = 8 # Increased for complex autonomous tasks
     listed_paths = set()
     known_files = set() # Strict cache of verified files
+    call_history = set() # Prevent repeated failed attempts
     has_read_file = False
     
     # Identify if the request likely needs file content
@@ -433,7 +434,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if not listed_paths:
              guidance += "Step 1: You MUST call `list_omd_files` on the directory mentioned by the user."
         elif not has_read_file and is_data_request:
-             guidance += f"Step 2: You have the listing. You MUST now PICK A FILE (not a directory) and call `read_omd_file` on it. Candidates: {sorted(list(known_files)[:5])}"
+             # Hyper-specific guidance: inject the actual filenames we found
+             short_files = [os.path.basename(f) for f in known_files]
+             guidance += f"Step 2: You have the listing. MUST pick a FILE (not a directory) and call `read_omd_file`. Verified Files: {short_files[:10]}"
         else:
              guidance += "Final Step: You have gathered enough information. ACHIEVE THE GOAL or respond to the user. If no more tools needed, respond with 'NO_TOOL'."
              
@@ -503,59 +506,79 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         
         logging.info(f"[MCP][Turn {turn+1}] Sequential Tool Call: {name}({args})")
         
-        res = ""
-        if name == "list_omd_files":
-            path_arg = args.get("path", "").strip()
-            
-            # [LOOP PREVENTION]
-            if path_arg.rstrip("/") in listed_paths:
-                 res = f"Note: You already listed '{path_arg}'. Use the information you already have or list a DIFFERENT directory."
-                 logging.info(f"[MCP] Blocked redundant list for {path_arg}")
-            else:
-                 res = await list_omd_files(ctx, path_arg)
-                 if not res.startswith("Error"):
-                      listed_paths.add(path_arg.rstrip("/"))
-                      # Populate known_files to prevent hallucinations
-                      # Simple filename extractor from list output
-                      matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
-                      for f in matches:
-                           known_files.add(f"{path_arg.rstrip('/')}/{f.strip()}")
-        
-        elif name == "read_omd_file":
-            path_arg = args.get("path", "").strip()
-            
-            # [ANTI-HALLUCINATION] List before Read
-            # We encourage the model to list first, but if it knows the file, we check our cache
-            path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
-            
-            # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
-            if path_arg.rstrip("/") in listed_paths:
-                 res = f"ERROR: '{path_arg}' is a DIRECTORY. You cannot read its content as a file. Use `list_omd_files` on it instead."
-                 logging.warning(f"[MCP] Blocked directory read: {path_arg}")
-            elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
-                 res = f"ERROR: File '{os.path.basename(path_arg)}' was NOT found in the listing for '{path_dir}'. Please list the directory again if you think this is a mistake, or check the filename."
-                 logging.warning(f"[MCP] Blocked hallucinated read: {path_arg}")
-            else:
-                 res = await read_omd_file(ctx, path_arg)
-                 if not res.startswith("Error"):
-                      has_read_file = True
-        elif name == "write_omd_file":
-            # [TURN 1 SHIELD]
-            # Prevent early writes if source paths are mentioned but not yet processed.
-            if turn == 0 and potential_paths:
-                 res = "Error: It is FORBIDDEN to write on Turn 1 when source paths are mentioned. You MUST use list_omd_files or read_omd_file first to gather data and avoid hallucination."
-                 logging.warning(f"[MCP] Turn 1 Write Blocked: {args.get('path')}")
-            else:
-                content = args.get("content", "")
-                # [ROBUST WRITE SHIELD]
-                # If the content looks like an error, placeholder, or failure report, reject it.
-                forbidden_patterns = ["[", "...", "Failed to fetch", "Error reading", "No information", "Access denied", "403"]
-                is_invalid = any(pattern in content for pattern in forbidden_patterns)
-                
-                if is_invalid:
-                     res = "Error: Do NOT use `write_omd_file` to save error messages, placeholders, or failure reports. You must only write if you have successfully extracted the required data."
-                else:
-                     res = await write_omd_file(ctx, args.get("path", ""), content)
+        # [REPETITION BLOCK]
+        # Hash the call to check for duplication in this session
+        call_id_str = f"{name}:{json.dumps(args, sort_keys=True)}"
+        if call_id_str in call_history:
+             # Model is looping. Inject a forceful mechanical block.
+             res = f"SYSTEM ERROR: You already called {name} with these arguments and it didn't solve the task. DO NOT REPEAT. Pick a DIFFERENT file from the list or change your approach."
+             logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
+        else:
+             call_history.add(call_id_str)
+             
+             res = ""
+             if name == "list_omd_files":
+                  path_arg = args.get("path", "").strip()
+                  
+                  # [LOOP PREVENTION]
+                  if path_arg.rstrip("/") in listed_paths:
+                       res = f"Note: You already listed '{path_arg}'. Use the information you already have or list a DIFFERENT directory."
+                       logging.info(f"[MCP] Blocked redundant list for {path_arg}")
+                  else:
+                       res = await list_omd_files(ctx, path_arg)
+                       if not res.startswith("Error"):
+                            listed_paths.add(path_arg.rstrip("/"))
+                            # Populate known_files to prevent hallucinations
+                            # Simple filename extractor from list output
+                            matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
+                            for f in matches:
+                                 known_files.add(f"{path_arg.rstrip('/')}/{f.strip()}")
+             
+             elif name == "read_omd_file":
+                 path_arg = args.get("path", "").strip()
+                 
+                 # [ANTI-HALLUCINATION] List before Read
+                 # We encourage the model to list first, but if it knows the file, we check our cache
+                 path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
+                 
+                 # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
+                 if path_arg.rstrip("/") in listed_paths:
+                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You cannot read its content as a file. Use `list_omd_files` on it instead."
+                      logging.warning(f"[MCP] Blocked directory read: {path_arg}")
+                 elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
+                      res = f"ERROR: File '{os.path.basename(path_arg)}' was NOT found in the listing for '{path_dir}'. Please list the directory again if you think this is a mistake, or check the filename."
+                      logging.warning(f"[MCP] Blocked hallucinated read: {path_arg}")
+                 else:
+                      res = await read_omd_file(ctx, path_arg)
+                      if not res.startswith("Error"):
+                           has_read_file = True
+                      elif "DIRECTORY" in res:
+                           # If it failed because it was a directory, we need to mark it
+                           listed_paths.add(path_arg.rstrip("/"))
+             elif name == "write_omd_file":
+                 # [TURN 1 SHIELD]
+                 # Prevent early writes if source paths are mentioned but not yet processed.
+                 if turn == 0 and potential_paths:
+                      res = "Error: It is FORBIDDEN to write on Turn 1 when source paths are mentioned. You MUST use list_omd_files or read_omd_file first to gather data and avoid hallucination."
+                      logging.warning(f"[MCP] Turn 1 Write Blocked: {args.get('path')}")
+                 else:
+                     content = args.get("content", "")
+                     path_arg = args.get("path", "").strip()
+                     
+                     # [ROBUST WRITE SHIELD]
+                     # If the content looks like an error, placeholder, or failure report, reject it.
+                     forbidden_patterns = ["[", "...", "Failed to fetch", "Error reading", "No information", "Access denied", "403", "DIRECTORY", "cannot read"]
+                     is_invalid = any(pattern.lower() in content.lower() for pattern in forbidden_patterns)
+                     
+                     # [DIRECTORY WRITE BLOCK]
+                     is_dir_write = path_arg.rstrip("/") in listed_paths
+                     
+                     if is_invalid:
+                          res = "Error: Do NOT use `write_omd_file` to save error messages, placeholders, or reports of failure. You must only write if you have successfully extracted the required data."
+                     elif is_dir_write:
+                          res = f"Error: '{path_arg}' is a confirmed DIRECTORY. You cannot write a file to this path. Use a full filename (e.g., {path_arg.rstrip('/')}/report.txt)."
+                     else:
+                          res = await write_omd_file(ctx, path_arg, content)
         elif name == "search_web":
             res = await search_web(ctx, args.get("query", ""))
         elif name == "search_memory":
