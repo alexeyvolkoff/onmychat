@@ -109,7 +109,7 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "list_omd_files",
-      "description": "List files in a specific directory. ALWAYS use this first if the user refers to a folder (e.g. 'in /Data').",
+      "description": "List files in a directory. Results show METADATA (size, date) only. You CANNOT see file content here. Size is in BYTES, not money/values. Use read_omd_file to see content.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -143,7 +143,7 @@ MCP_TOOLS = [
       "type": "function",
       "function": {
           "name": "write_omd_file",
-          "description": "Write content to a file. FORBIDDEN to use on Turn 1 if source data is needed from other files. Use read_omd_file first.",
+          "description": "Write data to a file. NEVER use this to report errors or report that files were not found. Only write successfully gathered information.",
           "parameters": {
               "type": "object",
               "properties": {
@@ -457,6 +457,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if is_data_request and not is_write_request:
              available_tools = [t for t in available_tools if t["function"]["name"] != "write_omd_file"]
              logging.info("[MCP] Reading request detected - hiding write_omd_file tool.")
+        
+        # [TURN 2 LOCK]
+        # If we have files from Turn 1 listing, Turn 2 MUST be a read or a different list.
+        if turn == 1 and known_files and is_data_request:
+             available_tools = [t for t in available_tools if t["function"]["name"] in ["read_omd_file", "search_web", "list_omd_files"]]
+             logging.info("[MCP] Turn 2 Lock: Restricting tools to force reading/searching.")
              
         if turn == 0 and is_likely_directory and potential_paths:
             # Force listing by offering ONLY list_omd_files
@@ -608,7 +614,21 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             msg_entry = {"role": "tool", "content": str(res)}
             if call_id:
                  msg_entry["tool_call_id"] = call_id
-            messages.append(msg_entry)
+             messages.append(msg_entry)
+        
+    # [HALLUCINATION LOCKDOWN]
+    # If the request was for data but we NEVER successfully read a file, we must warn the assistant.
+    if is_data_request and not has_read_file:
+         verdict = (
+              "\n\n*** SAFETY VERDICT (CRITICAL) ***\n"
+              "SYSTEM WARNING: No files were successfully read. The 'Size' values in the listing are BYTES, NOT prices or contents. "
+              "You have NO INFORMATION about the content/amounts inside the files. "
+              "If you cannot read a file, state: 'I was unable to read the files to extract the total amount.'\n"
+         )
+         all_tool_results += verdict
+         logging.warning("[MCP] Injected SAFETY VERDICT to prevent price hallucination.")
+    
+    return all_tool_results
             found_new_info = True
             
             # After successful list, parse filenames and inject explicit instruction
