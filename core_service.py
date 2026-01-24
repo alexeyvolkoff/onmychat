@@ -126,7 +126,7 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "read_omd_file",
-      "description": "Read the content of a file. Use the exact absolute path from list_omd_files results.",
+      "description": "Read the content of a file. Supports .txt, .md, .pdf, .docx, .odt, .csv. For PDFs and documents, the system automatically converts them to text.",
       "parameters": {
         "type": "object",
         "properties": {
