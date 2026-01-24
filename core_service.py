@@ -579,18 +579,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                           res = f"Error: '{path_arg}' is a confirmed DIRECTORY. You cannot write a file to this path. Use a full filename (e.g., {path_arg.rstrip('/')}/report.txt)."
                      else:
                           res = await write_omd_file(ctx, path_arg, content)
-        elif name == "search_web":
-            res = await search_web(ctx, args.get("query", ""))
-        elif name == "search_memory":
-            # [TURN 1 SEARCH SHIELD]
-            # Prevent using memory search on Turn 1 if user provided an explicit file path.
-            if turn == 0 and potential_paths:
-                 res = "Error: A file path was provided. You MUST use list_omd_files or read_omd_file first. Do NOT use search_memory if you have a path to explore."
-                 logging.warning(f"[MCP] Turn 1 Search Blocked (Path present)")
-            else:
-                query = args.get("query", "")
-                if query:
-                    res = await search_memory_tool(ctx, query)
+             elif name == "search_web":
+                 res = await search_web(ctx, args.get("query", ""))
+             elif name == "search_memory":
+                 # [TURN 1 SEARCH SHIELD]
+                 # Prevent using memory search on Turn 1 if user provided an explicit file path.
+                 if turn == 0 and potential_paths:
+                      res = "Error: A file path was provided. You MUST use list_omd_files or read_omd_file first. Do NOT use search_memory if you have a path to explore."
+                      logging.warning(f"[MCP] Turn 1 Search Blocked (Path present)")
+                 else:
+                     query = args.get("query", "")
+                     if query:
+                         res = await search_memory_tool(ctx, query)
         
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
