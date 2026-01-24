@@ -259,7 +259,7 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         if type_ in ["dir", "directory"]:
                             result_str += f"- [{type_}] {name}\n"
                         else:
-                            result_str += f"- [{type_}] {name} ({size}) [modified: {date}]\n"
+                            result_str += f"- [{type_}] {name} (Size: {size} bytes) [modified: {date}]\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -434,9 +434,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if not listed_paths:
              guidance += "Step 1: You MUST call `list_omd_files` on the directory mentioned by the user."
         elif not has_read_file and is_data_request:
-             # Hyper-specific guidance: inject the actual filenames we found
-             short_files = [os.path.basename(f) for f in known_files]
-             guidance += f"Step 2: You have the listing. MUST pick a FILE (not a directory) and call `read_omd_file`. Verified Files: {short_files[:10]}"
+             # Hyper-specific guidance: inject the actual ABSOLUTE paths we found
+             candidate_paths = sorted(list(known_files))
+             guidance += f"Step 2: You have the listing. MUST pick a FILE and call `read_omd_file`. Verified Absolute Paths: {candidate_paths[:5]}"
         else:
              guidance += "Final Step: You have gathered enough information. ACHIEVE THE GOAL or respond to the user. If no more tools needed, respond with 'NO_TOOL'."
              
@@ -448,6 +448,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # [AGGRESSIVE DIRECTORY ENFORCEMENT]
         # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
         available_tools = MCP_TOOLS
+        
+        # [PHASE 2: DYNAMIC TOOL FILTERING]
+        # If it's a data-extraction request, hide the 'write' tool to prevent error-writing loops.
+        write_keywords = ["write", "save", "create", "update", "delete", "move", "rename"]
+        is_write_request = any(kw in message.lower() for kw in write_keywords)
+        
+        if is_data_request and not is_write_request:
+             available_tools = [t for t in available_tools if t["function"]["name"] != "write_omd_file"]
+             logging.info("[MCP] Reading request detected - hiding write_omd_file tool.")
+             
         if turn == 0 and is_likely_directory and potential_paths:
             # Force listing by offering ONLY list_omd_files
             available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] == "list_omd_files"]
@@ -511,7 +521,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         call_id_str = f"{name}:{json.dumps(args, sort_keys=True)}"
         if call_id_str in call_history:
              # Model is looping. Inject a forceful mechanical block.
-             res = f"SYSTEM ERROR: You already called {name} with these arguments and it didn't solve the task. DO NOT REPEAT. Pick a DIFFERENT file from the list or change your approach."
+             candidate_paths = sorted(list(known_files))
+             res = f"SYSTEM ERROR: You already called {name} with these arguments. DO NOT REPEAT. If you need data, call `read_omd_file` on one of these verified paths: {candidate_paths[:5]}"
              logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
         else:
              call_history.add(call_id_str)
