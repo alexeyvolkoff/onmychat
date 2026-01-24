@@ -254,7 +254,12 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         name = item.get("name", "")
                         type_ = item.get("type", "file")
                         size = item.get("size", "0")
-                        result_str += f"- [{type_}] {name} ({size})\n"
+                        date = item.get("date", "")
+                        
+                        if type_ in ["dir", "directory"]:
+                            result_str += f"- [{type_}] {name}\n"
+                        else:
+                            result_str += f"- [{type_}] {name} ({size}) [modified: {date}]\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -412,7 +417,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     ]
     
     all_tool_results = ""
-    max_turns = 5
+    max_turns = 8 # Increased for complex autonomous tasks
+    listed_paths = set()
+    known_files = set() # Strict cache of verified files
     
     for turn in range(max_turns):
         # [AGGRESSIVE DIRECTORY ENFORCEMENT]
@@ -443,12 +450,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         msg = response_data["message"]
         tool_calls = msg.get("tool_calls", [])
         
-        # [SILENT AGENT]
-        # ALWAYS strip conversational content - agent should ONLY use tools
-        # This prevents it from "concluding" prematurely
-        if msg.get("content"):
-            msg["content"] = ""
-              
+        if len(tool_calls) > 1:
+             # Force pipelining: Only take the first tool call to avoid parallel execution conflicts
+             tool_calls = tool_calls[:1]
+             msg["tool_calls"] = tool_calls
+             
         messages.append(msg)
         
         if not tool_calls:
@@ -471,9 +477,34 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         
         res = ""
         if name == "list_omd_files":
-            res = await list_omd_files(ctx, args.get("path", ""))
+            path_arg = args.get("path", "").strip()
+            
+            # [LOOP PREVENTION]
+            if path_arg.rstrip("/") in listed_paths:
+                 res = f"Note: You already listed '{path_arg}'. Use the information you already have or list a DIFFERENT directory."
+                 logging.info(f"[MCP] Blocked redundant list for {path_arg}")
+            else:
+                 res = await list_omd_files(ctx, path_arg)
+                 if not res.startswith("Error"):
+                      listed_paths.add(path_arg.rstrip("/"))
+                      # Populate known_files to prevent hallucinations
+                      import re
+                      # Simple filename extractor from list output
+                      matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
+                      for f in matches:
+                           known_files.add(f"{path_arg.rstrip('/')}/{f.strip()}")
+        
         elif name == "read_omd_file":
-            res = await read_omd_file(ctx, args.get("path", ""))
+            path_arg = args.get("path", "").strip()
+            
+            # [ANTI-HALLUCINATION] List before Read
+            # We encourage the model to list first, but if it knows the file, we check our cache
+            path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
+            if path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
+                 res = f"ERROR: File '{os.path.basename(path_arg)}' was NOT found in the listing for '{path_dir}'. Please list the directory again if you think this is a mistake, or check the filename."
+                 logging.warning(f"[MCP] Blocked hallucinated read: {path_arg}")
+            else:
+                 res = await read_omd_file(ctx, path_arg)
         elif name == "write_omd_file":
             # [TURN 1 SHIELD]
             # Prevent early writes if source paths are mentioned but not yet processed.
