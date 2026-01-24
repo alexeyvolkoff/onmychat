@@ -872,7 +872,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         logging.info(f"Check intent: {check_intent}")
         if check_intent == "tools":
              logging.info("Yielding searching status")
-             yield f"data: {json.dumps({'status': 'searching'})}\n\n"
+             yield f"data: {json.dumps({'status': 'executing'})}\n\n"
              
         if check_intent == "import":
              # Limit to 10 items for free accounts

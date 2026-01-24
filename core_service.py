@@ -488,7 +488,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  if not res.startswith("Error"):
                       listed_paths.add(path_arg.rstrip("/"))
                       # Populate known_files to prevent hallucinations
-                      import re
                       # Simple filename extractor from list output
                       matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
                       for f in matches:
