@@ -608,34 +608,20 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                      query = args.get("query", "")
                      if query:
                          res = await search_memory_tool(ctx, query)
-        
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
             msg_entry = {"role": "tool", "content": str(res)}
             if call_id:
                  msg_entry["tool_call_id"] = call_id
-             messages.append(msg_entry)
-        
-    # [HALLUCINATION LOCKDOWN]
-    # If the request was for data but we NEVER successfully read a file, we must warn the assistant.
-    if is_data_request and not has_read_file:
-         verdict = (
-              "\n\n*** SAFETY VERDICT (CRITICAL) ***\n"
-              "SYSTEM WARNING: No files were successfully read. The 'Size' values in the listing are BYTES, NOT prices or contents. "
-              "You have NO INFORMATION about the content/amounts inside the files. "
-              "If you cannot read a file, state: 'I was unable to read the files to extract the total amount.'\n"
-         )
-         all_tool_results += verdict
-         logging.warning("[MCP] Injected SAFETY VERDICT to prevent price hallucination.")
-    
-    return all_tool_results
+            messages.append(msg_entry)
+            
             found_new_info = True
             
             # After successful list, parse filenames and inject explicit instruction
             if name == "list_omd_files" and "Files in" in res:
                 # Extract directory path and filenames from result
-                # Parse lines like "- [file] filename.ext (size)"
-                file_matches = re.findall(r'- \[file\] (.+?) \(\d+\)', res)
+                # Parse lines like "- [file] filename.ext (Size: %d bytes)"
+                file_matches = re.findall(r'- \[file\] (.+?) \(Size:', res)
                 if file_matches:
                     # Use the first file found
                     filename = file_matches[0]
@@ -677,6 +663,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # We break the tool list loop here (we only used one tool) and allow the 
         # main 'turn' loop to call the model again with the new knowledge.
 
+    # [HALLUCINATION LOCKDOWN]
+    # If the request was for data but we NEVER successfully read a file, we must warn the assistant.
+    if is_data_request and not has_read_file:
+         verdict = (
+              "\n\n*** SAFETY VERDICT (CRITICAL) ***\n"
+              "SYSTEM WARNING: No files were successfully read. The 'Size' values in the listing are BYTES, NOT prices or contents. "
+              "You have NO INFORMATION about the content/amounts inside the files. "
+              "If you cannot read a file, state: 'I was unable to read the files to extract the total amount.'\n"
+         )
+         all_tool_results += verdict
+         logging.warning("[MCP] Injected SAFETY VERDICT to prevent price hallucination.")
+    
     # Suppression filter for final MCP log
     last_content = messages[-1].get("content", "").strip() if messages and messages[-1].get("role") == "assistant" else ""
     refusal_keywords = [
