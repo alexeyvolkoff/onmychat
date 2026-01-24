@@ -420,8 +420,28 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     max_turns = 8 # Increased for complex autonomous tasks
     listed_paths = set()
     known_files = set() # Strict cache of verified files
+    has_read_file = False
+    
+    # Identify if the request likely needs file content
+    data_words = ["read", "extract", "content", "invoice", "summary", "billed", "amount", "total", "what is"]
+    is_data_request = any(w in message.lower() for w in data_words)
     
     for turn in range(max_turns):
+        # [TURN-SPECIFIC GUIDANCE]
+        # Force the model to stay on track by injecting turn-specific reminders.
+        guidance = "You are an autonomous agent. "
+        if not listed_paths:
+             guidance += "Step 1: You MUST call `list_omd_files` on the directory mentioned by the user."
+        elif not has_read_file and is_data_request:
+             guidance += f"Step 2: You have the listing. You MUST now call `read_omd_file` on the most relevant file among: {sorted(list(known_files)[:5])}"
+        else:
+             guidance += "Final Step: You have gathered enough information. ACHIEVE THE GOAL or respond to the user. If no more tools needed, respond with 'NO_TOOL'."
+             
+        # Inject guidance into system prompt for this turn
+        current_messages = [
+            {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
+        ] + messages[1:]
+        
         # [AGGRESSIVE DIRECTORY ENFORCEMENT]
         # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
         available_tools = MCP_TOOLS
@@ -435,7 +455,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             
         payload = {
             "model": MCP_MODEL,
-            "messages": messages,
+            "messages": current_messages,
             "stream": False,
             "tools": available_tools,
             "options": {
@@ -458,6 +478,14 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         messages.append(msg)
         
         if not tool_calls:
+            # [GOAL PERSISTENCE SHIELD]
+            # If we listed but didn't read, and the user wants data, we are NOT done.
+            if is_data_request and not has_read_file and listed_paths and turn < 6:
+                 correction = "SYSTEM: You listed the files but didn't READ them. To fulfill the request, you MUST call `read_omd_file` on the relevant file found in the list. Do NOT stop now."
+                 messages.append({"role": "user", "content": correction})
+                 logging.warning("[MCP] Forcing read turn via persistence shield...")
+                 continue
+                 
             # No tools called - agent is done or stuck
             break
             
@@ -504,6 +532,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  logging.warning(f"[MCP] Blocked hallucinated read: {path_arg}")
             else:
                  res = await read_omd_file(ctx, path_arg)
+                 if not res.startswith("Error"):
+                      has_read_file = True
         elif name == "write_omd_file":
             # [TURN 1 SHIELD]
             # Prevent early writes if source paths are mentioned but not yet processed.
