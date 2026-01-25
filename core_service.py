@@ -2196,24 +2196,40 @@ async def search_web(ctx: UserContext, query: str) -> str:
             result = await crawler.arun(url=url)
             
             if not result or not result.markdown:
+                logging.warning(f"[search] No markdown content returned")
                 return "No results found."
             
-            # Limit response size and filter for results
+            logging.info(f"[search] Got {len(result.markdown)} chars of markdown")
+            
+            # DuckDuckGo HTML results contain links and snippets
+            # Look for result patterns: links (http) and content lines
             lines = result.markdown.split('\n')
             relevant_content = []
-            capturing = False
+            
             for line in lines:
-                if line.strip().startswith("##"):
-                    capturing = True
-                if capturing:
-                    relevant_content.append(line)
-                    if len(relevant_content) > 30: 
-                        break
+                line_stripped = line.strip()
+                # Skip empty lines and navigation elements
+                if not line_stripped:
+                    continue
+                # Skip short lines that are likely navigation
+                if len(line_stripped) < 20:
+                    continue
+                # Skip lines that look like footer/navigation
+                if any(skip in line_stripped.lower() for skip in ['privacy', 'terms', 'settings', 'safe search', 'next page']):
+                    continue
+                    
+                relevant_content.append(line)
+                if len(relevant_content) > 40:  # Increased limit for better results
+                    break
             
             if not relevant_content:
-                return result.markdown[:2000]
-                
-            return "\n".join(relevant_content)
+                # Fallback: just return first chunk of markdown
+                logging.warning(f"[search] No relevant content found, using raw markdown")
+                return result.markdown[:3000]
+            
+            search_output = "\n".join(relevant_content)
+            logging.info(f"[search] Returning {len(search_output)} chars of results")
+            return search_output
 
     except ImportError:
         return "Error: crawl4ai library not installed. Web search unavailable."
