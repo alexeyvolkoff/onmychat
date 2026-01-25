@@ -424,7 +424,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     path_hint = ""
     
     if potential_paths:
-        path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. Ensure your [PLAN] account for exploring these paths if necessary."
+        path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. \nSTRATEGY: If any of these are directories, or if you need to FIND/CHOOSE a file based on criteria (date, name, content), you MUST call `list_omd_files` first. Guessing filenames is FORBIDDEN."
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
