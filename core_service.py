@@ -291,24 +291,7 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
             url = f"{base_url}/{storage_id}/{clean_path}"
         
         # Use fetch_document_text which handles PDFs via ?totext parameter
-        res = await fetch_document_text(url, ctx.omd_key)
-        
-        # [GENERALIZED REDIRECT]
-        # If read_omd_file hits a directory, automatically provide the listing 
-        # so the agent can self-correct without 'nanny' code in the core loop.
-        if "Received login page" in res or "Access denied" in res:
-             # Try listing it as a fallback - maybe it's just a directory?
-             listing = await list_omd_files(ctx, path)
-             if "Files in" in listing:
-                  return f"Error: '{path}' is a DIRECTORY. Contents:\n{listing}"
-             
-             # Fallback to listing the parent directory to help the agent discover the right file
-             parent_path = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
-             parent_listing = await list_omd_files(ctx, parent_path)
-             if "Files in" in parent_listing:
-                  return f"Error: Access denied or file not found at '{path}'. Contents of parent directory '{parent_path}':\n{parent_listing}"
-        
-        return res
+        return await fetch_document_text(url, ctx.omd_key)
 
     except Exception as e:
         return f"Exception reading file: {e}"
@@ -449,8 +432,20 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     for turn in range(max_turns):
         # [TURN-SPECIFIC GUIDANCE]
         guidance = "You are an autonomous agent. "
+        # [PROACTIVE DISCOVERY GATE]
+        # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
+        available_tools = MCP_TOOLS
         if turn == 0:
              guidance += "MANDATORY: Analyze the request and create a `[PLAN]` checklist. You MUST also call the first tool in your plan if possible."
+             # [PROACTIVE DISCOVERY GATE]
+             # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
+             if potential_paths:
+                  is_dir_like = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
+                  if is_dir_like:
+                       available_tools = [t for t in MCP_TOOLS if t["function"]["name"] == "list_omd_files"]
+                       logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
+                       guidance += "\nDISCOVERY PHASE: You MUST use `list_omd_files` first to verify the file name and date."
+             
              # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
                  {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
@@ -462,12 +457,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  {"role": "system", "content": messages[0]["content"] + "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain. \n\n" + f"CURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         
-        available_tools = MCP_TOOLS
-        # General removal of search_memory if paths were provided
-
         # General removal of search_memory if paths were provided
         if potential_paths:
-             available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] != "search_memory"]
+             available_tools = [tool for tool in available_tools if tool["function"]["name"] != "search_memory"]
             
         payload = {
             "model": MCP_MODEL,
