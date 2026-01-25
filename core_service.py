@@ -492,7 +492,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
         available_tools = MCP_TOOLS
         if turn == 0:
-             guidance += "MANDATORY: Analyze the request and create a `[PLAN]` checklist. You MUST also call the first tool in your plan if possible."
+             guidance += "MANDATORY: Analyze the request and create a detailed `[PLAN]` checklist. Your plan MUST cover every part of the user's request (e.g., if they ask to 'extract' or 'find amount', your plan MUST include `read_omd_file`). You MUST also call the first tool in your plan if possible."
              # [PROACTIVE DISCOVERY GATE]
              if potential_paths and not known_files:
                   is_dir_like = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
@@ -550,7 +550,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if agent_text:
              # [HALLUCINATION FILTER]
              # Prevent the agent from "mimicking" system alerts in its reasoning.
-             # We strip any lines that start with SYSTEM ALERT, SYSTEM NOTICE, or SYSTEM ERROR.
              filtered_lines = [
                  line for line in agent_text.split("\n") 
                  if not any(prefix in line.upper() for prefix in ["SYSTEM ALERT:", "SYSTEM NOTICE:", "SYSTEM ERROR:"])
@@ -562,8 +561,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                   logging.info(f"[MCP][Turn {turn+1}] Captured reasoning (filtered): {clean_agent_text[:50]}...")
              
              # [PLAN-BASED INTENT]
+             # We determine the "Requires Read" state exclusively from the planning phase.
+             # If the agent plans to use any tool that provides data/content, we set the flag.
              if "[PLAN]" in agent_text and turn == 0:
-                  if "read_omd_file" in agent_text:
+                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content"]
+                  if any(phrase in agent_text.lower() for phrase in data_tools):
                        requires_read = True
                        logging.info("[MCP] Intent detected via PLAN: DATA_EXTRACTION")
                   else:
@@ -571,21 +573,21 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
 
              # [CONTINUITY NUDGE]
              # Only fire if discovery tools (list or find) were used but read wasn't,
-             # and ONLY if the user's intent requires reading the file content.
+             # and ONLY if the agent's OWN PLAN requires reading/extracting content.
              has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
              if turn > 0 and not has_read_file and has_discovered and requires_read:
                   # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
-                  messages.append({"role": "user", "content": "You identified a file. Since the user asked for details/content, you MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion yet."})
-                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading (Intended-Read). Injecting Continuity Nudge.")
+                  messages.append({"role": "user", "content": "You identified a file. Since your plan requires data extraction, you MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion yet."})
+                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading (Plan-Read). Injecting Continuity Nudge.")
                   continue
 
              # RECORD CONCLUSION ONLY IF NO TOOL CALLS
              if not tool_calls and agent_text and agent_text != "NO_TOOL":
                   # [STRICT STOP CHECK]
-                  # Only block if we haven't read but the intent requires reading
+                  # Only block if we haven't read but the plan required reading
                   if known_files and not has_read_file and requires_read:
-                       messages.append({"role": "user", "content": "Wait! You found a file but haven't read its content. You MUST call `read_omd_file` before finishing."})
-                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading. Blocking.")
+                       messages.append({"role": "user", "content": "Wait! Your plan included data extraction but you haven't read the file yet. You MUST call `read_omd_file` before finishing."})
+                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading (Plan-Read). Blocking.")
                        continue
                   
                   all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
@@ -805,9 +807,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         all_tool_results = "Tool Output: No files were listed or read. The discovery phase returned no data."
         logging.warning("[MCP] Autonomous loop finished with ZERO results.")
     elif not has_read_file and "find_omd_file" in all_tool_results:
-        # If we tried to find a file but never read one
-        if "[NO FILE FOUND]" in all_tool_results:
-             all_tool_results += "\nSYSTEM NOTICE: The search tool explicitly returned [NO FILE FOUND]. Do NOT guess the filename."
+        # Check if we were supposed to read but didn't
+        if requires_read:
+             all_tool_results += "\nSYSTEM NOTICE: Discovery succeeded, but no file content was read. The requested details (totals/items) are NOT in this tool output."
         
     return all_tool_results
 
