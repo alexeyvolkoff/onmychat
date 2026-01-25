@@ -1388,11 +1388,11 @@ async def perform_prompt(ctx: UserContext,
             save_history(ctx, history, chat_name)
 
     # Персонализация
+    username = ctx.settings.get("username", "User")
     if ctx.settings.get("newUser", False):
         system_prompt += user_context.DEFAULT_UNONBOARDED_PROMPT
         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
-        username = ctx.settings.get("username", "User")
         system_prompt += f"\n\n*Personality overrides*: {ctx.settings.get("system_prompt", user_context.DEFAULT_USER_PROMPT)}\n"
         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
@@ -1565,6 +1565,8 @@ async def perform_prompt(ctx: UserContext,
     else:
         logging.info(f"Requesting LLM {model}")
         data = await llm_request(main_payload)
+        if not data:
+            return "⚠️ Request to LLM failed."
         response = await process_response(data)
         return response
 
@@ -2159,38 +2161,6 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
 # === Web Search Tool ===
 async def search_web(ctx: UserContext, query: str) -> str:
     """
-    Search the web using DuckDuckGo.
-    """
-    try:
-        from duckduckgo_search import DDGS
-        
-        logging.info(f"[search] Searching web for: {query}")
-        # Synchronous library, run in executor if needed, but for now simple call
-        results = DDGS().text(query, max_results=5)
-        
-        if not results:
-            return "No results found."
-            
-        formatted_results = []
-        for r in results:
-            title = r.get("title", "")
-            href = r.get("href", "")
-            body = r.get("body", "")
-            formatted_results.append(f"- **[{title}]({href})**: {body}")
-            
-        return "\n\n".join(formatted_results)
-        
-    except ImportError:
-        return "Error: duckduckgo-search library not installed."
-    except Exception as e:
-        logging.error(f"[search] Error searching {query}: {e}")
-        return f"Error performing search: {e}"
-
-    return response.strip()
-
-# === Web Search Tool ===
-async def search_web(ctx: UserContext, query: str) -> str:
-    """
     Search the web using DuckDuckGo via Crawl4AI (headless browser) to bypass IP blocks.
     """
     try:
@@ -2205,14 +2175,11 @@ async def search_web(ctx: UserContext, query: str) -> str:
         async with AsyncWebCrawler(verbose=True) as crawler:
             result = await crawler.arun(url=url)
             
-            if not result.markdown:
+            if not result or not result.markdown:
                 return "No results found."
             
-            # Limit response size to avoid context overflow
-            # We skip the first few lines which are usually navigation/headers
+            # Limit response size and filter for results
             lines = result.markdown.split('\n')
-            
-            # Simple heuristic: find lines that look like search results (start with ##)
             relevant_content = []
             capturing = False
             for line in lines:
@@ -2220,15 +2187,16 @@ async def search_web(ctx: UserContext, query: str) -> str:
                     capturing = True
                 if capturing:
                     relevant_content.append(line)
-                    if len(relevant_content) > 20: # Limit to ~20 lines of results
+                    if len(relevant_content) > 30: 
                         break
             
             if not relevant_content:
-                # Fallback: return raw markdown snippet
-                return result.markdown[:1500]
+                return result.markdown[:2000]
                 
             return "\n".join(relevant_content)
 
+    except ImportError:
+        return "Error: crawl4ai library not installed. Web search unavailable."
     except Exception as e:
         logging.error(f"[search] Error searching {query}: {e}")
         return f"Error performing search: {e}"
