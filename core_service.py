@@ -1,4 +1,5 @@
 import os
+import re
 import random
 import json
 import logging
@@ -396,14 +397,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
     path_hint = ""
     
-    # Check if the message suggests directory operation ("in /folder", "from /folder")
-    is_likely_directory = any(keyword in message.lower() for keyword in [' in /', ' from /', 'folder', 'directory'])
-    
     if potential_paths:
-        if is_likely_directory:
-            path_hint = f"\nSYSTEM HINT: The user mentioned directory paths: {', '.join(potential_paths)}. You MUST use list_omd_files FIRST to see what files are there. Do NOT guess filenames."
-        else:
-            path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. YOU MUST explore these paths using list_omd_files OR read_omd_file BEFORE any write action. Do not invent content."
+        path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. Ensure your [PLAN] account for exploring these paths if necessary."
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
@@ -423,22 +418,17 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     call_history = set() # Prevent repeated failed attempts
     has_read_file = False
     
-    # Identify if the request likely needs file content
-    data_words = ["read", "extract", "content", "invoice", "summary", "billed", "amount", "total", "what is"]
-    is_data_request = any(w in message.lower() for w in data_words)
+    # The agent is now autonomous and reasoning-based. 
+    # It will manage its own data extraction logic via the [PLAN] mandate.
     
     for turn in range(max_turns):
         # [TURN-SPECIFIC GUIDANCE]
-        # Force the model to stay on track by injecting turn-specific reminders.
+        # Remind the agent about the mandatory planning phase
         guidance = "You are an autonomous agent. "
-        if not listed_paths:
-             guidance += "Step 1: You MUST call `list_omd_files` on the directory mentioned by the user."
-        elif not has_read_file and is_data_request:
-             # Hyper-specific guidance: inject the actual ABSOLUTE paths we found
-             candidate_paths = sorted(list(known_files))
-             guidance += f"Step 2: You have the listing. MUST pick a FILE and call `read_omd_file`. Verified Absolute Paths: {candidate_paths[:5]}"
+        if turn == 0:
+             guidance += "MANDATORY: In this FIRST turn, you MUST create a `[PLAN]` checklist and then call the first tool. Do NOT skip the plan."
         else:
-             guidance += "Final Step: You have gathered enough information. ACHIEVE THE GOAL or respond to the user. If no more tools needed, respond with 'NO_TOOL'."
+             guidance += "Continue executing your `[PLAN]`. Mark completed steps with [x]. Call the NEXT tool in sequence."
              
         # Inject guidance into system prompt for this turn
         current_messages = [
@@ -458,19 +448,14 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              available_tools = [t for t in available_tools if t["function"]["name"] != "write_omd_file"]
              logging.info("[MCP] Reading request detected - hiding write_omd_file tool.")
         
-        # [TURN 2 LOCK]
-        # If we have files from Turn 1 listing, Turn 2 MUST be a read or a different list.
-        if turn == 1 and known_files and is_data_request:
-             available_tools = [t for t in available_tools if t["function"]["name"] in ["read_omd_file", "search_web", "list_omd_files"]]
-             logging.info("[MCP] Turn 2 Lock: Restricting tools to force reading/searching.")
+        # [TURN 2 MANDATE]
+        # [DYNAMISM]
+        # In this mode, we show all tools and let the agent reason about its checklist and the task.
+        available_tools = MCP_TOOLS
              
-        if turn == 0 and is_likely_directory and potential_paths:
-            # Force listing by offering ONLY list_omd_files
-            available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] == "list_omd_files"]
-            logging.info(f"[MCP] Turn 1 with directory path - forcing list_omd_files only")
-        elif potential_paths:
-            # Still remove search_memory if paths present (but not Turn 1 directory)
-            available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] != "search_memory"]
+        # General removal of search_memory if paths were provided
+        if potential_paths:
+             available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] != "search_memory"]
             
         payload = {
             "model": MCP_MODEL,
@@ -497,13 +482,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         messages.append(msg)
         
         if not tool_calls:
-            # [GOAL PERSISTENCE SHIELD]
-            # If we listed but didn't read, and the user wants data, we are NOT done.
-            if is_data_request and not has_read_file and listed_paths and turn < 6:
-                 correction = "SYSTEM: You listed the files but didn't READ them. To fulfill the request, you MUST call `read_omd_file` on the relevant file found in the list. Do NOT stop now."
-                 messages.append({"role": "user", "content": correction})
-                 logging.warning("[MCP] Forcing read turn via persistence shield...")
-                 continue
+            # Agent reached end of turn. It will summarize or conclude based on its [PLAN].
+            break
                  
             # No tools called - agent is done or stuck
             break
@@ -534,7 +514,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              call_history.add(call_id_str)
              
              res = ""
-             if name == "list_omd_files":
+             
+             # [NUCLEAR PHASE 4: SEARCH WEB LOOP PREVENTION]
+             if name == "search_web":
+                  search_count = sum(1 for c in list(call_history) if c.startswith("search_web:"))
+                  if search_count >= 2:
+                       res = "SYSTEM ERROR: You have searched the web multiple times. Do NOT continue searching. If you cannot find the answer, explain what you found or state that information is missing. DO NOT CALL SEARCH AGAIN."
+                       logging.warning("[MCP] Blocked secondary web search to prevent loop.")
+             
+             if not res and name == "list_omd_files":
                   path_arg = args.get("path", "").strip()
                   
                   # [LOOP PREVENTION]
@@ -542,12 +530,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        res = f"Note: You already listed '{path_arg}'. Use the information you already have or list a DIFFERENT directory."
                        logging.info(f"[MCP] Blocked redundant list for {path_arg}")
                   else:
-                       res = await list_omd_files(ctx, path_arg)
-                       if not res.startswith("Error"):
-                            listed_paths.add(path_arg.rstrip("/"))
-                            # Populate known_files to prevent hallucinations
-                            # Simple filename extractor from list output
-                            matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
+                       # [TURN LIMIT PROTECTION]
+                       if turn >= max_turns - 2 and not has_read_file:
+                            res = "CRITICAL ERROR: Operation limit reached. You have not successfully completed the data extraction. Please report what you found and state what is missing."
+                            logging.error(f"[MCP] Autonomous Agent Turn Limit: {turn+1}")
+                       else:
+                            res = await list_omd_files(ctx, path_arg)
+                            if not res.startswith("Error"):
+                                 listed_paths.add(path_arg.rstrip("/"))
+                                 
+                                 # Populate known_files to prevent hallucinations
+                                 # Simple filename extractor from list output
+                                 matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
                             for f in matches:
                                  known_files.add(f"{path_arg.rstrip('/')}/{f.strip()}")
              
@@ -617,39 +611,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             
             found_new_info = True
             
-            # After successful list, parse filenames and inject explicit instruction
-            if name == "list_omd_files" and "Files in" in res:
-                # Extract directory path and filenames from result
-                # Parse lines like "- [file] filename.ext (Size: %d bytes)"
-                file_matches = re.findall(r'- \[file\] (.+?) \(Size:', res)
-                if file_matches:
-                    # Use the first file found
-                    filename = file_matches[0]
-                    # Extract directory from result header
-                    dir_match = re.search(r'Files in (.+):', res)
-                    directory = dir_match.group(1) if dir_match else args.get("path", "")
-                    full_path = f"{directory}/{filename}"
-                    
-                    messages.append({
-                        "role": "user", 
-                        "content": f"Files found. Now call read_omd_file with path: {full_path}"
-                    })
-                else:
-                    messages.append({
-                        "role": "user", 
-                        "content": "Files listed. Use read_omd_file with the exact filename from above."
-                    })
-            
-            # After successful read, prompt to write the new file
-            elif name == "read_omd_file" and "Error" not in res:
-                # Extract the directory from the original path
-                original_path = args.get("path", "")
-                directory = "/".join(original_path.split("/")[:-1]) if "/" in original_path else ""
-                
-                messages.append({
-                    "role": "user",
-                    "content": f"File read successfully. Now create the new modified document using write_omd_file with .odt extension. Use directory: {directory}, filename format: Kontron_invoice_YYYY-MM-DD.odt"
-                })
+            # Success blocks for listing and reading are removed to allow autonomous reasoning.
+            pass
         else:
             msg_entry = {"role": "tool", "content": "Error: Tool returned no result."}
             if call_id:
@@ -663,17 +626,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # We break the tool list loop here (we only used one tool) and allow the 
         # main 'turn' loop to call the model again with the new knowledge.
 
-    # [HALLUCINATION LOCKDOWN]
-    # If the request was for data but we NEVER successfully read a file, we must warn the assistant.
-    if is_data_request and not has_read_file:
-         verdict = (
-              "\n\n*** SAFETY VERDICT (CRITICAL) ***\n"
-              "SYSTEM WARNING: No files were successfully read. The 'Size' values in the listing are BYTES, NOT prices or contents. "
-              "You have NO INFORMATION about the content/amounts inside the files. "
-              "If you cannot read a file, state: 'I was unable to read the files to extract the total amount.'\n"
-         )
-         all_tool_results += verdict
-         logging.warning("[MCP] Injected SAFETY VERDICT to prevent price hallucination.")
+    # Hallucination lockdown is now handled by the planning requirement and instructions.
     
     # Suppression filter for final MCP log
     last_content = messages[-1].get("content", "").strip() if messages and messages[-1].get("role") == "assistant" else ""
