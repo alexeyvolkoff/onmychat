@@ -579,8 +579,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        tool_calls = []
                        msg["tool_calls"] = []
                   else:
-                       data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed", "inside"]
-                       if any(phrase in agent_text.lower() for phrase in data_tools):
+                       # We only look for canonical tool names. Since the agent is instructed to use 
+                       # exact tool names in its [PLAN] checklist, this is naturally multi-lingual.
+                       data_tools = ["read_omd_file", "search_memory", "search_web"]
+                       if any(tool in agent_text for tool in data_tools):
                             requires_read = True
                             logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
                        else:
@@ -1302,7 +1304,8 @@ async def perform_prompt(ctx: UserContext,
         instruction += (
              "\n\nResults from System Tools (MCP) are provided above. "
              "They are the ABSOLUTE SOURCE OF TRUTH. "
-             "If the 'System Tool Output' section above is empty or does NOT contain file content, you have ZERO knowledge. "
+             "If the 'System Tool Output' section above contains filenames, paths, or content, you MUST acknowledge and use them. "
+             "If it is empty, you have ZERO knowledge. "
              "Strictly forbid yourself from saying 'It seems that' or 'I found' using non-existent data."
         )
 
@@ -1357,8 +1360,11 @@ async def perform_prompt(ctx: UserContext,
             "ABSOLUTE RULES FOR TRUSTED DATA:\n"
             "1. You are FORBIDDEN from generating fake tool results or simulating file reads.\n"
             "2. NEVER use the phrase '*System Tool Output (Trusted Data):*' in your response. That header is for the SYSTEM only.\n"
-            "3. If the 'System Tool Output' provided earlier does not contain the data you need, state: 'No data found in the system tools.'\n"
-            "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is in the file. NEVER guess items, dates, or totals."
+            "3. If the 'System Tool Output' provided earlier contains filenames or paths, report them as found. "
+            "Filenames may be in Slovenian or Russian (e.g. 'račun' = 'invoice', 'prijavnica' = 'application'). Treat them as valid matches.\n"
+            "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is INSIDE the file (items, totals). "
+            "However, you DO know the existence and names of files discovered via 'list_omd_files' or 'find_omd_file'.\n"
+            "5. If 'System Tool Output' is truly empty, state: 'No data found in the system tools.'"
         )
     elif nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
