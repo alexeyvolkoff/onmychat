@@ -558,18 +558,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              
              if clean_agent_text:
                   all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{clean_agent_text}\n\n"
-                  logging.info(f"[MCP][Turn {turn+1}] Captured reasoning (filtered): {clean_agent_text[:50]}...")
+                  logging.info(f"[MCP][Turn {turn+1}] Agent Reasoning/Plan: {clean_agent_text}")
+             elif tool_calls and turn == 0:
+                  logging.warning(f"[MCP][Turn {turn+1}] Model called a tool but SKIPPED the planning text ([PLAN]).")
              
              # [PLAN-BASED INTENT]
-             # We determine the "Requires Read" state exclusively from the planning phase.
-             # If the agent plans to use any tool that provides data/content, we set the flag.
-             if "[PLAN]" in agent_text and turn == 0:
-                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content"]
-                  if any(phrase in agent_text.lower() for phrase in data_tools):
+             # We detect the "Requires Read" state by inspecting the reasoning.
+             # If the agent plans/mentions any tool that provides data/content, we set the flag.
+             # This is persistent: once True, it stays True.
+             data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed"]
+             if any(phrase in agent_text.lower() for phrase in data_tools):
+                  if not requires_read:
                        requires_read = True
-                       logging.info("[MCP] Intent detected via PLAN: DATA_EXTRACTION")
-                  else:
-                       logging.info("[MCP] Intent detected via PLAN: FIND_ONLY")
+                       logging.info(f"[MCP][Turn {turn+1}] Intent locked: DATA_EXTRACTION (detected in reasoning)")
 
              # [CONTINUITY NUDGE]
              # Only fire if discovery tools (list or find) were used but read wasn't,
@@ -726,7 +727,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        file_path = raw_res.replace("[FILE]:", "").strip()
                        known_files.add(file_path)
                        # Inject nudge
-                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'."
+                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'. You MUST now call `read_omd_file` to access its content."
                   
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
