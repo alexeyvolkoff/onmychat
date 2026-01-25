@@ -257,16 +257,18 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         logging.warning(f"Failed to sort OMD items: {e}")
 
                     result_str = f"Files in {path} (most recent first):\n"
+                    base_dir = path.rstrip("/")
                     for item in items:
                         name = item.get("name", "")
                         type_ = item.get("type", "file")
                         size = item.get("size", "0")
                         date = item.get("date", "")
                         
+                        abs_path = f"{base_dir}/{name}"
                         if type_ in ["dir", "directory"]:
-                            result_str += f"- [{type_}] {name}\n"
+                            result_str += f"- [{type_}] {abs_path}\n"
                         else:
-                            result_str += f"- [{type_}] {name} (Size: {size} bytes) [modified: {date}]\n"
+                            result_str += f"- [{type_}] {abs_path} (Size: {size} bytes) [modified: {date}]\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -498,7 +500,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              # conclusion, nudge it to use the tool.
              if turn > 0 and len(agent_text) > 50 and "read_omd_file" not in all_tool_results and "list_omd_files" in all_tool_results:
                   # If we just listed but hasn't read yet, and the LLM is chatting, force it back.
-                  messages.append({"role": "user", "content": "You listed the files but didn't READ any. You MUST call `read_omd_file` on the target file to get its real content. Do NOT simulate or invent content."})
+                  messages.append({"role": "user", "content": "You identified a file in your reasoning but didn't READ it. You MUST call `read_omd_file` using the ABSOLUTE path from the previous tool output now. Do NOT simulate content."})
                   logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
                   continue
 
