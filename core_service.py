@@ -473,6 +473,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     ]
     
     all_tool_results = ""
+    max_turns = 8 # Increased for complex autonomous tasks
+    listed_paths = set()
+    known_files = set() # Strict cache of verified files
+    call_history = set() # Prevent repeated failed attempts
     requires_read = False # Will be set by [PLAN] inspection
     
     has_read_file = False
