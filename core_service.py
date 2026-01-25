@@ -195,10 +195,60 @@ MCP_TOOLS = [
               "required": ["query"]
           }
       }
+  },
+  {
+      "type": "function",
+      "function": {
+          "name": "find_omd_file",
+          "description": "Find a single file in a directory based on natural language criteria (e.g., 'most recent', 'biggest', 'plain text').",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "root_directory": {
+                      "type": "string",
+                      "description": "The directory to search within"
+                  },
+                  "condition": {
+                      "type": "string",
+                      "description": "Natural language condition (e.g., 'most recent invoice', 'largest pdf')"
+                  }
+              },
+              "required": ["root_directory", "condition"]
+          }
+      }
   }
 ]
 
 # === MCP TOOLS ===
+async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -> str:
+    # 1. List files
+    listing = await list_omd_files(ctx, root_directory)
+    if listing.startswith("Error") or "Result: Directory" in listing:
+        return "[NO FILE FOUND]"
+    
+    # 2. Use LLM to pick the file
+    prompt = (
+        "You are a file selection assistant.\n"
+        "Given the following directory listing, identify the single file that best matches the condition.\n"
+        f"Condition: {condition}\n\n"
+        f"Listing:\n{listing}\n\n"
+        "Respond ONLY with the absolute path of the chosen file in this format: [FILE]:/absolute/path/to/file\n"
+        "If no file matches, respond with: [NO FILE FOUND]\n"
+        "IMPORTANT: The path must be taken EXACTLY from the [ABS_PATH] in the listing."
+    )
+    
+    payload = {
+        "model": MCP_MODEL,
+        "messages": [{"role": "system", "content": prompt}],
+        "options": {"temperature": 0.0}
+    }
+    
+    data = await llm_request(payload)
+    if not data or "message" not in data:
+        return "[NO FILE FOUND]"
+    
+    return data["message"]["content"].strip()
+
 async def list_supported_tools(ctx: UserContext) -> str:
     # Construct description from MCP_TOOLS to ensure it's always accurate
     output = "Currently supported System Tools:\n"
@@ -637,6 +687,17 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                       elif "DIRECTORY" in res:
                            # If it failed because it was a directory, we need to mark it
                            listed_paths.add(path_arg.rstrip("/"))
+             elif name == "find_omd_file":
+                  root_dir = args.get("root_directory", "").strip()
+                  cond = args.get("condition", "").strip()
+                  res = await find_omd_file(ctx, root_dir, cond)
+                  
+                  if res.startswith("[FILE]:"):
+                       file_path = res.replace("[FILE]:", "").strip()
+                       known_files.add(file_path)
+                       # Inject nudge
+                       res += f"\n\nSYSTEM NOTICE: File found. You MUST now call `read_omd_file` using the absolute path '{file_path}' exactly."
+                  
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
                  # Prevent early writes if source paths are mentioned but not yet processed.
