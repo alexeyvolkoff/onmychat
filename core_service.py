@@ -285,7 +285,18 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
             url = f"{base_url}/{storage_id}/{clean_path}"
         
         # Use fetch_document_text which handles PDFs via ?totext parameter
-        return await fetch_document_text(url, ctx.omd_key)
+        res = await fetch_document_text(url, ctx.omd_key)
+        
+        # [GENERALIZED REDIRECT]
+        # If read_omd_file hits a directory, automatically provide the listing 
+        # so the agent can self-correct without 'nanny' code in the core loop.
+        if "Received login page" in res or "Access denied" in res:
+             # Try listing it as a fallback - maybe it's just a directory?
+             listing = await list_omd_files(ctx, path)
+             if "Files in" in listing:
+                  return f"Error: '{path}' is a DIRECTORY. Contents:\n{listing}"
+        
+        return res
 
     except Exception as e:
         return f"Exception reading file: {e}"
@@ -439,15 +450,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  {"role": "system", "content": messages[0]["content"] + "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain. \n\n" + f"CURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         
-        # [TURN 1 DIRECTORY LOCK]
-        # If the user mentioned a path in Turn 0, and it looks like a directory 
-        # (ends in / or has no extension), ONLY offer list_omd_files.
         available_tools = MCP_TOOLS
-        if turn == 0 and potential_paths:
-             is_explicit_dir = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
-             if is_explicit_dir:
-                  available_tools = [t for t in available_tools if t["function"]["name"] == "list_omd_files"]
-                  logging.info(f"[MCP] Turn 1 Directory Lock: Forcing exploration of {potential_paths}")
+        # General removal of search_memory if paths were provided
 
         # General removal of search_memory if paths were provided
         if potential_paths:
@@ -522,35 +526,14 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # Hash the call to check for duplication in this session
         call_id_str = f"{name}:{json.dumps(args, sort_keys=True)}"
         
-        # [Nuclear Phase 5: TRAJECTORY ENFORCEMENT & LISTING LOCK]
-        # If the user mentioned a directory, and the agent tries to READ a file in it
-        # WITHOUT listing first, intercept and force exploration.
-        if name == "read_omd_file":
-             path_arg = args.get("path", "").strip()
-             path_parts = [p for p in path_arg.strip("/").split("/") if p]
-             parent_dir = "/" + "/".join(path_parts[:-1]) if len(path_parts) > 1 else "/"
-             
-             # If parent is a mentioned but unlisted path, force listing.
-             is_unlisted_parent = any(p.rstrip("/").startswith(parent_dir.rstrip("/")) for p in potential_paths) and parent_dir.rstrip("/") not in listed_paths
-             
-             if is_unlisted_parent:
-                  res = (
-                      f"INSTRUCTION: You are trying to read '{os.path.basename(path_arg)}' but you have NOT listed the contents of '{parent_dir}' yet. "
-                      f"Guessing filenames and content is FORBIDDEN. "
-                      f"You MUST call `list_omd_files` on '{parent_dir}' immediately to see the actual files and their modification dates."
-                  )
-                  logging.warning(f"[MCP] Listing Lock triggered for: {path_arg}")
-                  name = "listing_lock" 
-             
-        if name != "listing_lock":
-             if call_id_str in call_history:
-                  # Model is looping. Inject a forceful mechanical block.
-                  candidate_paths = sorted(list(known_files))
-                  res = f"SYSTEM ERROR: You already called {name} with these arguments. DO NOT REPEAT. If you need data, call `read_omd_file` on one of these verified paths: {candidate_paths[:5]}"
-                  logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
-             else:
-                  call_history.add(call_id_str)
-                  res = ""
+        if call_id_str in call_history:
+             # Model is looping. Inject a forceful mechanical block.
+             candidate_paths = sorted(list(known_files))
+             res = f"SYSTEM ERROR: You already called {name} with these arguments. DO NOT REPEAT. If you need data, call `read_omd_file` on one of these verified paths: {candidate_paths[:5]}"
+             logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
+        else:
+             call_history.add(call_id_str)
+             res = ""
              
              # [NUCLEAR PHASE 4: SEARCH WEB LOOP PREVENTION]
              if name == "search_web":
@@ -645,16 +628,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             if call_id:
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)
-            
-            # [Trajectory Recovery Nudge]
-            if name == "listing_lock":
-                 messages.append({"role": "user", "content": "Listing lock resolved. Execute list_omd_files now."})
-                 logging.info("[MCP] Injected trajectory recovery nudge.")
-            
             found_new_info = True
-            
-            # Success blocks for listing and reading are removed to allow autonomous reasoning.
-            pass
         else:
             msg_entry = {"role": "tool", "content": "Error: Tool returned no result."}
             if call_id:
