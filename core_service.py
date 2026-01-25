@@ -567,7 +567,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              # We determine the "Requires Read" state exclusively from the planning phase (Turn 0).
              # This prevents the agent from being "tricked" into a read by echoing subsequent tool hints.
              if turn == 0:
-                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed"]
+                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed", "inside"]
                   if any(phrase in agent_text.lower() for phrase in data_tools):
                        requires_read = True
                        logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
@@ -729,8 +729,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        file_path = raw_res.replace("[FILE]:", "").strip()
                        known_files.add(file_path)
                        # Inject nudge
-                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'."
-                  
+                       
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
                  # Prevent early writes if source paths are mentioned but not yet processed.
