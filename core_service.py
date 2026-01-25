@@ -266,9 +266,9 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         
                         abs_path = f"{base_dir}/{name}"
                         if type_ in ["dir", "directory"]:
-                            result_str += f"- [{type_}] {abs_path}\n"
+                            result_str += f"- [{type_}] Name: {name} | Path: {abs_path}\n"
                         else:
-                            result_str += f"- [{type_}] {abs_path} (Size: {size} bytes) [modified: {date}]\n"
+                            result_str += f"- [{type_}] Name: {name} | Path: {abs_path} (Size: {size} bytes) [modified: {date}]\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -585,9 +585,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                                  
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
-                                 matches = re.findall(r'- \[(?:file|dir)\] (.+?)(?: \(|\n|$)', res)
-                            for f in matches:
-                                 known_files.add(f"{path_arg.rstrip('/')}/{f.strip()}")
+                                  # Extract path from format: "- [file] Name: ... | Path: /path/to/file ..."
+                                 path_matches = re.findall(r'\| Path: (/[^\s|]+)', res)
+                             for f in path_matches:
+                                  known_files.add(f.strip())
+                             
+                             # Also track sub-directories
+                             dir_matches = re.findall(r'- \[dir\] Name: .+? \| Path: (/[^\s|]+)', res)
+                             for d in dir_matches:
+                                  listed_paths.add(d.strip())
              
              elif name == "read_omd_file":
                  path_arg = args.get("path", "").strip()
@@ -595,14 +601,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  # [ANTI-HALLUCINATION] List before Read
                  # We encourage the model to list first, but if it knows the file, we check our cache
                  path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
-                 
-                 # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
-                 if path_arg.rstrip("/") in listed_paths:
-                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You cannot read its content as a file. Use `list_omd_files` on it instead."
-                      logging.warning(f"[MCP] Blocked directory read: {path_arg}")
-                 elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
-                      res = f"ERROR: File '{os.path.basename(path_arg)}' was NOT found in the listing for '{path_dir}'. Please list the directory again if you think this is a mistake, or check the filename."
-                      logging.warning(f"[MCP] Blocked hallucinated read: {path_arg}")
+                                  # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
+                  if path_arg.rstrip("/") in listed_paths:
+                       res = f"ERROR: '{path_arg}' is a DIRECTORY. Call `read_omd_file` on one of the ABSOLUTE FILE PATHS listed in the previous `list_omd_files` result instead."
+                       logging.warning(f"[MCP] Blocked directory read: {path_arg}")
+                  elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
+                       res = f"ERROR: File '{path_arg}' was NOT found in the listing for '{path_dir}'. Reference the 'Path: ...' value from the listing EXACTLY."
+                       logging.warning(f"[MCP] Blocked hallucinated/corrupted read: {path_arg}")
                  else:
                       res = await read_omd_file(ctx, path_arg)
                       if not res.startswith("Error"):
