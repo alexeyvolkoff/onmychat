@@ -240,6 +240,7 @@ async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -
     payload = {
         "model": MCP_MODEL,
         "messages": [{"role": "system", "content": prompt}],
+        "stream": False,
         "options": {"temperature": 0.0}
     }
     
@@ -1181,9 +1182,14 @@ async def llm_request(payload: dict, headers: dict = None):
                 headers=headers or {"Content-Type": "application/json"},
                 json=payload
             ) as resp:
-                return await resp.json()
+                if "application/json" in resp.headers.get("Content-Type", "").lower():
+                    return await resp.json()
+                else:
+                    text = await resp.text()
+                    logging.error(f"LLM error: Unexpected content type {resp.headers.get('Content-Type')}. Body: {text[:200]}")
+                    return None
     except Exception as e:
-        logging.error(f"LLM error: {e}")
+        logging.error(f"LLM request exception: {e}")
         return None
 
 
