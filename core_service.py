@@ -547,30 +547,28 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
 
               # [CONTINUITY NUDGE]
-              # If Turn 1+ and there are NO tool calls, but the agent provided reasoning,
-              # it might be trying to "simulated" completion.
-              # We fire if discovery tools (list or find) were used but read wasn't.
-              has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
-              if turn > 0 and not has_read_file and has_discovered:
-                   # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
-                   messages.append({"role": "user", "content": "You identified a file but didn't READ it. You MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion until you have the real content."})
-                   logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
-                   continue
+             # [CONTINUITY NUDGE]
+             # If Turn 1+ and there are NO tool calls, but the agent provided reasoning,
+             # it might be trying to "simulated" completion.
+             # We fire if discovery tools (list or find) were used but read wasn't.
+             has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
+             if turn > 0 and not has_read_file and has_discovered:
+                  # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
+                  messages.append({"role": "user", "content": "You identified a file but didn't READ it. You MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion until you have the real content."})
+                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
+                  continue
 
-              # RECORD CONCLUSION ONLY IF NO TOOL CALLS
-              if not tool_calls and agent_text and agent_text != "NO_TOOL":
-                   # [STRICT STOP CHECK]
-                   # If we have a file in known_files but haven't read it, we block the conclusion
-                   if known_files and not has_read_file:
-                        messages.append({"role": "user", "content": "Wait! You found a file but haven't read its content. You MUST call `read_omd_file` before finishing."})
-                        logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading. Blocking.")
-                        continue
-                   
-                   all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
-             # If there are no tool calls, and the agent provided reasoning, it's likely done or stuck.
-             # In this case, we break the loop.
-             if not tool_calls:
-                 break
+             # RECORD CONCLUSION ONLY IF NO TOOL CALLS
+             if not tool_calls and agent_text and agent_text != "NO_TOOL":
+                  # [STRICT STOP CHECK]
+                  # If we have a file in known_files but haven't read it, we block the conclusion
+                  if known_files and not has_read_file:
+                       messages.append({"role": "user", "content": "Wait! You found a file but haven't read its content. You MUST call `read_omd_file` before finishing."})
+                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading. Blocking.")
+                       continue
+                  
+                  all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
+                  break
             
         # If there are no tool calls and no agent_text (e.g., just an empty message or "NO_TOOL" without content)
         # or if the agent_text was just a plan on turn 0, handle it here.
@@ -700,13 +698,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                   cond = args.get("condition", "").strip()
                   res = await find_omd_file(ctx, root_dir, cond)
                   logging.info(f"[MCP] Find Result: {res}")
-                                    if res.startswith("[FILE]:"):
-                        # Extract only the path part, ignoring any SYSTEM NOTICE that might be appended
-                        raw_res = res.split("\n\nSYSTEM NOTICE:")[0]
-                        file_path = raw_res.replace("[FILE]:", "").strip()
-                        known_files.add(file_path)
-                        # Inject nudge
-                        res += f"\n\nSYSTEM NOTICE: File found. You MUST now call `read_omd_file` using the absolute path '{file_path}' exactly."
+                  if res.startswith("[FILE]:"):
+                       # Extract only the path part, ignoring any SYSTEM NOTICE that might be appended
+                       raw_res = res.split("\n\nSYSTEM NOTICE:")[0]
+                       file_path = raw_res.replace("[FILE]:", "").strip()
+                       known_files.add(file_path)
+                       # Inject nudge
+                       res += f"\n\nSYSTEM NOTICE: File found. You MUST now call `read_omd_file` using the absolute path '{file_path}' exactly."
                   
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
