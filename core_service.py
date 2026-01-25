@@ -403,12 +403,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
 
-    # [OPTIMIZATION] Avoid redundant history loading if possible
-    # We pass the system_instruction as a fixed pilot prompt.
-    # We do NOT include full history here to keep the tool agent focused on the IMMEDIATE task.
+    # Initial Turn: Mandatory [PLAN] Phase
+    # We use a more permissive system prompt for the planning turn.
     messages = [
-        {"role": "system", "content": system_instruction + "\nCRITICAL: Respond ONLY with tool calls. Do NOT apologize. Do NOT explain. If no more tools are needed, respond with 'NO_TOOL'."},
-        {"role": "user", "content": f"User Request: {message}\nFocus only on file operations. If the request is about WEATHER, NEWS, FLIGHTS, stocks, or current events, use 'search_web'. YOU DO NOT HAVE OTHER TOOLS.\n{path_hint}"}
+        {"role": "system", "content": system_instruction},
+        {"role": "user", "content": f"User Request: {message}\n{path_hint}"}
     ]
     
     all_tool_results = ""
@@ -423,17 +422,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     
     for turn in range(max_turns):
         # [TURN-SPECIFIC GUIDANCE]
-        # Remind the agent about the mandatory planning phase
         guidance = "You are an autonomous agent. "
         if turn == 0:
-             guidance += "MANDATORY: In this FIRST turn, you MUST create a `[PLAN]` checklist before any tool call. You can call a tool in the SAME turn as the plan."
+             guidance += "MANDATORY: Analyze the request and create a `[PLAN]` checklist. You MUST also call the first tool in your plan if possible."
+             # Remove strict "Tool Only" constraint for turn 0
+             current_messages = [
+                 {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
+             ] + messages[1:]
         else:
-             guidance += "Refer to your `[PLAN]`. Mark steps as [x] once done. Proceed with the next logical step."
-             
-        # Inject guidance into system prompt for this turn
-        current_messages = [
-            {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
-        ] + messages[1:]
+             guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
+             # Turn 1+ is strict tool calling
+             current_messages = [
+                 {"role": "system", "content": messages[0]["content"] + "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain. \n\n" + f"CURRENT GUIDANCE: {guidance}"}
+             ] + messages[1:]
         
         # [AGGRESSIVE DIRECTORY ENFORCEMENT]
         # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
@@ -471,6 +472,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              
         messages.append(msg)
         
+        # [REASONING CAPTURE]
+        # Ensure that plans, thoughts, and checklists are preserved and visible to the main assistant.
+        agent_text = msg.get("content", "").strip()
+        if agent_text:
+             all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{agent_text}\n\n"
+             logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
+
         if not tool_calls:
             # Plan/Thought turn detection
             content = msg.get("content", "").strip()
