@@ -418,7 +418,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     # We use a more permissive system prompt for the planning turn.
     messages = [
         {"role": "system", "content": system_instruction},
-        {"role": "user", "content": f"User Request: {message}"}
+        {"role": "user", "content": f"User Request: {message}\n{path_hint}"}
     ]
     
     all_tool_results = ""
@@ -427,6 +427,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     known_files = set() # Strict cache of verified files
     call_history = set() # Prevent repeated failed attempts
     has_read_file = False
+    last_listing = "" # For re-injection on errors
     
     # The agent is now autonomous and reasoning-based. 
     # It will manage its own data extraction logic via the [PLAN] mandate.
@@ -448,8 +449,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
                        guidance += "\nDISCOVERY PHASE: You MUST use `list_omd_files` first to verify the file name and date."
              
+             # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
-                 {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}\nSYSTEM HINT: Detected path: {', '.join(potential_paths)}. Call `list_omd_files` on this EXACT path."}
+                 {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         else:
              guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
@@ -493,11 +495,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{agent_text}\n\n"
              logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
 
+             # [CONTINUITY NUDGE]
+             # If Turn 1+ and there are NO tool calls, but the agent provided reasoning,
+             # it might be trying to "simulated" completion. Unless it's a short 
+             # conclusion, nudge it to use the tool.
+             if turn > 0 and len(agent_text) > 50 and "read_omd_file" not in all_tool_results and "list_omd_files" in all_tool_results:
+                  # If we just listed but hasn't read yet, and the LLM is chatting, force it back.
+                  messages.append({"role": "user", "content": "You identified a file in your reasoning but didn't READ it. You MUST call `read_omd_file` using the ABSOLUTE path from the previous tool output now. Do NOT simulate content."})
+                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
+                  continue
+
+             # Agent reached end of task or is asking a clarifying question.
+             # Record final conclusion.
+             if agent_text and agent_text != "NO_TOOL":
+                  all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
              # If there are no tool calls, and the agent provided reasoning, it's likely done or stuck.
+             # In this case, we break the loop.
              if not tool_calls:
-                 # Record final conclusion if it exists
-                 if agent_text and agent_text != "NO_TOOL":
-                      all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
                  break
             
         # If there are no tool calls and no agent_text (e.g., just an empty message or "NO_TOOL" without content)
@@ -569,11 +583,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                             res = await list_omd_files(ctx, path_arg)
                             if not res.startswith("Error"):
                                  listed_paths.add(path_arg.rstrip("/"))
-                                 call_history.add(call_id_str)
-                                  
+                                 last_listing = res # Cache for recovery
+                                 
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
-                                  # Extract absolute paths from format: "- [FILE] [ABS_PATH]: /path/to/file"
+                                 # Extract absolute paths from format: "- [FILE] [ABS_PATH]: /path/to/file"
                                  path_matches = re.findall(r'\[ABS_PATH\]: ([^\s\n|]+)', res)
                                  for f in path_matches:
                                       known_files.add(f.strip())
@@ -582,28 +596,47 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                                  dir_matches = re.findall(r'- \[DIRECTORY\] \[ABS_PATH\]: ([^\s\n|]+)', res)
                                  for d in dir_matches:
                                       listed_paths.add(d.strip())
+                                      
+                                 # [SYSTEM REDIRECT] 
+                                 # Inject a mandatory manifest into the tool result to prevent logic errors
+                                 res += f"\n\nSYSTEM NOTICE: You MUST use one of these [ABS_PATH] values exactly for your next tool call. Forbidden: guessing, relative paths, or reading directories."
              
              elif name == "read_omd_file":
-                  path_arg = args.get("path", "").strip()
-                  
-                  # [ANTI-HALLUCINATION] List before Read
-                  # We encourage the model to list first, but if it knows the file, we check our cache
-                  path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
-                  
-                  # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
-                  if path_arg.rstrip("/") in listed_paths:
-                       res = f"ERROR: '{path_arg}' is a DIRECTORY. You MUST use an [ABS_PATH] of a FILE from the listing instead."
-                       logging.warning(f"[MCP] Blocked directory read: {path_arg}")
-                  elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
-                       res = f"ERROR: Path '{path_arg}' not found in current manifest. Reference the [ABS_PATH] value EXACTLY as provided by the tool."
-                       logging.warning(f"[MCP] Blocked hallucinated/corrupted read: {path_arg}")
-                  else:
-                       res = await read_omd_file(ctx, path_arg)
-                       if not res.startswith("Error"):
-                            has_read_file = True
-                       elif "DIRECTORY" in res:
-                            # If it failed because it was a directory, we need to mark it
-                            listed_paths.add(path_arg.rstrip("/"))
+                 path_arg = args.get("path", "").strip()
+                 
+                 # [ANTI-HALLUCINATION] List before Read
+                 # We encourage the model to list first, but if it knows the file, we check our cache
+                 path_dir = path_arg.rstrip("/").rsplit("/", 1)[0]
+                 
+                 # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
+                 if path_arg.rstrip("/") in listed_paths:
+                      # [PATH MISMATCH NUDGE]
+                      # Did the agent mention a file in its reasoning but call read on the directory?
+                      detected_file = ""
+                      for kf in known_files:
+                           if os.path.basename(kf) in agent_text or kf in agent_text:
+                                detected_file = kf
+                                break
+                      
+                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You MUST use the [ABS_PATH] of a FILE from the listing instead."
+                      if detected_file:
+                           res = f"CRITICAL MISMATCH: You correctly identified '{detected_file}' in your reasoning, but wrongly called read_omd_file on the DIRECTORY '{path_arg}'.\n\nRETRY NOW: Call `read_omd_file` using the absolute path '{detected_file}' WITHOUT any modification."
+                      
+                      # Re-inject the listing to help it recover
+                      if last_listing:
+                           res += f"\n\n--- REFRESHED LISTING ---\n{last_listing}"
+                      
+                      logging.warning(f"[MCP] Blocked directory read and injected nudge/listing: {path_arg}")
+                 elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
+                      res = f"ERROR: Path '{path_arg}' not found in current manifest. Reference the [ABS_PATH] value EXACTLY as provided by the tool."
+                      logging.warning(f"[MCP] Blocked hallucinated/corrupted read: {path_arg}")
+                 else:
+                      res = await read_omd_file(ctx, path_arg)
+                      if not res.startswith("Error"):
+                           has_read_file = True
+                      elif "DIRECTORY" in res:
+                           # If it failed because it was a directory, we need to mark it
+                           listed_paths.add(path_arg.rstrip("/"))
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
                  # Prevent early writes if source paths are mentioned but not yet processed.
@@ -1269,14 +1302,7 @@ async def perform_prompt(ctx: UserContext,
 
     # === ОСНОВНОЙ ЗАПРОС ===
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    
-    if is_work_mode:
-        # [HISTORY ISOLATION]
-        # Prevents hallucinations from previous failed turns when tools were used.
-        # This makes the Tool Output the ONLY source of truth for the final response.
-        messages = [{"role": "system", "content": system_prompt}]
-    else:
-        messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
+    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
     # Добавляем новый запрос
     user_message = {

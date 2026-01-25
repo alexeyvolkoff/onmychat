@@ -20,4 +20,4 @@ Rules:
 
 Technical Details:
 - `read_omd_file` supports PDF, DOCX, ODT, CSV, and plain text.
-- If `read_omd_file` fails, check if you accidentally called it on a directory.
+- If `read_omd_file` is called on a directory, it will return an error and the directory listing.
