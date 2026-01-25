@@ -495,9 +495,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              if potential_paths:
                   is_dir_like = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
                   if is_dir_like:
-                       available_tools = [t for t in MCP_TOOLS if t["function"]["name"] == "list_omd_files"]
+                       available_tools = [t for t in MCP_TOOLS if t["function"]["name"] == "find_omd_file"]
                        logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
-                       guidance += "\nDISCOVERY PHASE: You MUST use `list_omd_files` first to verify the file name and date."
+                       guidance += "\nDISCOVERY PHASE: You MUST use `find_omd_file` first to find the file name."
              
              # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
