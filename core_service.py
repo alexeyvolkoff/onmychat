@@ -266,9 +266,9 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         
                         abs_path = f"{base_dir}/{name}"
                         if type_ in ["dir", "directory"]:
-                            result_str += f"- [{type_}] Name: {name} | Path: <<{abs_path}>>\n"
+                            result_str += f"- [DIRECTORY] [ABS_PATH]: {abs_path}\n"
                         else:
-                            result_str += f"- [{type_}] Name: {name} | Path: <<{abs_path}>> (Size: {size} bytes, modified: {date})\n"
+                            result_str += f"- [FILE] [ABS_PATH]: {abs_path} (Size: {size}, Last Modified: {date})\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -585,15 +585,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                                  
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
-                                  # Extract path from format: "- [file] Name: ... | Path: <</path/to/file>> ..."
-                                 path_matches = re.findall(r'\| Path: <<(.+?)>>', res)
+                                 # Extract absolute paths from format: "- [FILE] [ABS_PATH]: /path/to/file"
+                                 path_matches = re.findall(r'\[ABS_PATH\]: ([^\s\n|]+)', res)
                                  for f in path_matches:
                                       known_files.add(f.strip())
                                  
                                  # Also track sub-directories
-                                 dir_matches = re.findall(r'- \[dir\] Name: .+? \| Path: <<(.+?)>>', res)
+                                 dir_matches = re.findall(r'- \[DIRECTORY\] \[ABS_PATH\]: ([^\s\n|]+)', res)
                                  for d in dir_matches:
                                       listed_paths.add(d.strip())
+                                      
+                                 # [SYSTEM REDIRECT] 
+                                 # Inject a mandatory manifest into the tool result to prevent logic errors
+                                 res += f"\n\nSYSTEM NOTICE: You MUST use one of these [ABS_PATH] values exactly for your next tool call. Forbidden: guessing, relative paths, or reading directories."
              
              elif name == "read_omd_file":
                  path_arg = args.get("path", "").strip()
@@ -604,10 +608,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  
                  # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
                  if path_arg.rstrip("/") in listed_paths:
-                      res = f"ERROR: '{path_arg}' is a DIRECTORY. Call `read_omd_file` on one of the ABSOLUTE FILE PATHS listed in the previous `list_omd_files` result instead."
+                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You MUST use an [ABS_PATH] of a FILE from the previous listing instead."
                       logging.warning(f"[MCP] Blocked directory read: {path_arg}")
                  elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
-                      res = f"ERROR: File '{path_arg}' was NOT found in the listing for '{path_dir}'. Reference the 'Path: ...' value from the listing EXACTLY."
+                      res = f"ERROR: Path '{path_arg}' not found in current manifest. Reference the [ABS_PATH] value EXACTLY as provided by the tool."
                       logging.warning(f"[MCP] Blocked hallucinated/corrupted read: {path_arg}")
                  else:
                       res = await read_omd_file(ctx, path_arg)
