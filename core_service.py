@@ -439,16 +439,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
         available_tools = MCP_TOOLS
         
-        # [PHASE 2: DYNAMIC TOOL FILTERING]
-        # If it's a data-extraction request, hide the 'write' tool to prevent error-writing loops.
-        write_keywords = ["write", "save", "create", "update", "delete", "move", "rename"]
-        is_write_request = any(kw in message.lower() for kw in write_keywords)
-        
-        if is_data_request and not is_write_request:
-             available_tools = [t for t in available_tools if t["function"]["name"] != "write_omd_file"]
-             logging.info("[MCP] Reading request detected - hiding write_omd_file tool.")
-        
-        # [TURN 2 MANDATE]
         # [DYNAMISM]
         # In this mode, we show all tools and let the agent reason about its checklist and the task.
         available_tools = MCP_TOOLS
