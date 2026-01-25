@@ -473,10 +473,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     ]
     
     all_tool_results = ""
-    max_turns = 8 # Increased for complex autonomous tasks
-    listed_paths = set()
-    known_files = set() # Strict cache of verified files
-    call_history = set() # Prevent repeated failed attempts
+    requires_read = False # Will be set by [PLAN] inspection
+    
     has_read_file = False
     last_listing = "" # For re-injection on errors
     
@@ -492,20 +490,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if turn == 0:
              guidance += "MANDATORY: Analyze the request and create a `[PLAN]` checklist. You MUST also call the first tool in your plan if possible."
              # [PROACTIVE DISCOVERY GATE]
-             # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
-             if potential_paths:
+             if potential_paths and not known_files:
                   is_dir_like = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
                   if is_dir_like:
-                       available_tools = [t for t in MCP_TOOLS if t["function"]["name"] == "find_omd_file"]
+                       available_tools = [t for t in MCP_TOOLS if t["function"]["name"] == "find_omd_file" or t["function"]["name"] == "list_omd_files"]
                        logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
-                       guidance += "\nDISCOVERY PHASE: You MUST use `find_omd_file` first to find the file name."
+                       guidance += "\nDISCOVERY PHASE: You MUST use `find_omd_file` or `list_omd_files` first to find the file name."
              
              # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
                  {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         else:
-             guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
+             if known_files:
+                  guidance = "Proceed executing your `[PLAN]`. Use the absolute file paths already discovered."
+             else:
+                  guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
+             
              # Turn 1+ is strict tool calling
              current_messages = [
                  {"role": "system", "content": messages[0]["content"] + "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain. \n\n" + f"CURRENT GUIDANCE: {guidance}"}
@@ -545,24 +546,30 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if agent_text:
              all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{agent_text}\n\n"
              logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
+             
+             # [PLAN-BASED INTENT]
+             if "[PLAN]" in agent_text and turn == 0:
+                  if "read_omd_file" in agent_text:
+                       requires_read = True
+                       logging.info("[MCP] Intent detected via PLAN: DATA_EXTRACTION")
+                  else:
+                       logging.info("[MCP] Intent detected via PLAN: FIND_ONLY")
 
-              # [CONTINUITY NUDGE]
              # [CONTINUITY NUDGE]
-             # If Turn 1+ and there are NO tool calls, but the agent provided reasoning,
-             # it might be trying to "simulated" completion.
-             # We fire if discovery tools (list or find) were used but read wasn't.
+             # Only fire if discovery tools (list or find) were used but read wasn't,
+             # and ONLY if the user's intent requires reading the file content.
              has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
-             if turn > 0 and not has_read_file and has_discovered:
+             if turn > 0 and not has_read_file and has_discovered and requires_read:
                   # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
-                  messages.append({"role": "user", "content": "You identified a file but didn't READ it. You MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion until you have the real content."})
-                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
+                  messages.append({"role": "user", "content": "You identified a file. Since the user asked for details/content, you MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion yet."})
+                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading (Intended-Read). Injecting Continuity Nudge.")
                   continue
 
              # RECORD CONCLUSION ONLY IF NO TOOL CALLS
              if not tool_calls and agent_text and agent_text != "NO_TOOL":
                   # [STRICT STOP CHECK]
-                  # If we have a file in known_files but haven't read it, we block the conclusion
-                  if known_files and not has_read_file:
+                  # Only block if we haven't read but the intent requires reading
+                  if known_files and not has_read_file and requires_read:
                        messages.append({"role": "user", "content": "Wait! You found a file but haven't read its content. You MUST call `read_omd_file` before finishing."})
                        logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading. Blocking.")
                        continue
