@@ -1279,7 +1279,7 @@ async def llm_request(payload: dict, headers: dict = None):
 
 
 # === Чат ===
-async def perform_prompt(ctx: UserContext,
+async def _perform_prompt_gen(ctx: UserContext,
                          instruction: str,
                          message: str,
                          is_rag: bool=False,
@@ -1289,7 +1289,7 @@ async def perform_prompt(ctx: UserContext,
                          img_source: str = None,
                          stream: bool = False,
                          intent: str = "chat",
-                         event: str = None) -> str | AsyncGenerator:
+                         event: str = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1378,7 +1378,8 @@ async def perform_prompt(ctx: UserContext,
         }
         data = await llm_request(prep_payload)
         if not data:
-            return "⚠️ RAG query failed."
+            yield {"error": "⚠️ RAG query failed.", "done": True}
+            return
         
         rag_resp = data["message"]["content"].strip()
         if rag_resp and not rag_resp.startswith("No information"):
@@ -1562,7 +1563,8 @@ async def perform_prompt(ctx: UserContext,
             save_history(ctx, history, chat_name)
             
         response["chatinfo"] = chat_info
-        return response
+        yield response
+        return
 
 
     if stream:
@@ -1604,14 +1606,45 @@ async def perform_prompt(ctx: UserContext,
                 else:
                     logging.warning("Empty response")
                     yield {"error": "Empty response", "done": True, "event": event}
-        return gen()    
+        async for item in gen():
+            yield item
+        return    
     else:
         logging.info(f"Requesting LLM {model}")
         data = await llm_request(main_payload)
         if not data:
-            return "⚠️ Request to LLM failed."
+            yield {"error": "⚠️ Request to LLM failed.", "done": True}
+            return
         response = await process_response(data)
-        return response
+        yield response
+        yield response
+        return
+
+async def perform_prompt(*args, **kwargs) -> str | AsyncGenerator:
+    """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
+    stream = kwargs.get("stream", False)
+    
+    gen = _perform_prompt_gen(*args, **kwargs)
+    
+    if stream:
+        return gen
+    else:
+        # Consume the generator and return the final result
+        final_result = None
+        async for item in gen:
+            # We skip 'status' updates in non-streaming mode
+            if item.get("status"):
+                continue
+            
+            if item.get("error"):
+                 return item["error"]
+            
+            # The final yield in non-stream mode is the response dict
+            final_result = item
+            
+        if final_result:
+            return final_result
+        return "⚠️ Unknown error (empty response)"
 
 # === Генерация картинок ===
 
