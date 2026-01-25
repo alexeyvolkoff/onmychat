@@ -454,7 +454,7 @@ async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
     except Exception as e:
         return f"Exception writing file: {e}"
 
-async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
+async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerator[dict, None]:
     # 1. Path Extraction Heuristic (Help the model find the path)
     potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
     path_hint = ""
@@ -648,6 +648,21 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         args = func.get("arguments", {})
         call_id = tool.get("id")
 
+        # [STATUS YIELD]
+        # Map tool name to human-readable status
+        status_map = {
+            "list_omd_files": f"listing {os.path.basename(args.get('path', 'directory').rstrip('/'))}...",
+            "read_omd_file": f"reading {os.path.basename(args.get('path', 'file'))}...",
+            "find_omd_file": f"searching in {os.path.basename(args.get('root_directory', 'root').rstrip('/'))}...",
+            "write_omd_file": f"writing {os.path.basename(args.get('path', 'file'))}...",
+            "search_web": f"searching web for '{args.get('query', '')}'...",
+            "search_memory": "searching memory..."
+        }
+        status_msg = status_map.get(name, f"executing {name}...")
+        
+        # Yield status event
+        yield {"type": "status", "content": status_msg}
+
         # [DEBUG OUTPUT]
         # User requested to see what is going on with tool calls
         debug_info = f"[MCP][Turn {turn+1}] {name}({args})"
@@ -839,7 +854,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         if requires_read:
              all_tool_results += "\nSYSTEM NOTICE: Discovery succeeded, but no file content was read. The requested details (totals/items) are NOT in this tool output."
         
-    return all_tool_results
+    yield {"type": "result", "content": all_tool_results}
 
 # === Онбординг успешен - перенос песрональных данных ===
 def bind_account(ctx: UserContext, omd_key: str):
@@ -1304,13 +1319,21 @@ async def perform_prompt(ctx: UserContext,
     # and results are passed in the instruction parameter. MCP is only for file operations.
     mcp_result = ""
     if intent == "tools":
-        mcp_result = await check_and_execute_mcp(ctx, message)
+        # Handle streaming MCP execution
+        async for update in check_and_execute_mcp(ctx, message):
+            if update["type"] == "status":
+                # Pass status update to the client with 'executing' state so frontend spinner works,
+                # but with specific message text.
+                if stream:
+                    yield {"status": "executing", "message": update["content"]}
+            elif update["type"] == "result":
+                mcp_result = update["content"]
     
     # Flag that we are working with documents
     is_work_mode = False 
 
     if mcp_result:
-        facts_text += f"\n\n*System Tool Output (Trusted Data):*\n{mcp_result}"
+        facts_text += f"\n\n*System Tool Output:*\n{mcp_result}"
         # Trigger work mode if tools were attempted. 
         is_work_mode = True
         
@@ -1373,7 +1396,7 @@ async def perform_prompt(ctx: UserContext,
             "Be concise, factual, and professional. Do not roleplay.\n\n"
             "ABSOLUTE RULES FOR TRUSTED DATA:\n"
             "1. You are FORBIDDEN from generating fake tool results or simulating file reads.\n"
-            "2. NEVER use the phrase '*System Tool Output (Trusted Data):*' in your response. That header is for the SYSTEM only.\n"
+            "2. NEVER use the phrase '*System Tool Output:*' in your response. That header is for the SYSTEM only.\n"
             "3. If the 'System Tool Output' provided earlier contains filenames or paths, report them as found. "
             "Filenames may be in Slovenian or Russian (e.g. 'račun' = 'invoice', 'prijavnica' = 'application'). Treat them as valid matches.\n"
             "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is INSIDE the file (items, totals). "
