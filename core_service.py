@@ -374,9 +374,12 @@ async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
              dest_url = dest_url.rstrip("/") + "/new_file.txt"
              path = path.rstrip("/") + "/new_file.txt"
              logging.info(f"[write_omd_file] No extension found, appending default filename: {path}")
+        
+        # Consistent URL-based token authentication
+        separator = "&" if "?" in dest_url else "?"
+        dest_url += f"{separator}token={storage_key}"
              
         headers = {
-            "authorization": f"token:{storage_key}",
             "Response": "json",
             "Content-Type": "text/plain; charset=utf-8"
         }
@@ -436,14 +439,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  {"role": "system", "content": messages[0]["content"] + "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain. \n\n" + f"CURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         
-        # [AGGRESSIVE DIRECTORY ENFORCEMENT]
-        # Turn 1 with directory path? ONLY offer list_omd_files - no other choice
+        # [TURN 1 DIRECTORY LOCK]
+        # If the user mentioned a path in Turn 0, and it looks like a directory 
+        # (ends in / or has no extension), ONLY offer list_omd_files.
         available_tools = MCP_TOOLS
-        
-        # [DYNAMISM]
-        # In this mode, we show all tools and let the agent reason about its checklist and the task.
-        available_tools = MCP_TOOLS
-             
+        if turn == 0 and potential_paths:
+             is_explicit_dir = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
+             if is_explicit_dir:
+                  available_tools = [t for t in available_tools if t["function"]["name"] == "list_omd_files"]
+                  logging.info(f"[MCP] Turn 1 Directory Lock: Forcing exploration of {potential_paths}")
+
         # General removal of search_memory if paths were provided
         if potential_paths:
              available_tools = [tool for tool in MCP_TOOLS if tool["function"]["name"] != "search_memory"]
