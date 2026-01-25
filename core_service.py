@@ -1300,8 +1300,10 @@ async def perform_prompt(ctx: UserContext,
     logging.info(f"Loading facts: {collection} {is_rag}")
 
     # === MCP Intent Check ===
+    # NOTE: "search" intent is handled separately in api.py where search_web is called directly
+    # and results are passed in the instruction parameter. MCP is only for file operations.
     mcp_result = ""
-    if intent in ["tools", "search"]:
+    if intent == "tools":
         mcp_result = await check_and_execute_mcp(ctx, message)
     
     # Flag that we are working with documents
