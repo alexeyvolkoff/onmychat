@@ -301,6 +301,12 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
              listing = await list_omd_files(ctx, path)
              if "Files in" in listing:
                   return f"Error: '{path}' is a DIRECTORY. Contents:\n{listing}"
+             
+             # Fallback to listing the parent directory to help the agent discover the right file
+             parent_path = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
+             parent_listing = await list_omd_files(ctx, parent_path)
+             if "Files in" in parent_listing:
+                  return f"Error: Access denied or file not found at '{path}'. Contents of parent directory '{parent_path}':\n{parent_listing}"
         
         return res
 
