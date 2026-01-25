@@ -559,20 +559,32 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              
              if clean_agent_text:
                   all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{clean_agent_text}\n\n"
-                  logging.info(f"[MCP][Turn {turn+1}] Agent Reasoning/Plan: {clean_agent_text}")
-             elif tool_calls and turn == 0:
-                  logging.warning(f"[MCP][Turn {turn+1}] Model called a tool but SKIPPED the planning text ([PLAN]).")
+                  
+                  # [PLAN LOGGING]
+                  if turn == 0:
+                       logging.info(f"\n{'='*20} [MCP] GENERATED PLAN {'='*20}\n{clean_agent_text}\n{'='*61}")
+                  else:
+                       logging.info(f"[MCP][Turn {turn+1}] Agent Reasoning/Plan: {clean_agent_text}")
              
              # [PLAN-BASED INTENT]
              # We determine the "Requires Read" state exclusively from the planning phase (Turn 0).
              # This prevents the agent from being "tricked" into a read by echoing subsequent tool hints.
              if turn == 0:
-                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed", "inside"]
-                  if any(phrase in agent_text.lower() for phrase in data_tools):
-                       requires_read = True
-                       logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
+                  # [PLANNING GATE]
+                  # If Turn 0 has a tool call but MISSES the [PLAN] checklist, we intercept.
+                  if tool_calls and ("[PLAN]" not in agent_text and "checklist" not in agent_text.lower()):
+                       logging.warning("[MCP] Turn 0: Model skipped [PLAN]. Intercepting tool call.")
+                       messages.append({"role": "user", "content": "Wait! You MUST provide a detailed `[PLAN]` checklist in and call your first tool Turn 0. Redo your response with a [PLAN]."})
+                       # Forget the tool calls for this turn
+                       tool_calls = []
+                       msg["tool_calls"] = []
                   else:
-                       logging.info("[MCP] Intent locked via Turn 0 PLAN: FIND_ONLY")
+                       data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed", "inside"]
+                       if any(phrase in agent_text.lower() for phrase in data_tools):
+                            requires_read = True
+                            logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
+                       else:
+                            logging.info("[MCP] Intent locked via Turn 0 PLAN: FIND_ONLY")
 
              # [CONTINUITY NUDGE]
              # Only fire if discovery tools (list or find) were used but read wasn't,
