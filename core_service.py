@@ -651,17 +651,30 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
         # [STATUS YIELD]
         # Map tool name to human-readable status
         status_map = {
-            "list_omd_files": f"listing {os.path.basename(args.get('path', 'directory').rstrip('/'))}...",
-            "read_omd_file": f"reading {os.path.basename(args.get('path', 'file'))}...",
-            "find_omd_file": f"searching in {os.path.basename(args.get('root_directory', 'root').rstrip('/'))}...",
-            "write_omd_file": f"writing {os.path.basename(args.get('path', 'file'))}...",
-            "search_web": f"searching web for '{args.get('query', '')}'...",
-            "search_memory": "searching memory..."
+            "list_omd_files": "listing",
+            "read_omd_file": "reading",
+            "find_omd_file": "searching",
+            "write_omd_file": "writing",
+            "search_web": "searching",
+            "search_memory": "searching"
         }
-        status_msg = status_map.get(name, f"executing {name}...")
+        status_msg = status_map.get(name, "executing")
         
+        # Extract arguments for localization
+        status_args = {}
+        if name == "list_omd_files":
+             status_args["path"] = os.path.basename(args.get('path', 'directory').rstrip('/'))
+        elif name == "read_omd_file":
+             status_args["path"] = os.path.basename(args.get('path', 'file'))
+        elif name == "find_omd_file":
+             status_args["path"] = os.path.basename(args.get('root_directory', 'root').rstrip('/'))
+        elif name == "write_omd_file":
+             status_args["path"] = os.path.basename(args.get('path', 'file'))
+        elif name == "search_web":
+             status_args["path"] = args.get('query', '')
+
         # Yield status event
-        yield {"type": "status", "content": status_msg}
+        yield {"type": "status", "content": status_msg, "args": status_args}
 
         # [DEBUG OUTPUT]
         # User requested to see what is going on with tool calls
@@ -1325,7 +1338,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                 # Pass status update to the client with 'executing' state so frontend spinner works,
                 # but with specific message text.
                 if stream:
-                    yield {"status": "executing", "message": update["content"]}
+                    yield {"status": "executing", "message": update["content"], "args": update.get("args")}
             elif update["type"] == "result":
                 mcp_result = update["content"]
     
@@ -1563,8 +1576,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             save_history(ctx, history, chat_name)
             
         response["chatinfo"] = chat_info
-        yield response
-        return
+        return response
 
 
     if stream:
@@ -1599,7 +1611,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                         delta = data["message"]["content"]
                         thinking = False
                         accumulated_response += delta
-                    yield {"delta": delta, "done": False, "thinking": thinking, "event": event}
+                    yield {"delta": delta, "done": False, "thinking": thinking}
                 elif data.get("error"):    
                     logging.warning(f"{data['error']}")
                     yield {"error": data["error"], "done": True, "event": event}
