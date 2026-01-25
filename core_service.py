@@ -773,6 +773,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     if last_content and not any(phrase in last_content.lower() for phrase in refusal_keywords):
         logging.info(f"[MCP] Agent Conclusion: {last_content[:100]}...")
     
+    # If the autonomous agent didn't produce any meaningful output, report failure
+    if not all_tool_results.strip():
+        all_tool_results = "Tool Output: No files were listed or read. The discovery phase returned no data."
+        logging.warning("[MCP] Autonomous loop finished with ZERO results.")
+    elif not has_read_file and "find_omd_file" in all_tool_results:
+        # If we tried to find a file but never read one
+        if "[NO FILE FOUND]" in all_tool_results:
+             all_tool_results += "\nSYSTEM NOTICE: The search tool explicitly returned [NO FILE FOUND]. Do NOT guess the filename."
+        
     return all_tool_results
 
 # === Онбординг успешен - перенос песрональных данных ===
@@ -1244,14 +1253,14 @@ async def perform_prompt(ctx: UserContext,
     if mcp_result:
         facts_text += f"\n\n*System Tool Output (Trusted Data):*\n{mcp_result}"
         # Trigger work mode if tools were attempted. 
-        # Even if they failed or found nothing, we should stay in professional "Work Mode".
         is_work_mode = True
         
         # Override/Append instruction
         instruction += (
              "\n\nResults from System Tools (MCP) are provided above. "
-             "They are the ABSOLUTE SOURCE OF TRUTH. Use them to answer. "
-             "If tools failed or found nothing, state that clearly."
+             "They are the ABSOLUTE SOURCE OF TRUTH. "
+             "If the 'System Tool Output' section above is empty or does NOT contain file content, you have ZERO knowledge. "
+             "Strictly forbid yourself from saying 'It seems that' or 'I found' using non-existent data."
         )
 
     # Only load KB facts if MCP didn't run OR if a specific memory ID is being queried
@@ -1302,10 +1311,11 @@ async def perform_prompt(ctx: UserContext,
         system_prompt = (
             "You are a professional document processing assistant.\n"
             "Be concise, factual, and professional. Do not roleplay.\n\n"
-            "ABSOLUTE RULE: You are FORBIDDEN from generating fake content or simulating file reads.\n"
-            "ONLY use data found in the *System Tool Output (Trusted Data):* section below.\n"
-            "If a file was listed but NOT read using `read_omd_file`, you DO NOT know its content. State that clearly.\n"
-            "NEVER invent invoice totals, dates, or items. If you don't have the data, say you couldn't read the file."
+            "ABSOLUTE RULES FOR TRUSTED DATA:\n"
+            "1. You are FORBIDDEN from generating fake tool results or simulating file reads.\n"
+            "2. NEVER use the phrase '*System Tool Output (Trusted Data):*' in your response. That header is for the SYSTEM only.\n"
+            "3. If the 'System Tool Output' provided earlier does not contain the data you need, state: 'No data found in the system tools.'\n"
+            "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is in the file. NEVER guess items, dates, or totals."
         )
     elif nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
