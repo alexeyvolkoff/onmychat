@@ -510,6 +510,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         name = func.get("name")
         args = func.get("arguments", {})
         call_id = tool.get("id")
+
+        # [DEBUG OUTPUT]
+        # User requested to see what is going on with tool calls
+        debug_info = f"[MCP][Turn {turn+1}] {name}({args})"
+        logging.info(f"--- TOOL CALL: {debug_info}")
+        # Also print to stdout for visibility in the terminal
+        print(f"\n>>> TURN {turn+1} TOOL CALL: {debug_info}\n")
         
         # [REPETITION BLOCK]
         # Hash the call to check for duplication in this session
@@ -520,11 +527,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # WITHOUT listing first, intercept and force exploration.
         if name == "read_omd_file":
              path_arg = args.get("path", "").strip()
-             parent_dir = path_arg.rstrip("/").rsplit("/", 1)[0] if "/" in path_arg else ""
+             path_parts = [p for p in path_arg.strip("/").split("/") if p]
+             parent_dir = "/" + "/".join(path_parts[:-1]) if len(path_parts) > 1 else "/"
              
              # If parent is a mentioned but unlisted path, force listing.
-             if any(p.rstrip("/").startswith(parent_dir.rstrip("/")) for p in potential_paths) and parent_dir.rstrip("/") not in listed_paths:
-                  res = f"STRATEGY ERROR: You are trying to read '{os.path.basename(path_arg)}' but you have not listed the contents of '{parent_dir}' yet. You MUST use `list_omd_files` first to verify if the file exists and find the most recent one."
+             is_unlisted_parent = any(p.rstrip("/").startswith(parent_dir.rstrip("/")) for p in potential_paths) and parent_dir.rstrip("/") not in listed_paths
+             
+             if is_unlisted_parent:
+                  res = (
+                      f"INSTRUCTION: You are trying to read '{os.path.basename(path_arg)}' but you have NOT listed the contents of '{parent_dir}' yet. "
+                      f"Guessing filenames and content is FORBIDDEN. "
+                      f"You MUST call `list_omd_files` on '{parent_dir}' immediately to see the actual files and their modification dates."
+                  )
                   logging.warning(f"[MCP] Listing Lock triggered for: {path_arg}")
                   name = "listing_lock" 
              
@@ -631,6 +645,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             if call_id:
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)
+            
+            # [Trajectory Recovery Nudge]
+            if name == "listing_lock":
+                 messages.append({"role": "user", "content": "Listing lock resolved. Execute list_omd_files now."})
+                 logging.info("[MCP] Injected trajectory recovery nudge.")
             
             found_new_info = True
             
