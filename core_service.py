@@ -409,7 +409,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     path_hint = ""
     
     if potential_paths:
-        path_hint = f"\nSYSTEM HINT: The user mentioned these paths: {', '.join(potential_paths)}. \nSTRATEGY: If any of these are directories, or if you need to FIND/CHOOSE a file based on criteria (date, name, content), you MUST call `list_omd_files` first. Guessing filenames is FORBIDDEN."
+        path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
@@ -427,6 +427,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     known_files = set() # Strict cache of verified files
     call_history = set() # Prevent repeated failed attempts
     has_read_file = False
+    last_listing = "" # For re-injection on errors
     
     # The agent is now autonomous and reasoning-based. 
     # It will manage its own data extraction logic via the [PLAN] mandate.
@@ -582,6 +583,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                             res = await list_omd_files(ctx, path_arg)
                             if not res.startswith("Error"):
                                  listed_paths.add(path_arg.rstrip("/"))
+                                 last_listing = res # Cache for recovery
                                  
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
@@ -608,8 +610,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                  
                  # [DIRECTORY BLOCK] - Prevent reading paths confirmed as directories
                  if path_arg.rstrip("/") in listed_paths:
-                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You MUST use an [ABS_PATH] of a FILE from the previous listing instead."
-                      logging.warning(f"[MCP] Blocked directory read: {path_arg}")
+                      # [PATH MISMATCH NUDGE]
+                      # Did the agent mention a file in its reasoning but call read on the directory?
+                      detected_file = ""
+                      for kf in known_files:
+                           if os.path.basename(kf) in agent_text or kf in agent_text:
+                                detected_file = kf
+                                break
+                      
+                      res = f"ERROR: '{path_arg}' is a DIRECTORY. You MUST use the [ABS_PATH] of a FILE from the listing instead."
+                      if detected_file:
+                           res = f"CRITICAL MISMATCH: You correctly identified '{detected_file}' in your reasoning, but wrongly called read_omd_file on the DIRECTORY '{path_arg}'.\n\nRETRY NOW: Call `read_omd_file` using the absolute path '{detected_file}' WITHOUT any modification."
+                      
+                      # Re-inject the listing to help it recover
+                      if last_listing:
+                           res += f"\n\n--- REFRESHED LISTING ---\n{last_listing}"
+                      
+                      logging.warning(f"[MCP] Blocked directory read and injected nudge/listing: {path_arg}")
                  elif path_dir and path_dir.rstrip("/") in listed_paths and path_arg.rstrip("/") not in known_files:
                       res = f"ERROR: Path '{path_arg}' not found in current manifest. Reference the [ABS_PATH] value EXACTLY as provided by the tool."
                       logging.warning(f"[MCP] Blocked hallucinated/corrupted read: {path_arg}")
