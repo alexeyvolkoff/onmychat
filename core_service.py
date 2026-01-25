@@ -492,19 +492,37 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{agent_text}\n\n"
              logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
 
+             # [CONTINUITY NUDGE]
+             # If Turn 1+ and there are NO tool calls, but the agent provided reasoning,
+             # it might be trying to "simulated" completion. Unless it's a short 
+             # conclusion, nudge it to use the tool.
+             if turn > 0 and len(agent_text) > 50 and "read_omd_file" not in all_tool_results and "list_omd_files" in all_tool_results:
+                  # If we just listed but hasn't read yet, and the LLM is chatting, force it back.
+                  messages.append({"role": "user", "content": "You listed the files but didn't READ any. You MUST call `read_omd_file` on the target file to get its real content. Do NOT simulate or invent content."})
+                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading. Injecting Continuity Nudge.")
+                  continue
+
+             # Agent reached end of task or is asking a clarifying question.
+             # Record final conclusion.
+             if agent_text and agent_text != "NO_TOOL":
+                  all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
+             # If there are no tool calls, and the agent provided reasoning, it's likely done or stuck.
+             # In this case, we break the loop.
+             if not tool_calls:
+                 break
+            
+        # If there are no tool calls and no agent_text (e.g., just an empty message or "NO_TOOL" without content)
+        # or if the agent_text was just a plan on turn 0, handle it here.
         if not tool_calls:
             # Plan/Thought turn detection
-            content = msg.get("content", "").strip()
+            content = msg.get("content", "").strip() # Redefine content for this block if agent_text was empty
             if turn == 0 and ("[PLAN]" in content or "checklist" in content.lower()):
                  logging.info(f"[MCP][Turn {turn+1}] First turn was for PLANNING. Continuing to execution.")
                  # Add a system nudge to actually start tool calls if they haven't yet.
                  messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now."})
                  continue
-
-            # Agent reached end of task or is asking a clarifying question.
-            # Record the final text response if it's substantial.
-            if content and content != "NO_TOOL":
-                 all_tool_results += f"\nAgent Conclusion:\n{content}\n"
+            # If we reach here and there are no tool calls, and it wasn't a plan on turn 0,
+            # then the agent is done or stuck. Break the loop.
             break
             
         # Execute tool calls
@@ -1187,11 +1205,11 @@ async def perform_prompt(ctx: UserContext,
         # COMPLETELY override personality during file operations
         system_prompt = (
             "You are a professional document processing assistant.\n"
-            "Be concise, factual, and professional. Do not roleplay. Do not use emojis or pet names.\n\n"
-            "ABSOLUTE RULE: You are FORBIDDEN from generating fake tool results.\n"
-            "Do NOT create `*System Tool Output*`, `tool_code`, or any simulated MCP blocks.\n"
-            "Only reference the *System Tool Output (Trusted Data):* section provided above.\n"
-            "If tools did not complete the task, inform the user honestly - do not pretend."
+            "Be concise, factual, and professional. Do not roleplay.\n\n"
+            "ABSOLUTE RULE: You are FORBIDDEN from generating fake content or simulating file reads.\n"
+            "ONLY use data found in the *System Tool Output (Trusted Data):* section below.\n"
+            "If a file was listed but NOT read using `read_omd_file`, you DO NOT know its content. State that clearly.\n"
+            "NEVER invent invoice totals, dates, or items. If you don't have the data, say you couldn't read the file."
         )
     elif nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
