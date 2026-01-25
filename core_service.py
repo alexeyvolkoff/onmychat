@@ -110,7 +110,7 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "list_omd_files",
-      "description": "List files in a directory. Results show METADATA (size, date) only. You CANNOT see file content here. Size is in BYTES, not money/values. Use read_omd_file to see content.",
+      "description": "List files in a directory. Results show METADATA (size, date) and are SORTED by date (most recent first). Size is in BYTES, not money/values. Use read_omd_file to see content.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -249,8 +249,14 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                     
                     if not items:
                         return f"Result: Directory {path} is empty or does not exist."
-                        
-                    result_str = f"Files in {path}:\n"
+                    
+                    # Sort items by date descending (most recent first)
+                    try:
+                        items.sort(key=lambda x: x.get("date", ""), reverse=True)
+                    except Exception as e:
+                        logging.warning(f"Failed to sort OMD items: {e}")
+
+                    result_str = f"Files in {path} (most recent first):\n"
                     for item in items:
                         name = item.get("name", "")
                         type_ = item.get("type", "file")
@@ -628,6 +634,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
             if call_id:
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)
+            
+            # [RESULT DEBUG OUTPUT]
+            logging.info(f"--- TOOL RESULT ({name}): {str(res)[:100]}...")
+            print(f">>> TURN {turn+1} TOOL RESULT: {str(res)[:200]}...\n")
+            
             found_new_info = True
         else:
             msg_entry = {"role": "tool", "content": "Error: Tool returned no result."}
