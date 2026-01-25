@@ -768,7 +768,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "/recognize": "recognize", "/detect": "recognize",
                 "/think": "think",
                 "/explain": "explain",
-                "/search": "tools"
+                "/search": "search"
             }
             
             intent = "chat"
@@ -786,7 +786,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 intent_raw = lines[0].strip().lower()
                 
                 # Whitelist and sanitize intent
-                allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat"]
+                allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat", "search"]
                 for allowed in allowed_intents:
                     if intent_raw.startswith(allowed):
                         intent = allowed
@@ -950,6 +950,28 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
             )
             llm_message = prompt
+        elif intent == "search":
+            yield f"data: {json.dumps({'status': 'searching'})}\n\n"
+            
+            # Extract query from prompt (remove /search prefix if present)
+            search_query = prompt
+            if prompt.lower().startswith("/search"):
+                search_query = prompt[7:].strip()
+            
+            # Call search_web directly - no MCP, no hallucination
+            search_results = await core_service.search_web(ctx, search_query)
+            
+            # Save search to history
+            history = dialog_history.load_history(ctx, chat)
+            history.append({"role": "user", "content": prompt})
+            
+            instruction = (
+                f"The user asked to search the web. Here are the REAL search results:\n\n"
+                f"{search_results}\n\n"
+                "Summarize these results for the user in a helpful way. "
+                "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
+            )
+            llm_message = search_query
         elif intent.startswith("recognize"): 
             yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
