@@ -477,13 +477,27 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     listed_paths = set()
     known_files = set() # Strict cache of verified files
     call_history = set() # Prevent repeated failed attempts
-    requires_read = False # Will be set by [PLAN] inspection
+    
+    # [USER INTENT DETECTION]
+    # Parse USER'S request for action verbs that imply reading/extraction.
+    # These are universal command verbs, NOT content keywords.
+    read_action_verbs = [
+        "read", "extract", "show", "display", "open", "contents", 
+        "what is inside", "totals", "amount", "items", "data from", "get"
+    ]
+    message_lower = message.lower()
+    requires_read = any(verb in message_lower for verb in read_action_verbs)
+    if requires_read:
+        logging.info(f"[MCP] User Intent: READ/EXTRACT detected. Will force read after discovery.")
+    else:
+        logging.info(f"[MCP] User Intent: FIND ONLY.")
     
     has_read_file = False
     last_listing = "" # For re-injection on errors
     
     # The agent is now autonomous and reasoning-based. 
     # It will manage its own data extraction logic via the [PLAN] mandate.
+
     
     for turn in range(max_turns):
         # [TURN-SPECIFIC GUIDANCE]
@@ -566,9 +580,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                   else:
                        logging.info(f"[MCP][Turn {turn+1}] Agent Reasoning/Plan: {clean_agent_text}")
              
-             # [PLAN-BASED INTENT]
-             # We determine the "Requires Read" state exclusively from the planning phase (Turn 0).
-             # This prevents the agent from being "tricked" into a read by echoing subsequent tool hints.
+             # [PLAN-BASED LOGGING]
+             # We log whether the agent's plan mentions reading, but we do NOT override requires_read.
+             # The user's intent (set at the start) is the source of truth.
              if turn == 0:
                   # [PLANNING GATE]
                   # If Turn 0 has a tool call but MISSES the [PLAN] checklist, we intercept.
@@ -579,36 +593,34 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        tool_calls = []
                        msg["tool_calls"] = []
                   else:
-                       # We only look for canonical tool names. Since the agent is instructed to use 
-                       # exact tool names in its [PLAN] checklist, this is naturally multi-lingual.
+                       # Log whether the agent's plan includes read tools (for debugging)
                        data_tools = ["read_omd_file", "search_memory", "search_web"]
                        if any(tool in agent_text for tool in data_tools):
-                            requires_read = True
-                            logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
+                            logging.info("[MCP] Agent PLAN includes data tool.")
                        else:
-                            logging.info("[MCP] Intent locked via Turn 0 PLAN: FIND_ONLY")
+                            logging.info("[MCP] Agent PLAN does NOT include data tool (user intent will override if needed).")
 
              # [CONTINUITY NUDGE]
-             # Only fire if discovery tools (list or find) were used but read wasn't,
-             # and ONLY if the agent's OWN PLAN requires reading/extracting content.
+             # Fire if discovery tools were used but read wasn't, and USER'S request implies reading.
              has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
              if turn > 0 and not has_read_file and has_discovered and requires_read:
-                  # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
-                  messages.append({"role": "user", "content": "You identified a file. Since your plan requires data extraction, you MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion yet."})
-                  logging.warning(f"[MCP][Turn {turn+1}] identified a file but has not read it yet (Plan-Read). Injecting Continuity Nudge.")
+                  # If we discovered a file but haven't read it, force the agent to read.
+                  messages.append({"role": "user", "content": "You identified a file. The user's request requires reading/extraction. You MUST call `read_omd_file` using the absolute path provided. Do NOT conclude yet."})
+                  logging.warning(f"[MCP][Turn {turn+1}] File discovered but not read (User Intent: READ). Injecting Continuity Nudge.")
                   continue
 
              # RECORD CONCLUSION ONLY IF NO TOOL CALLS
              if not tool_calls and agent_text and agent_text != "NO_TOOL":
                   # [STRICT STOP CHECK]
-                  # Only block if we haven't read but the plan required reading
+                  # Block if user's request implied reading but we haven't read yet.
                   if known_files and not has_read_file and requires_read:
-                       messages.append({"role": "user", "content": "Wait! Your plan included data extraction but you haven't read the file yet. You MUST call `read_omd_file` before finishing."})
-                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading (Plan-Read). Blocking.")
+                       messages.append({"role": "user", "content": "Wait! The user asked to READ or EXTRACT data. You haven't read the file yet. You MUST call `read_omd_file` before finishing."})
+                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading (User Intent: READ). Blocking.")
                        continue
                   
                   all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
                   break
+
             
         # If there are no tool calls and no agent_text (e.g., just an empty message or "NO_TOOL" without content)
         # or if the agent_text was just a plan on turn 0, handle it here.
