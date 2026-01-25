@@ -266,9 +266,9 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
                         
                         abs_path = f"{base_dir}/{name}"
                         if type_ in ["dir", "directory"]:
-                            result_str += f"- [{type_}] Name: {name} | Path: {abs_path}\n"
+                            result_str += f"- [{type_}] Name: {name} | Path: <<{abs_path}>>\n"
                         else:
-                            result_str += f"- [{type_}] Name: {name} | Path: {abs_path} (Size: {size} bytes) [modified: {date}]\n"
+                            result_str += f"- [{type_}] Name: {name} | Path: <<{abs_path}>> (Size: {size} bytes, modified: {date})\n"
                     return result_str
                 else:
                     return f"Error: Could not list directory {path} (Status {resp.status})"
@@ -585,13 +585,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                                  
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
-                                 # Extract path from format: "- [file] Name: ... | Path: /path/to/file ..."
-                                 path_matches = re.findall(r'\| Path: (/[^\s|]+)', res)
+                                  # Extract path from format: "- [file] Name: ... | Path: <</path/to/file>> ..."
+                                 path_matches = re.findall(r'\| Path: <<(.+?)>>', res)
                                  for f in path_matches:
                                       known_files.add(f.strip())
                                  
                                  # Also track sub-directories
-                                 dir_matches = re.findall(r'- \[dir\] Name: .+? \| Path: (/[^\s|]+)', res)
+                                 dir_matches = re.findall(r'- \[dir\] Name: .+? \| Path: <<(.+?)>>', res)
                                  for d in dir_matches:
                                       listed_paths.add(d.strip())
              
