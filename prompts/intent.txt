@@ -35,7 +35,7 @@ EXAMPLES:
 - "Analyze this: /img.png" -> recognize:/img.png
 - "Import this file: /doc.txt" -> import:/doc.txt
 - "Create invoice based on /Data/old.pdf" -> tools (Priority: path present)
-- "/Linux-desktop/Private/Data" -> tools (The agent will list it)
+- "List /Linux-desktop/Private/Data" -> tools (The agent will list it)
 
 If in doubt, respond with 'chat'.
 Return NOTHING except the classification and reason.
