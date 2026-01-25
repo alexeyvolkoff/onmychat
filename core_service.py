@@ -426,9 +426,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # Remind the agent about the mandatory planning phase
         guidance = "You are an autonomous agent. "
         if turn == 0:
-             guidance += "MANDATORY: In this FIRST turn, you MUST create a `[PLAN]` checklist and then call the first tool. Do NOT skip the plan."
+             guidance += "MANDATORY: In this FIRST turn, you MUST create a `[PLAN]` checklist before any tool call. You can call a tool in the SAME turn as the plan."
         else:
-             guidance += "Continue executing your `[PLAN]`. Mark completed steps with [x]. Call the NEXT tool in sequence."
+             guidance += "Refer to your `[PLAN]`. Mark steps as [x] once done. Proceed with the next logical step."
              
         # Inject guidance into system prompt for this turn
         current_messages = [
@@ -472,10 +472,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         messages.append(msg)
         
         if not tool_calls:
-            # Agent reached end of turn. It will summarize or conclude based on its [PLAN].
-            break
-                 
-            # No tools called - agent is done or stuck
+            # Plan/Thought turn detection
+            content = msg.get("content", "").strip()
+            if turn == 0 and ("[PLAN]" in content or "checklist" in content.lower()):
+                 logging.info(f"[MCP][Turn {turn+1}] First turn was for PLANNING. Continuing to execution.")
+                 # Add a system nudge to actually start tool calls if they haven't yet.
+                 messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now."})
+                 continue
+
+            # Agent reached end of task or is asking a clarifying question.
+            # Record the final text response if it's substantial.
+            if content and content != "NO_TOOL":
+                 all_tool_results += f"\nAgent Conclusion:\n{content}\n"
             break
             
         # Execute tool calls
@@ -1086,7 +1094,7 @@ async def perform_prompt(ctx: UserContext,
 
     # === MCP Intent Check ===
     mcp_result = ""
-    if intent == "tools":
+    if intent in ["tools", "search"]:
         mcp_result = await check_and_execute_mcp(ctx, message)
     
     # Flag that we are working with documents

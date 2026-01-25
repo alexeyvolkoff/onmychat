@@ -857,6 +857,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 intent = "think"
             elif prompt.startswith("/explain"):
                 intent = "explain"
+            elif prompt.startswith("/search"):
+                intent = "search"
     
         restricted_intents = ["tools"]
         
@@ -870,9 +872,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                   return
 
         logging.info(f"Check intent: {check_intent}")
-        if check_intent == "tools":
-             logging.info("Yielding searching status")
-             yield f"data: {json.dumps({'status': 'executing'})}\n\n"
+        if check_intent in ["tools", "search"]:
+             status_msg = "searching" if check_intent == "search" else "executing"
+             logging.info(f"Yielding {status_msg} status")
+             yield f"data: {json.dumps({'status': status_msg})}\n\n"
              
         if check_intent == "import":
              # Limit to 10 items for free accounts
