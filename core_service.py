@@ -427,7 +427,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
     known_files = set() # Strict cache of verified files
     call_history = set() # Prevent repeated failed attempts
     has_read_file = False
-    last_listing = "" # For re-injection on errors
     
     # The agent is now autonomous and reasoning-based. 
     # It will manage its own data extraction logic via the [PLAN] mandate.
@@ -449,9 +448,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
                        guidance += "\nDISCOVERY PHASE: You MUST use `list_omd_files` first to verify the file name and date."
              
-             # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
-                 {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}\n{path_hint}"}
+                 {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}\nSYSTEM HINT: Detected path: {', '.join(potential_paths)}. Call `list_omd_files` on this EXACT path."}
              ] + messages[1:]
         else:
              guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
@@ -571,6 +569,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                             res = await list_omd_files(ctx, path_arg)
                             if not res.startswith("Error"):
                                  listed_paths.add(path_arg.rstrip("/"))
+                                 call_history.add(call_id_str)
                                   
                                  # Populate known_files to prevent hallucinations
                                  # Simple filename extractor from list output
@@ -1270,7 +1269,14 @@ async def perform_prompt(ctx: UserContext,
 
     # === ОСНОВНОЙ ЗАПРОС ===
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
+    
+    if is_work_mode:
+        # [HISTORY ISOLATION]
+        # Prevents hallucinations from previous failed turns when tools were used.
+        # This makes the Tool Output the ONLY source of truth for the final response.
+        messages = [{"role": "system", "content": system_prompt}]
+    else:
+        messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
     # Добавляем новый запрос
     user_message = {
