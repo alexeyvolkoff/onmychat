@@ -430,53 +430,36 @@ async def fetch_document_text(url: str, token: str = None) -> str:
         ext = os.path.splitext(url.split("?")[0])[-1].lower().lstrip('.')
         if ext in SUPPORTED_CONVERT_EXTS:
            url += "?totext"
-        elif ext in SUPPORTED_PLAIN_EXTS or not ext:
-           pass
-        else:
-           # Do not return token in error
-           return f"Unsupported file type: .{ext}"
     
-    headers = {
-        "Authorization": f"token:{token}" if token else ""
-    }
+    # Assertive token handling: Append to URL immediately
+    if token and "token=" not in url:
+        separator = "&" if "?" in url else "?"
+        url += f"{separator}token={token}"
 
     async with aiohttp.ClientSession() as session:
-        async def do_fetch(current_url, current_headers):
-            async with session.get(current_url, headers=current_headers, timeout=15) as resp:
-                status = resp.status
-                text = await resp.text()
-                # Detection of login page
-                is_login = "FileManagerApp" in text or "login" in text.lower()[:500]
-                return status, text, is_login
+        async with session.get(url, timeout=15) as resp:
+            status = resp.status
+            text = await resp.text()
+            
+            # Detection of login page (indicates authentication failure even if 200)
+            is_login = "FileManagerApp" in text or "login" in text.lower()[:500]
+            
+            if status != 200 or is_login:
+                logging.error(f"[fetch] Failed to retrieve document: {url.split('?')[0]} (Status {status}, Login {is_login})")
+                return f"Failed to fetch document: Access denied (403/401) or invalid token."
 
-        status, text, is_login = await do_fetch(url, headers)
+    # Conversion for HTML
+    if url.split("?")[0].lower().endswith((".html", ".htm")) or "<html" in text.lower()[:100]:
+        try:
+            import subprocess
+            cmd = ["pandoc", "-f", "html", "-t", "markdown"]
+            result = subprocess.run(cmd, input=text, capture_output=True, text=True, check=True)
+            return result.stdout
+        except Exception as e:
+            logging.error(f"[fetch] pandoc failed: {e}")
+            return text
 
-        # Fallback to token in URL if header failed or returned login page
-        if (status != 200 or is_login) and token and GATEWAY_URL in url:
-            separator = "&" if "?" in url else "?"
-            fallback_url = f"{url}{separator}token={token}"
-            logging.info(f"[fetch] Header failed (status {status}, login: {is_login}), trying token in URL...")
-            status, text, is_login = await do_fetch(fallback_url, {})
-
-        if status != 200:
-            return f"Failed to fetch document: {url.split('?')[0]} HTTP {status}"
-        
-        if is_login:
-            return "Failed to fetch document: Received login page instead of content. check your storage link."
-
-        # Conversion for HTML
-        if url.split("?")[0].lower().endswith((".html", ".htm")) or "<html" in text.lower()[:100]:
-            try:
-                import subprocess
-                cmd = ["pandoc", "-f", "html", "-t", "markdown"]
-                result = subprocess.run(cmd, input=text, capture_output=True, text=True, check=True)
-                return result.stdout
-            except Exception as e:
-                logging.error(f"[fetch] pandoc failed: {e}")
-                # Fallback to raw text if pandoc fails
-                return text
-
-        return text
+    return text
 
 
 def escape_chunk_text(text: str) -> str:

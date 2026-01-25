@@ -229,12 +229,12 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
         # If it matches root_folder (device), we use it as is.
         # If not, we still allow it as Gateway-absolute.
         
+        # Simplified URL Token Authentication
         if path.startswith("/") or path.startswith(root_folder):
             url_path = path.lstrip("/")
             url = f"{base_url}/{url_path}?list&token={storage_key}"
             path = "/" + url_path
         else:
-            # Relative to storage_id
             url = f"{base_url}/{storage_id}/{clean_path}?list&token={storage_key}"
             path = f"/{storage_id}/{clean_path}"
         
@@ -506,20 +506,32 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         args = func.get("arguments", {})
         call_id = tool.get("id")
         
-        logging.info(f"[MCP][Turn {turn+1}] Sequential Tool Call: {name}({args})")
-        
         # [REPETITION BLOCK]
         # Hash the call to check for duplication in this session
         call_id_str = f"{name}:{json.dumps(args, sort_keys=True)}"
-        if call_id_str in call_history:
-             # Model is looping. Inject a forceful mechanical block.
-             candidate_paths = sorted(list(known_files))
-             res = f"SYSTEM ERROR: You already called {name} with these arguments. DO NOT REPEAT. If you need data, call `read_omd_file` on one of these verified paths: {candidate_paths[:5]}"
-             logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
-        else:
-             call_history.add(call_id_str)
+        
+        # [Nuclear Phase 5: TRAJECTORY ENFORCEMENT & LISTING LOCK]
+        # If the user mentioned a directory, and the agent tries to READ a file in it
+        # WITHOUT listing first, intercept and force exploration.
+        if name == "read_omd_file":
+             path_arg = args.get("path", "").strip()
+             parent_dir = path_arg.rstrip("/").rsplit("/", 1)[0] if "/" in path_arg else ""
              
-             res = ""
+             # If parent is a mentioned but unlisted path, force listing.
+             if any(p.rstrip("/").startswith(parent_dir.rstrip("/")) for p in potential_paths) and parent_dir.rstrip("/") not in listed_paths:
+                  res = f"STRATEGY ERROR: You are trying to read '{os.path.basename(path_arg)}' but you have not listed the contents of '{parent_dir}' yet. You MUST use `list_omd_files` first to verify if the file exists and find the most recent one."
+                  logging.warning(f"[MCP] Listing Lock triggered for: {path_arg}")
+                  name = "listing_lock" 
+             
+        if name != "listing_lock":
+             if call_id_str in call_history:
+                  # Model is looping. Inject a forceful mechanical block.
+                  candidate_paths = sorted(list(known_files))
+                  res = f"SYSTEM ERROR: You already called {name} with these arguments. DO NOT REPEAT. If you need data, call `read_omd_file` on one of these verified paths: {candidate_paths[:5]}"
+                  logging.warning(f"[MCP] Blocked repeating tool call: {call_id_str}")
+             else:
+                  call_history.add(call_id_str)
+                  res = ""
              
              # [NUCLEAR PHASE 4: SEARCH WEB LOOP PREVENTION]
              if name == "search_web":
