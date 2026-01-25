@@ -548,8 +548,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # Ensure that plans, thoughts, and checklists are preserved and visible to the main assistant.
         agent_text = msg.get("content", "").strip()
         if agent_text:
-             all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{agent_text}\n\n"
-             logging.info(f"[MCP][Turn {turn+1}] Captured reasoning: {agent_text[:50]}...")
+             # [HALLUCINATION FILTER]
+             # Prevent the agent from "mimicking" system alerts in its reasoning.
+             # We strip any lines that start with SYSTEM ALERT, SYSTEM NOTICE, or SYSTEM ERROR.
+             filtered_lines = [
+                 line for line in agent_text.split("\n") 
+                 if not any(prefix in line.upper() for prefix in ["SYSTEM ALERT:", "SYSTEM NOTICE:", "SYSTEM ERROR:"])
+             ]
+             clean_agent_text = "\n".join(filtered_lines).strip()
+             
+             if clean_agent_text:
+                  all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{clean_agent_text}\n\n"
+                  logging.info(f"[MCP][Turn {turn+1}] Captured reasoning (filtered): {clean_agent_text[:50]}...")
              
              # [PLAN-BASED INTENT]
              if "[PLAN]" in agent_text and turn == 0:
@@ -708,14 +718,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                   root_dir = args.get("root_directory", "").strip()
                   cond = args.get("condition", "").strip()
                   res = await find_omd_file(ctx, root_dir, cond)
-                  logging.info(f"[MCP] Find Result: {res}")
                   if res.startswith("[FILE]:"):
                        # Extract only the path part, ignoring any SYSTEM NOTICE that might be appended
                        raw_res = res.split("\n\nSYSTEM NOTICE:")[0]
                        file_path = raw_res.replace("[FILE]:", "").strip()
                        known_files.add(file_path)
                        # Inject nudge
-                       res += f"\n\nSYSTEM NOTICE: File found. You MUST now call `read_omd_file` using the absolute path '{file_path}' exactly."
+                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'."
                   
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
