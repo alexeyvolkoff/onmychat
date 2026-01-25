@@ -547,6 +547,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
         # [REASONING CAPTURE]
         # Ensure that plans, thoughts, and checklists are preserved and visible to the main assistant.
         agent_text = msg.get("content", "").strip()
+        logging.info(f"[MCP] Agent Reasoning (Turn {turn+1}):\n{agent_text}")
         if agent_text:
              # [HALLUCINATION FILTER]
              # Prevent the agent from "mimicking" system alerts in its reasoning.
@@ -563,14 +564,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                   logging.warning(f"[MCP][Turn {turn+1}] Model called a tool but SKIPPED the planning text ([PLAN]).")
              
              # [PLAN-BASED INTENT]
-             # We detect the "Requires Read" state by inspecting the reasoning.
-             # If the agent plans/mentions any tool that provides data/content, we set the flag.
-             # This is persistent: once True, it stays True.
-             data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed"]
-             if any(phrase in agent_text.lower() for phrase in data_tools):
-                  if not requires_read:
+             # We determine the "Requires Read" state exclusively from the planning phase (Turn 0).
+             # This prevents the agent from being "tricked" into a read by echoing subsequent tool hints.
+             if turn == 0:
+                  data_tools = ["read_omd_file", "search_memory", "search_web", "extract", "content", "totals", "billed"]
+                  if any(phrase in agent_text.lower() for phrase in data_tools):
                        requires_read = True
-                       logging.info(f"[MCP][Turn {turn+1}] Intent locked: DATA_EXTRACTION (detected in reasoning)")
+                       logging.info("[MCP] Intent locked via Turn 0 PLAN: DATA_EXTRACTION")
+                  else:
+                       logging.info("[MCP] Intent locked via Turn 0 PLAN: FIND_ONLY")
 
              # [CONTINUITY NUDGE]
              # Only fire if discovery tools (list or find) were used but read wasn't,
@@ -579,7 +581,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
              if turn > 0 and not has_read_file and has_discovered and requires_read:
                   # If we just discovered but hasn't read yet, and the LLM is chatting, force it back.
                   messages.append({"role": "user", "content": "You identified a file. Since your plan requires data extraction, you MUST call `read_omd_file` using the absolute path provided earlier now. Do NOT provide a conclusion yet."})
-                  logging.warning(f"[MCP][Turn {turn+1}] Agent is chatting without reading (Plan-Read). Injecting Continuity Nudge.")
+                  logging.warning(f"[MCP][Turn {turn+1}] identified a file but has not read it yet (Plan-Read). Injecting Continuity Nudge.")
                   continue
 
              # RECORD CONCLUSION ONLY IF NO TOOL CALLS
@@ -727,7 +729,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> str:
                        file_path = raw_res.replace("[FILE]:", "").strip()
                        known_files.add(file_path)
                        # Inject nudge
-                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'. You MUST now call `read_omd_file` to access its content."
+                       res += f"\n\nSYSTEM NOTICE: File found: '{file_path}'."
                   
              elif name == "write_omd_file":
                  # [TURN 1 SHIELD]
