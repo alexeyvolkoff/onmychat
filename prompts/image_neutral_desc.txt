@@ -5,3 +5,5 @@ Limit to 1-2 sentences.
 CRITICAL: Output ONLY the description. No "Here is a description", no quotes, no conversational filler. Just the description text itself.
 
 Input Prompt: {prompt}
+Output:
+Title: short title (3-4 words max), then description on the next line.

@@ -11,10 +11,8 @@ Create a high-quality SDXL prompt for the requested object or scene: {prompt}
 5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
 
 **Example:**
-Title: Cyber City
 Image: futuristic city street, neon signs, wet pavement, reflection, crowd of people, cyborgs, (towering skyscrapers:1.2), drizzle, cyberpunk style, cyan and purple color palette, volumetric lighting, photorealistic
 
 **Result:**
 Format strictly as:
-Title: [Short Title]
 Image: [Prompt string]
