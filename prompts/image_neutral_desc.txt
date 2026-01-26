@@ -2,5 +2,6 @@ Rewrite the input prompt into a short, vivid, and human-like description.
 Make it sound like a quick note about the image. 
 Keep it safe for work (SFW) and neutral, but engaging.
 Limit to 1-2 sentences.
+CRITICAL: Output ONLY the description. No "Here is a description", no quotes, no conversational filler. Just the description text itself.
 
 Input Prompt: {prompt}
