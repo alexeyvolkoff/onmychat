@@ -155,9 +155,9 @@
       },
       "lora_10": {
         "on": false,
-        "name": "Lenore",
+        "name": "Beatrice",
         "type": "character",
-        "lora": "Pony_Doll.safetensors",
+        "lora": "BEATRICE-XSTAR-XL-FINAL.safetensors",
         "strength": 1
       },
       "➕ Add Lora": "",
