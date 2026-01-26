@@ -1962,13 +1962,22 @@ async def generate_title_from_prompt(prompt: str) -> str:
 async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
     """Generate a safe, neutral description for the image prompt."""
     
-    instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+    nsfw_enabled = ctx.settings.get("nsfw", False)
+    
+    if nsfw_enabled:
+         # In NSFW mode, we must prime the model to accept the input prompt
+         # but still instruct it to output a neutral, safe description.
+         instruction = NSFW_PREPHASE + "\n\n" + IMAGE_PROMPT_NSFW + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+         model = NSFW_MODEL
+    else:
+         instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+         model = SFW_MODEL
     
     payload = {
         "messages": [
             {"role": "user", "content": instruction}
         ],
-        "model": SFW_MODEL,
+        "model": model,
         "stream": False,
         "options": {"temperature": 0.3}
     }
