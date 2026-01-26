@@ -1,6 +1,6 @@
-Describes the image very shortly in a neutral style, safe for work (SFW). 
-Focus on composition, colors, lighting, subjects (people, objects, landscapes), and artistic style. 
-Avoid any explicit or suggestive language. 
-Format as a single paragraph.
+Rewrite the input prompt into a short, vivid, and human-like description. 
+Make it sound like a quick note about the image. 
+Keep it safe for work (SFW) and neutral, but engaging.
+Limit to 1-2 sentences.
 
 Input Prompt: {prompt}
