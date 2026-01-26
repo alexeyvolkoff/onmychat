@@ -101,7 +101,10 @@ INTENT_PROMPT = get_prompt("intent.txt")
 SAFETY_CHECK_PROMPT = get_prompt("safety_check.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
+NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
 DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
+IMAGE_NEUTRAL_DESC_PROMPT = get_prompt("image_neutral_desc.txt")
+
 
 
 # Native Tool Definitions for Ollama
@@ -1948,6 +1951,37 @@ async def generate_title_from_prompt(prompt: str) -> str:
         "options": {"temperature": 0.3}
     }
     
+    data = await llm_request(payload)
+    if not data or "message" not in data:
+         return ' '.join(words[:4])
+         
+    title = data["message"]["content"].strip().replace('"', '')
+    return title
+
+
+async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
+    """Generate a safe, neutral description for the image prompt."""
+    
+    instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+    
+    payload = {
+        "messages": [
+            {"role": "user", "content": instruction}
+        ],
+        "model": SFW_MODEL,
+        "stream": False,
+        "options": {"temperature": 0.3}
+    }
+    
+    try:
+        data = await llm_request(payload)
+        if data and "message" in data:
+             return data["message"]["content"].strip()
+    except Exception as e:
+        logging.error(f"Failed to generate neutral description: {e}")
+        
+    return "Generated image" # Fallback
+
     try:
         data = await llm_request(payload)
         if data and "message" in data and "content" in data["message"]:
@@ -2098,6 +2132,10 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     # Format for markdown file
     formatted_prompt = f"#{img_title}\n\n{img_prompt}"
     
+    # Generate neutral description for public Readme and history
+    neutral_description = await generate_neutral_description(ctx, img_prompt)
+    formatted_readme = f"#{img_title}\n\n{neutral_description}"
+    
     # Create unique filename by appending timestamp to index
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -2124,7 +2162,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             
             # Save prompt as description (Readme.md)
             readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-            upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_prompt, "text/markdown")
+            upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_readme, "text/markdown")
             logging.info("Upload completed successfully.")
         except Exception as e:
             logging.error(f"Upload to storage failed: {e}")
@@ -2144,10 +2182,18 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
         readme_path = os.path.join(user_folder, readme_filename)
         with open(readme_path, "w", encoding="utf-8") as f:
-            f.write(formatted_prompt)
+            f.write(formatted_readme)
     if update_history:
         history = load_history(ctx, chat)
-        history.append({"role": "assistant", "content": img_prompt, "image": {"path": filename, "title": img_title}})
+        history.append({
+            "role": "assistant", 
+            "content": img_prompt, 
+            "image": {
+                "path": filename, 
+                "title": img_title,
+                "description": neutral_description
+            }
+        })
         save_history(ctx, history, chat)
     return filename, img_title
 

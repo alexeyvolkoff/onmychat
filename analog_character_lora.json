@@ -113,9 +113,9 @@
       },
       "lora_4": {
         "on": false,
-        "name": "Lily",
+        "name": "Lana",
         "type": "character",
-        "lora": "Lexi-000008.safetensors",
+        "lora": "svetlana.safetensors",
         "strength": 1
       },
       "lora_5": {

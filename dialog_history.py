@@ -40,7 +40,15 @@ def _inject_image_prompts(history: list) -> list:
                     msg["content"] = f"{existing_content}\n{prompt_text}"
                 else:
                     msg["content"] = prompt_text
-                    
+
+            # Ensure image description exists (for legacy chats or where prompt was just moved)
+            if isinstance(image_data, dict) and "description" not in image_data:
+                # Use content (which now contains the prompt) as description fallback
+                # This ensures frontend has something to show
+                msg_content = msg.get("content", "")
+                if msg_content:
+                     image_data["description"] = msg_content
+
     return history
 
 def load_history(ctx: UserContext, chat: str = "default") -> list:
