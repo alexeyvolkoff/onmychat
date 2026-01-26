@@ -1998,7 +1998,7 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
 
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> tuple[str, str]:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> tuple[str, str, str]:
     user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -2195,9 +2195,9 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             }
         })
         save_history(ctx, history, chat)
-    return filename, img_title
+    return filename, img_title, neutral_description
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> tuple[str, str]:
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> tuple[str, str, str]:
     return await generate_image(ctx, prompt, chat, update_history=update_history)
 
 # Generate general image, returns full path for further sending or conversion

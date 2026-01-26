@@ -107,12 +107,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
         await update.message.chat.send_action(action=ChatAction.TYPING)
         logging.info(f"Generating image for prompt {prompt} ")
         # Отправляем фото
-        storage_path = await core.generate_character_image(ctx, prompt, "telegram")
+        storage_path, title, description = await core.generate_character_image(ctx, prompt, "telegram")
         path = f"{core.COMFY_OUTPUT_DIR}/{storage_path}"
         with open(path, "rb") as f:
             # Отправляем фото
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-            caption = escape_markdown_v2(prompt)
+            caption = escape_markdown_v2(description)
             if len(caption) > MAX_CAPTION_LEN:
                caption = caption[:MAX_CAPTION_LEN - 1] + "…"
             await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")
@@ -138,12 +138,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
     elif intent == "view":
         prompt = await core.generate_general_image_prompt(ctx, text, "telegram")
         await update.message.chat.send_action(action=ChatAction.TYPING)
-        storage_path = await core.generate_image(ctx, prompt, "telegram")
+        storage_path, title, description = await core.generate_image(ctx, prompt, "telegram")
         path = f"{core.COMFY_OUTPUT_DIR}/{storage_path}"
         # Отправляем фото
         with open(path, "rb") as f:
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-            caption = escape_markdown_v2(prompt)
+            caption = escape_markdown_v2(description)
             if len(caption) > MAX_CAPTION_LEN:
                caption = caption[:MAX_CAPTION_LEN - 1] + "…"
             await update.message.reply_photo(photo=f, caption=caption, parse_mode="MarkdownV2")

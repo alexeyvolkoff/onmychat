@@ -927,8 +927,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             # 3️⃣ Generate image
             
-            path, title = await core_service.generate_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}})}\n\n"
+            path, title, description = await core_service.generate_image(ctx, img_prompt, chat)
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
             skip_history = False
             #Set specific instructions
             instruction = (
@@ -1028,8 +1028,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
             
             logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-            path, title = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}, 'done': True})}\n\n"
+            path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
             return
 
         # 3️⃣ основной стрим чата
@@ -1104,8 +1104,8 @@ async def generate_character_image(data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     try:
-        # generate_image returns (filename, title)
-        filename, title = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
+        # generate_image returns (filename, title, description)
+        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
         
         # Update history if index provided
         if data.message_index is not None:
@@ -1116,10 +1116,11 @@ async def generate_character_image(data: GenerateInput):
                 if msg.get("role") == "assistant" and "image" in msg:
                     msg["image"]["path"] = filename
                     msg["image"]["title"] = title
+                    msg["image"]["description"] = description
                     history[data.message_index] = msg
                     dialog_history.save_history(ctx, history, chat=data.chat)
 
-        return {"image": filename}
+        return {"image": filename, "description": description}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1128,9 +1129,9 @@ async def generate_character_image(data: GenerateInput):
 async def generate_general_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
-        # generate_image returns (filename, title)
-        filename, title = await core_service.generate_image(ctx, data.prompt)
-        return {"image": filename}
+        # generate_image returns (filename, title, description)
+        filename, title, description = await core_service.generate_image(ctx, data.prompt)
+        return {"image": filename, "description": description}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
