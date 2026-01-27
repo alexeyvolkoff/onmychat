@@ -896,14 +896,14 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             logging.info(f"Generating image for prompt {prompt}")
 
             # Generate image using prompt, DO NOT save yet
-            path, title = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
+            path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
             
             # Now perform atomic history update
             history.append({"role": "user", "content": prompt})
-            history.append({"role": "assistant", "content": img_prompt, "image": {"path": path, "title": title}})
+            history.append({"role": "assistant", "content": img_prompt, "image": {"path": path, "title": title, "description": description}})
             dialog_history.save_history(ctx, history, chat)
             
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title}})}\n\n"
+            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
             
             skip_history = False
             #Set specific instructions

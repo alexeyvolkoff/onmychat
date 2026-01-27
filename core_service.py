@@ -2210,7 +2210,7 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     return await generate_image(ctx, prompt, chat, update_history=update_history)
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str]:
+async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str, str]:
     return await generate_image(ctx, prompt, chat)
 
 # img is base64 image #
