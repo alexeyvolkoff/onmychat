@@ -31,6 +31,78 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
+# Search Node Initialization
+try:
+    from search_node import SearchNode
+    SEARCH_TOKEN = SETTINGS.get("SEARCH_TOKEN", "") # Ensure this key exists in config or is empty
+    search_node = SearchNode(storage_path=USER_DATA_DIR, token=SEARCH_TOKEN)
+    logging.info("[api] SearchNode initialized")
+except Exception as e:
+    logging.error(f"[api] Error initializing SearchNode: {e}")
+    search_node = None
+
+# PeARS-compatible endpoints
+
+@app.get("/indexer/from_crawl")
+async def indexer_from_crawl(url: str, request: Request):
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not search_node:
+        raise HTTPException(status_code=503, detail="Search service unavailable")
+        
+    result = search_node.index_url(url)
+    return result
+
+@app.get("/api/urls/delete")
+async def delete_url(path: str, request: Request):
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    if not search_node:
+        raise HTTPException(status_code=503, detail="Search service unavailable")
+        
+    result = search_node.delete_path(path)
+    return result
+
+@app.get("/api/urls/move")
+async def move_url(src: str, target: str, request: Request):
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not search_node:
+        raise HTTPException(status_code=503, detail="Search service unavailable")
+        
+    result = search_node.move_path(src, target)
+    return result
+
+@app.get("/search")
+async def search(q: str, limit: int = 20, lang: str = "en"):
+    # PeARS args: q=<query>, limit=<int>, lang=<lang>
+    # Note: Authentication for search is handled by OMD gateway, 
+    # but we might want to check for 'Omni-Search-Token' if this is exposed directly.
+    # However, OMD gateway proxies it.
+    
+    if not search_node:
+        raise HTTPException(status_code=503, detail="Search service unavailable")
+        
+    results = search_node.search(q, limit)
+    
+    # Return as JSON (list of items or dict depending on frontend expectation)
+    # The frontend code iterates: "for (var searchItem in data)"
+    # A list is fine for this loop.
+    return results
+
+def not_authorized(request: Request):
+    # Basic check for token if we want to enforce it for management endpoints
+    # PeARS checks 'Authorization' header for the crawler token.
+    auth_header = request.headers.get("Authorization")
+    if SEARCH_TOKEN and auth_header != SEARCH_TOKEN:
+        return True
+    return False
+
+
+
 
 origins = [
     "http://localhost:8080",  

@@ -12,3 +12,6 @@ Pillow>=10.0.0
 crawl4ai
 playwright
 duckduckgo-search
+chromadb
+lxml
+beautifulsoup4
