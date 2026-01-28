@@ -536,5 +536,9 @@ def chunk_and_vectorize_to_file(
     except Exception as e:
         print(f"[vec] Save error: {ctx.user_id} {collection} {e}")
 
+    # Report usage to console
+    from utils import report_usage
+    report_usage(ctx.omd_key, "kb_chunk", float(len(chunks)))
+
     return len(chunks)
 

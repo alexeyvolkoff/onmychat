@@ -262,6 +262,36 @@ def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dic
 
 
 
+def report_usage(omd_core_id: str, action_type: str, units: float = 1.0):
+    """
+    Reports usage to the console for token deduction.
+    """
+    if not omd_core_id:
+        return
+    
+    url = f"{SETTINGS.get('CONSOLE_API_URL')}/tokens/report-usage"
+    secret = SETTINGS.get('CONSOLE_SHARED_SECRET')
+    
+    payload = {
+        "omd_core_id": omd_core_id,
+        "action_type": action_type,
+        "units": units
+    }
+    
+    headers = {
+        "X-OMD-Secret": secret,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code != 200:
+             logging.warning(f"Failed to report usage for {omd_core_id}: {resp.status_code} {resp.text}")
+        else:
+             logging.info(f"Reported usage for {omd_core_id}: {action_type} x {units}")
+    except Exception as e:
+        logging.error(f"Error reporting usage: {e}")
+
 def strip_html(text: str) -> str:
     """Удаляет все HTML-теги и атрибуты, оставляет только текст."""
     # Убираем <script> и <style> с содержимым
