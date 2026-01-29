@@ -792,7 +792,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
              yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
 
         # Enforce Rights (moved up)
-        ai_advanced = request.headers.get("x-omd-ai-advanced", "true") == "true"
+        token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))
 
 
         # perform commands
@@ -803,8 +803,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             if args:
                 if args[0].lower() == "on":
-                    if not ai_advanced:
-                        yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\\n\\n"
+                    if token_balance <= 0:
+                        yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
                         return
                     nsfw_enabled = True
                 elif args[0].lower() == "off":
@@ -896,7 +896,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                         logging.info(f"Image generation safety check failed: {safety_result}")
                         
                         warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
-                        if not ai_advanced:
+                        if token_balance <= 0:
                              warning = "I can not generate this until you prove your age by subscribing for Premium plan"
 
                         yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
@@ -937,8 +937,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         # Check primary intent or prefixed intent (e.g. import:url)
         check_intent = intent.split(":")[0] if ":" in intent else intent
         
-        logging.info(f"AI Advanced: {ai_advanced}")
-        if not ai_advanced:
+        logging.info(f"Token Balance: {token_balance}")
+        if token_balance <= 0:
              if check_intent in restricted_intents:
                   yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
                   return
