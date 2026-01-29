@@ -276,6 +276,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
             
             settings = load_user_settings(username, storage=storage, omd_key=account_id, force_reload=force_reload)
             settings["username"] = displayname
+            if "language" in user_info:
+                settings["language"] = user_info["language"]
             ctx = UserContext(type="omd", user_id=username, settings=settings, history=[], omd_key=account_id, storage=storage)
             return ctx
     except Exception as e:

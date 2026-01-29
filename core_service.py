@@ -1467,6 +1467,10 @@ async def _perform_prompt_gen(ctx: UserContext,
     # Инструкция
     instruction_prompt = "*Instruction:*\n" + instruction
 
+    user_lang = ctx.settings.get("language")
+    if user_lang:
+        instruction_prompt += f"\nPrefer user's language ({user_lang}) for generating responses."
+
     instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
     
     # [HALLUCINATION SHIELD]
