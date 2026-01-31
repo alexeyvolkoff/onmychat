@@ -2137,8 +2137,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         raise Exception("Image generation failed")
 
     # Report usage to console
-    from utils import report_usage
-    report_usage(ctx.omd_key, "image_gen", 1.0)
+
 
     # Local user folder (only used if no remote storage)
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
@@ -2591,8 +2590,7 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
                     logging.info(f"Avatar uploaded to {dest_path}/{filename}")
                     
                     # Report usage to console
-                    from utils import report_usage
-                    report_usage(ctx.omd_key, "image_gen", 1.0)
+
 
                     # Construct public URL
                     base_url = GATEWAY_URL.rstrip("/")
