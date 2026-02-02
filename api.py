@@ -325,9 +325,9 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 # ==== Эндпоинты ====
 
 @app.get("/assistant")
-async def assistant_info(omd_key: str):
+async def assistant_info(omd_key: str, storage: str = ""):
     # Force reload settings from storage to ensure we have the latest data (bypass cache)
-    ctx = get_ctx(omd_key, force_reload=True)
+    ctx = get_ctx(omd_key, storage=storage, force_reload=True)
     try:
         assistant = {
             "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
