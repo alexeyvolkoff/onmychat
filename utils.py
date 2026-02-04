@@ -311,7 +311,16 @@ def clean_text(text: str) -> str:
     # Схлопываем множественные пробелы и переносы строк
     text = re.sub(r'\s+', ' ', text).strip()
 
+
     return text
+
+
+def report_usage(omd_key: str, action: str, amount: float):
+    """
+    Dummy/logging implementation of usage reporting.
+    """
+    logging.info(f"Report usage: {action} {amount}")
+
 
 
 
