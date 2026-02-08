@@ -12,6 +12,8 @@ import hashlib
 import email.utils
 import datetime
 import requests
+import aiohttp
+
 
 
 
@@ -798,6 +800,9 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         # perform commands
         if prompt.startswith("/nsfw"):
             skip_history = True
+
+
+
             args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
             nsfw_enabled = False
 
@@ -1286,3 +1291,114 @@ async def notify_signout(data: SignoutInput):
         del user_context.bindings["by_account"][data.omd_key]
         logging.info(f"Signed out user with key {data.omd_key}")
     return {"status": "ok"}
+
+
+# --- Proxy Logic ---
+
+async def proxy_request(url: str, request: Request, method: str = "POST"):
+    """
+    Proxies a request to the upstream URL, streaming the response back.
+    """
+    try:
+        # 1. Prepare Headers
+        headers = dict(request.headers)
+        # Remove headers that might cause issues or are improper to forward blindly
+        headers.pop("host", None)
+        headers.pop("content-length", None) 
+        headers.pop("connection", None)
+        headers.pop("accept-encoding", None) # Let aiohttp handle encoding
+
+        # 2. Get Body (if any)
+        body = await request.body()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                data=body,
+                timeout=None # Streaming responses can be long
+            ) as resp:
+                
+                # 3. Stream Response
+                # We need to forward the status code and headers
+                response_headers = dict(resp.headers)
+                
+                # Filter out hop-by-hop headers from response
+                response_headers.pop("connection", None)
+                response_headers.pop("keep-alive", None)
+                response_headers.pop("proxy-authenticate", None)
+                response_headers.pop("proxy-authorization", None)
+                response_headers.pop("te", None)
+                response_headers.pop("trailers", None)
+                response_headers.pop("transfer-encoding", None)
+                response_headers.pop("upgrade", None)
+                # Content-Length might be wrong if we stream, so we can omit it or let fastapi handle it?
+                # Usually better to let chunks flow.
+
+                async def stream_generator():
+                    async for chunk in resp.content.iter_any():
+                        yield chunk
+
+                return StreamingResponse(
+                    stream_generator(),
+                    status_code=resp.status,
+                    media_type=resp.headers.get("content-type"),
+                    # headers=response_headers # FastAPI sometimes overrides these, but we can try passing relevant ones if needed
+                )
+
+    except Exception as e:
+        logging.error(f"[Proxy] Error proxying to {url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
+
+# --- OpenAI Compatible Endpoints ---
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request):
+    """
+    Proxies OpenAI-style chat completions to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/v1/chat/completions"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.get("/v1/models")
+async def openai_models(request: Request):
+    """
+    Proxies OpenAI-style models listing to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/v1/models"
+    return await proxy_request(target_url, request, method="GET")
+
+# --- Ollama Native Endpoints ---
+
+@app.post("/api/chat")
+async def ollama_chat(request: Request):
+    """
+    Proxies Ollama native chat to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/api/chat"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.post("/api/generate")
+async def ollama_generate(request: Request):
+    """
+    Proxies Ollama generate to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/api/generate"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.get("/api/tags")
+async def ollama_tags(request: Request):
+    """
+    Proxies Ollama tags (models list) to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/api/tags"
+    return await proxy_request(target_url, request, method="GET")
+
+@app.post("/api/show")
+async def ollama_show(request: Request):
+    """
+    Proxies Ollama show model info to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/api/show"
+    return await proxy_request(target_url, request, method="POST")
