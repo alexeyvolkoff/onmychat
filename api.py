@@ -1311,41 +1311,53 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         # 2. Get Body (if any)
         body = await request.body()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                data=body,
-                timeout=None # Streaming responses can be long
-            ) as resp:
-                
-                # 3. Stream Response
-                # We need to forward the status code and headers
-                response_headers = dict(resp.headers)
-                
-                # Filter out hop-by-hop headers from response
-                response_headers.pop("connection", None)
-                response_headers.pop("keep-alive", None)
-                response_headers.pop("proxy-authenticate", None)
-                response_headers.pop("proxy-authorization", None)
-                response_headers.pop("te", None)
-                response_headers.pop("trailers", None)
-                response_headers.pop("transfer-encoding", None)
-                response_headers.pop("upgrade", None)
-                # Content-Length might be wrong if we stream, so we can omit it or let fastapi handle it?
-                # Usually better to let chunks flow.
+        # 3. Manually manage session/request lifecycle to keep connection open for streaming
+        session = aiohttp.ClientSession()
+        req = session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            data=body,
+            timeout=None # Streaming responses can be long
+        )
+        
+        try:
+            # Enter request context
+            resp = await req.__aenter__()
+            
+            # 4. Prepare Response Headers
+            response_headers = dict(resp.headers)
+            
+            # Filter out hop-by-hop headers
+            response_headers.pop("connection", None)
+            response_headers.pop("keep-alive", None)
+            response_headers.pop("proxy-authenticate", None)
+            response_headers.pop("proxy-authorization", None)
+            response_headers.pop("te", None)
+            response_headers.pop("trailers", None)
+            response_headers.pop("transfer-encoding", None)
+            response_headers.pop("upgrade", None)
 
-                async def stream_generator():
+            async def stream_generator():
+                try:
                     async for chunk in resp.content.iter_any():
                         yield chunk
+                finally:
+                    # Cleanup resources when streaming is done or fails
+                    await req.__aexit__(None, None, None)
+                    await session.close()
 
-                return StreamingResponse(
-                    stream_generator(),
-                    status_code=resp.status,
-                    media_type=resp.headers.get("content-type"),
-                    # headers=response_headers # FastAPI sometimes overrides these, but we can try passing relevant ones if needed
-                )
+            return StreamingResponse(
+                stream_generator(),
+                status_code=resp.status,
+                media_type=resp.headers.get("content-type"),
+                # headers=response_headers 
+            )
+
+        except Exception as startup_error:
+            # If we fail before returning response, we must clean up
+            await session.close()
+            raise startup_error
 
     except Exception as e:
         logging.error(f"[Proxy] Error proxying to {url}: {e}")
