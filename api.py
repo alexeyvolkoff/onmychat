@@ -33,6 +33,15 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods
+    allow_headers=["*"], # Allows all headers
+)
+
+
 # Search Node Initialization
 try:
     from search_node import SearchNode
