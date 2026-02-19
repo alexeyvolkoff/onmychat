@@ -4,8 +4,7 @@ import json
 import requests
 import logging
 
-from fastapi import HTTPException
-from requests.exceptions import JSONDecodeError
+
 
 from utils import upload_data_to_storage, fetch_json_from_storage
 from config import USER_DATA_DIR
@@ -97,12 +96,10 @@ def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) 
                 storage,
                 "settings.json"
             )
-        except (json.JSONDecodeError, JSONDecodeError) as e:
-            logging.error(f"Critical error loading remote settings (JSON error): {e}")
-            raise HTTPException(status_code=502, detail="Remote settings corrupted or empty")
         except Exception as e:
-            logging.error(f"Critical error loading remote settings: {e}")
-            raise e # Fail the request, DO NOT load defaults
+            logging.warning(f"Failed to load remote settings: {e}")
+            # Do not raise, just log and fall through to default/upload logic
+            remote_settings = None
         if remote_settings:
             logging.info(f"Loaded settings from storage for user {user_id}")
             
