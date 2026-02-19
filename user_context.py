@@ -98,6 +98,10 @@ def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) 
             )
         except Exception as e:
             logging.warning(f"Failed to load remote settings: {e}")
+            # Fallback to cache if available, even if force_reload was requested
+            if user_id in bindings["profiles"]:
+                 logging.warning(f"Using cached settings for {user_id} due to remote failure")
+                 return bindings["profiles"][user_id]
             # Do not raise, just log and fall through to default/upload logic
             remote_settings = None
         if remote_settings:

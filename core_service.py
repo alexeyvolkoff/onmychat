@@ -1448,7 +1448,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             save_history(ctx, history, chat_name)
 
     # Персонализация
-    username = ctx.settings.get("username", "User")
+    username = ctx.settings.get("name") or ctx.settings.get("username", "User")
     if ctx.settings.get("newUser", False):
         system_prompt += user_context.DEFAULT_UNONBOARDED_PROMPT
         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
