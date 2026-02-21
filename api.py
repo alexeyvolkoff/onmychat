@@ -273,6 +273,10 @@ class SignoutInput(BaseModel):
 # ==== Хелпер ====
 
 def get_ctx(omd_key: str, storage: str = "", force_reload: bool = False):
+    if omd_key in ["undefined", "null"]:
+        omd_key = ""
+    if storage in ["undefined", "null"]:
+        storage = ""
     return user_context.get_context_by_account(omd_key, storage, force_reload)
 
 

@@ -248,6 +248,12 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
        Если нет в bindings, пробуем спросить у OMD.
     """
 
+    if not account_id:
+        user_id = "temp_anon"
+        settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)
+        ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
+        return ctx
+
     if account_id in bindings["by_account"]:
         binding = bindings["by_account"][account_id]
         # Prioritize storage from binding if set, otherwise use passed storage
@@ -291,9 +297,9 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
         logging.warning(f"Unbound OMD key: {account_id}")
 
     # если ничего не получилось — временный контекст
-    user_id=f"temp_{account_id}"
+    user_id = f"temp_{account_id}" if account_id else "temp_anon"
     
-    if storage:
+    if storage and account_id:
          bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id, "storage": storage}
          save_bindings()
 
@@ -314,6 +320,10 @@ def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
     omd_key  — авторизационный ключ (token)
     storage  — базовый путь в OMD, например: "storage/user123"
     """
+    if not storage or storage in ["undefined", "null"]:
+        logging.warning("Skipping profile creation: invalid or empty storage")
+        return {}
+
     # Сохраняем выбранное хранилище в контекст
     ctx.storage = storage
     
