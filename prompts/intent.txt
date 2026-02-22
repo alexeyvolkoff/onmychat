@@ -15,7 +15,7 @@ RULES:
 1. chat: Default for all conversation, roleplay, or general requests.
 2. show: Requests to see YOU (the assistant/character). Includes selfies, portraits, or any roleplay scene INVOLVING YOU (e.g. "us at dinner", "you driving"). 
    - *CRITICAL*: Only use this intent if user explicitly asks with 'show' or 'imagine' or asks to make a selfie, portrait or scene involving you. If in doubt use chat.
-3. view: Requests to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city"). Or to describe an existing image. 
+3. view: Requests to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city").
    - *CRITICAL*: Only use this intent if user explicitly asks with 'show' or 'draw' or 'imagine' to show something. If in doubt use chat.
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET or uses /search command.
