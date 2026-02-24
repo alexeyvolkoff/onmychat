@@ -1319,7 +1319,12 @@ async def _perform_prompt_gen(ctx: UserContext,
     if chat == "default":
         history = []
     else:
-        history = load_history(ctx, chat)
+        try:
+            history = load_history(ctx, chat)
+        except Exception as e:
+            logging.error(f"Failed to load history for chat {chat}: {e}")
+            yield {"error": "⚠️ Failed to load chat history. Storage might be unavailable.", "done": True}
+            return
     
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -1434,7 +1439,13 @@ async def _perform_prompt_gen(ctx: UserContext,
     # This prevents message loss if the stream is interrupted or if another message comes in
     if not skip_history:
         # Re-load fresh history to be safe against race conditions
-        history = load_history(ctx, chat_name)
+        try:
+            history = load_history(ctx, chat_name)
+        except Exception as e:
+            logging.error(f"Failed to reload history for chat {chat_name}: {e}")
+            yield {"error": "⚠️ Failed to reload chat history. Storage might be unavailable.", "done": True}
+            return
+
         user_message_to_save = {
             "role": "user",
             "content": message
@@ -1565,7 +1576,15 @@ async def _perform_prompt_gen(ctx: UserContext,
         # === Добавляем ответ ассистента в историю
         if not skip_history:
             # Re-load history to get the latest (including the user message we just saved + any parallel ones)
-            history = load_history(ctx, chat_name)
+            try:
+                history = load_history(ctx, chat_name)
+            except Exception as e:
+                logging.error(f"Failed to reload history before saving assistant response: {e}")
+                # We can't yield here as we are in process_response, but we should at least not save if loading failed.
+                # Actually, process_response is called from sync and async contexts.
+                # Let's re-raise and handle in the caller.
+                raise e
+
             history_entry = {
                 "role": "assistant", 
                 "content": llm_response
@@ -1700,7 +1719,12 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
     Убедиться, что чат есть в chats.json и файлы подготовлены.
     Если чат = default → сгенерировать нормальное название на основе первого сообщения.
     """
-    chats = load_chats_index(ctx)
+    try:
+        chats = load_chats_index(ctx)
+    except Exception as e:
+        logging.error(f"Failed to load chats index: {e}")
+        # Re-raise to allow caller to handle storage unavailability
+        raise e
     chat = chat or "default"
 
     if chat not in chats or chat == "default":

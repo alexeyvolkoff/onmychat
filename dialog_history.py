@@ -67,13 +67,18 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
             headers = {"Authorization": f"token:{token}"}
             print(f"[loading history]: {ctx.user_id} {url} {token}")
             resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                history = json.loads(resp.content.decode("utf-8"))
-                history = _inject_image_prompts(history)
-                # save chat history in context
-                ctx.history = history   
-                return  history
-            return []
+            if resp.status_code == 200:
+                if resp.text.strip():
+                    history = json.loads(resp.content.decode("utf-8"))
+                    history = _inject_image_prompts(history)
+                    # save chat history in context
+                    ctx.history = history   
+                    return  history
+                return []
+            elif resp.status_code == 404:
+                return []
+            else:
+                resp.raise_for_status()
         else:
             # локальный fallback
             path = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
@@ -138,9 +143,14 @@ def load_chats_index(ctx: UserContext) -> dict:
             headers = {"Authorization": f"token:{omd_key}"}
             resp = requests.get(url, headers=headers, timeout=10)
 
-            if resp.status_code == 200 and resp.text.strip():
-                return json.loads(resp.content.decode("utf-8"))
-            return {}
+            if resp.status_code == 200:
+                if resp.text.strip():
+                    return json.loads(resp.content.decode("utf-8"))
+                return {}
+            elif resp.status_code == 404:
+                return {}
+            else:
+                resp.raise_for_status()
 
         # --- локальный fallback ---
         path = _chats_index_path(ctx.user_id)
@@ -150,10 +160,8 @@ def load_chats_index(ctx: UserContext) -> dict:
             return json.load(f)
 
     except Exception as e:
-        print(f"[chats] Empty index: {ctx.user_id} {e}")
-        if storage and omd_key:
-            create_profile(ctx, omd_key, storage)
-        return {}
+        print(f"[chats] Load index error: {ctx.user_id} {e}")
+        raise e
 
 
 def save_chats_index(ctx: UserContext, chats: dict):
