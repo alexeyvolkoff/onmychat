@@ -13,10 +13,11 @@ RULES:
    - This overrides ALL other rules. Even if the request says "search for /path", it is 'tools'.
 
 1. chat: Default for all conversation, roleplay, or general requests.
-2. show: Requests to see YOU (the assistant/character). Includes selfies, portraits, or any roleplay scene INVOLVING YOU (e.g. "us at dinner", "you driving"). 
-   - *CRITICAL*: Only use this intent if user explicitly asks with 'show' or 'imagine' or asks to make a selfie, portrait or scene involving you. If in doubt use chat.
+2. show: User explicitly requests to see YOU (the assistant/character). Includes requests for your selfies, portraits, scenes with you or roleplay requests for actions involving you (e.g. "stand here", "put on this dress"). 
+   - *CRITICAL*: Only explicit requests with 'show' or 'imagine' or asking to make a selfie, portrait or scene involving you are 'show' requests. If in doubt use chat.
+   - *CRITICAL*: General role play conversations are NOT 'show' requests. They are 'chat' requests. 
 3. view: Requests to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city").
-   - *CRITICAL*: Only use this intent if user explicitly asks with 'show' or 'draw' or 'imagine' to show something. If in doubt use chat.
+   - *CRITICAL*: Only explicit requests with 'show' or 'draw' or 'imagine' to show something are 'view' requests. If in doubt use chat.
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET or uses /search command.
    - *FORBIDDEN*: DO NOT use 'search' if a file path is provided. Use 'tools' instead.
