@@ -12,12 +12,13 @@ RULES:
    - Examples: /Linux-desktop, /home, /Data/, /path/to/file
    - This overrides ALL other rules. Even if the request says "search for /path", it is 'tools'.
 
-1. chat: Default for all conversation, roleplay, or general requests.
-2. show: User explicitly requests to generate image of YOU (the assistant/character). Includes requests for your selfies, portraits, or roleplay actions involving you (e.g. "stand here", "put on this dress"). 
-   - *CRITICAL*: Only explicit requests to generate image of YOU mean show. If in doubt use chat.
-   - *CRITICAL*: General roleplay conversations, recent events discussions are NOT 'show' requests. They are 'chat' requests. 
-3. view: Requests to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city").
-   - *CRITICAL*: Only explicit requests with 'show' or 'draw' or 'imagine' to show something. If in doubt use chat.
+1. chat: Default for all conversation, roleplay, dialogue, or general requests. 
+   - *CRITICAL*: Includes narrative descriptions like "I saw you at the mall", "We are walking", or "You look nice".
+2. show: User explicitly INSTRUCTS or COMMANDS to generate or change the visual image/state of YOU (the assistant/character). 
+   - *CRITICAL*: Must be an active instruction (e.g., "Put on this", "Stand here", "Show me a selfie").
+   - *CRITICAL*: Narrative statements, past-tense descriptions, or compliments are NOT 'show'. They are 'chat'.
+3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city").
+   - *CRITICAL*: Only explicit 'draw', 'imagine', or 'show' instructions for generic items. If in doubt use chat.
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET or uses /search command.
    - *FORBIDDEN*: DO NOT use 'search' if a file path is provided. Use 'tools' instead.
@@ -33,6 +34,9 @@ EXAMPLES:
 - "Show me your photo" -> show
 - "Draw a cat" -> view
 - "Remember that party?" -> chat
+- "I saw you at the mall yesterday" -> chat (Narrative roleplay)
+- "You look beautiful in that dress" -> chat (Compliment, not an instruction)
+- "I'm hugging you tightly" -> chat (Dialogue flow)
 - "/search news about AI" -> search
 - "What is the capital of Slovenia?" -> search
 - "Find the invoice in /Linux-desktop/Private/Data" -> tools (Priority: path present)
