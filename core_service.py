@@ -1843,7 +1843,11 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
 
     if history is None:
-        history = load_history(ctx, chat)
+        try:
+            history = load_history(ctx, chat)
+        except Exception as e:
+            logging.error(f"Failed to load history in generate_image_prompt: {e}")
+            raise e
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
@@ -2224,7 +2228,11 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(formatted_readme)
     if update_history:
-        history = load_history(ctx, chat)
+        try:
+            history = load_history(ctx, chat)
+        except Exception as e:
+            logging.error(f"Failed to load history in generate_image: {e}")
+            raise e
         history.append({
             "role": "assistant", 
             "content": img_prompt, 
@@ -2250,12 +2258,16 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     if nsfw_enabled:
-        system_prompt += NSFW_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
+        system_prompt = NSFW_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
     else:
-        system_prompt +=  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
+        system_prompt =  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
 
 
-    history = load_history(ctx, chat)
+    try:
+        history = load_history(ctx, chat)
+    except Exception as e:
+        logging.error(f"Failed to load history in recognize_image: {e}")
+        raise e
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]

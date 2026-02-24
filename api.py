@@ -792,357 +792,361 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
     ctx = get_ctx(omd_key)
 
     async def event_generator():
-        nonlocal chat
-        # defaults
-        intent = "chat"
-        event = None
-        skip_history = False
-        mem_id = None
-        img_source = None
-
-        # Initialize chat if it's the first message of a new session
-        if not chat or chat == "default":
-             chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-             chat = chat_info["name"]
-             yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
-
-        # Enforce Rights (moved up)
-        token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))
-
-
-        # perform commands
-        if prompt.startswith("/nsfw"):
-            skip_history = True
-
-
-
-            args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
-            nsfw_enabled = False
-
-            if args:
-                if args[0].lower() == "on":
-                    if token_balance <= 0:
-                        yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                        return
-                    nsfw_enabled = True
-                elif args[0].lower() == "off":
-                    nsfw_enabled = False
-
-            llm_message = "get ready to play" if nsfw_enabled else "calm down for now"
-
-            if len(args) > 1:
-                llm_message = args[1].strip()
-                skip_history = False
-        
-
-            ctx.settings["nsfw"] = nsfw_enabled
-            logging.info(f"User: {ctx.user_id} swithed NSFW mode to {nsfw_enabled}")
-            user_context.save_user_settings(ctx)
-            instruction = (
-                "User has switched NSFW mode '{}'.\nPlease, act accordingly."
-            ).format(nsfw_enabled)
-            
-            # yield f"data: {json.dumps({'event': 'reload_chats'})}\n\n"
-            event = 'reload_chats'
-        else:
-            # 1. Broad Intent Detection First
-            # 1. Broad Intent Detection First
-            
-            # Check for explicit slash commands
-            explicit_map = {
-                "/show": "show",
-                "/view": "view", "/imagine": "view",
-                "/generate": "generate",
-                "/tools": "tools",
-                "/import": "import", "/learn": "import",
-                "/recognize": "recognize", "/detect": "recognize",
-                "/think": "think",
-                "/explain": "explain",
-                "/search": "search"
-            }
-            
+        try:
+            nonlocal chat
+            # defaults
             intent = "chat"
-            raw_intent = ""
-            
-            for prefix, mapped_intent in explicit_map.items():
-                if prompt.startswith(prefix):
-                    intent = mapped_intent
-                    raw_intent = f"Explicit command: {intent}"
-                    break
-            
-            if not raw_intent:
-                raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
-                lines = raw_intent.strip().split("\n", 1)
-                intent_raw = lines[0].strip().lower()
-                
-                # Whitelist and sanitize intent
-                allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat", "search"]
-                for allowed in allowed_intents:
-                    if intent_raw.startswith(allowed):
-                        intent = allowed
-                        break
-            
-            # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
-            # This ensures chat is in the index and has a title
-            if intent != "chat": # perform_prompt handles chat intent
-                 # Only if we are branching away from perform_prompt
+            event = None
+            skip_history = False
+            mem_id = None
+            img_source = None
+
+            # Initialize chat if it's the first message of a new session
+            if not chat or chat == "default":
                  chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-                 chat = chat_info.get("name", chat)
-            
-            logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
-            
-            # 2. Extract Memory Facts immediately
-            memory_fact = memory_index.extract_memory_from_response(raw_intent)
-            if memory_fact:
-                try:
-                    logging.info(f"Memorizing: {memory_fact}")
-                    memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="permanent")
-                    yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
-                except Exception as e:
-                    logging.error(f"Vectorization error: {e}")
+                 chat = chat_info["name"]
+                 yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
 
-            # 3. Handle Special Primary Intents (Slash overrides)
-            if prompt.startswith("/show"):
-                intent = "show"
-            elif prompt.startswith("/generate"):
-                intent = "generate"
-                img_prompt = prompt[len("/generate"):].strip()
-                if not ctx.settings.get("nsfw", False):
-                    logging.info(f"Checking image generation safety: {img_prompt}")
-                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                    if safety_result != "SAFE":
-                        logging.info(f"Image generation safety check failed: {safety_result}")
-                        
-                        warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
+            # Enforce Rights (moved up)
+            token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))
+
+
+            # perform commands
+            if prompt.startswith("/nsfw"):
+                skip_history = True
+
+
+
+                args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
+                nsfw_enabled = False
+
+                if args:
+                    if args[0].lower() == "on":
                         if token_balance <= 0:
-                             warning = "I can not generate this until you prove your age by subscribing for Premium plan"
+                            yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
+                            return
+                        nsfw_enabled = True
+                    elif args[0].lower() == "off":
+                        nsfw_enabled = False
 
-                        yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
-                        return
-            elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
-                intent = "view"
-            elif prompt.startswith("/tools"):
-                # Provide an immediate, reliable list of tools
-                tools_list = await core_service.list_supported_tools(ctx)
+                llm_message = "get ready to play" if nsfw_enabled else "calm down for now"
 
-                # Ensure history is saved for this interaction
+                if len(args) > 1:
+                    llm_message = args[1].strip()
+                    skip_history = False
+            
+
+                ctx.settings["nsfw"] = nsfw_enabled
+                logging.info(f"User: {ctx.user_id} swithed NSFW mode to {nsfw_enabled}")
+                user_context.save_user_settings(ctx)
+                instruction = (
+                    "User has switched NSFW mode '{}'.\nPlease, act accordingly."
+                ).format(nsfw_enabled)
+                
+                # yield f"data: {json.dumps({'event': 'reload_chats'})}\n\n"
+                event = 'reload_chats'
+            else:
+                # 1. Broad Intent Detection First
+                # 1. Broad Intent Detection First
+                
+                # Check for explicit slash commands
+                explicit_map = {
+                    "/show": "show",
+                    "/view": "view", "/imagine": "view",
+                    "/generate": "generate",
+                    "/tools": "tools",
+                    "/import": "import", "/learn": "import",
+                    "/recognize": "recognize", "/detect": "recognize",
+                    "/think": "think",
+                    "/explain": "explain",
+                    "/search": "search"
+                }
+                
+                intent = "chat"
+                raw_intent = ""
+                
+                for prefix, mapped_intent in explicit_map.items():
+                    if prompt.startswith(prefix):
+                        intent = mapped_intent
+                        raw_intent = f"Explicit command: {intent}"
+                        break
+                
+                if not raw_intent:
+                    raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
+                    lines = raw_intent.strip().split("\n", 1)
+                    intent_raw = lines[0].strip().lower()
+                    
+                    # Whitelist and sanitize intent
+                    allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat", "search"]
+                    for allowed in allowed_intents:
+                        if intent_raw.startswith(allowed):
+                            intent = allowed
+                            break
+                
+                # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
+                # This ensures chat is in the index and has a title
+                if intent != "chat": # perform_prompt handles chat intent
+                     # Only if we are branching away from perform_prompt
+                     chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+                     chat = chat_info.get("name", chat)
+                
+                logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
+                
+                # 2. Extract Memory Facts immediately
+                memory_fact = memory_index.extract_memory_from_response(raw_intent)
+                if memory_fact:
+                    try:
+                        logging.info(f"Memorizing: {memory_fact}")
+                        memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="permanent")
+                        yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
+                    except Exception as e:
+                        logging.error(f"Vectorization error: {e}")
+
+                # 3. Handle Special Primary Intents (Slash overrides)
+                if prompt.startswith("/show"):
+                    intent = "show"
+                elif prompt.startswith("/generate"):
+                    intent = "generate"
+                    img_prompt = prompt[len("/generate"):].strip()
+                    if not ctx.settings.get("nsfw", False):
+                        logging.info(f"Checking image generation safety: {img_prompt}")
+                        safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                        if safety_result != "SAFE":
+                            logging.info(f"Image generation safety check failed: {safety_result}")
+                            
+                            warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
+                            if token_balance <= 0:
+                                 warning = "I can not generate this until you prove your age by subscribing for Premium plan"
+
+                            yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
+                            return
+                elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
+                    intent = "view"
+                elif prompt.startswith("/tools"):
+                    # Provide an immediate, reliable list of tools
+                    tools_list = await core_service.list_supported_tools(ctx)
+
+                    # Ensure history is saved for this interaction
+                    history = dialog_history.load_history(ctx, chat)
+                    history.append({"role": "user", "content": prompt})
+                    history.append({"role": "assistant", "content": tools_list})
+                    dialog_history.save_history(ctx, history, chat)
+
+                    yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
+                    return
+                elif prompt.startswith("/import") or prompt.startswith("/learn"):  
+                    m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                    file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                    if file_path_or_url:
+                        intent = f"import:{file_path_or_url}"
+                elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
+                    m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                    file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                    if file_path_or_url:
+                        intent = f"recognize:{file_path_or_url}"
+                elif prompt.startswith("/think"):  
+                    intent = "think"
+                elif prompt.startswith("/explain"):
+                    intent = "explain"
+                elif prompt.startswith("/search"):
+                    intent = "search"
+        
+            restricted_intents = ["tools"]
+            
+            # Check primary intent or prefixed intent (e.g. import:url)
+            check_intent = intent.split(":")[0] if ":" in intent else intent
+            
+            logging.info(f"Token Balance: {token_balance}")
+            if token_balance <= 0:
+                 if check_intent in restricted_intents:
+                      yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
+                      return
+
+            logging.info(f"Check intent: {check_intent}")
+            if check_intent in ["tools", "search"]:
+                 status_msg = "searching" if check_intent == "search" else "executing"
+                 logging.info(f"Yielding {status_msg} status")
+                 yield f"data: {json.dumps({'status': status_msg})}\n\n"
+                 
+            if check_intent == "import":
+                 # Limit to 10 items for free accounts
+                 memories = memory_index.load_memories(ctx, collection="user")
+                 if len(memories) >= 10:
+                     yield f"data: {json.dumps({'delta': 'Free accounts are limited to 10 knowledge base items. Upgrade to Premium for unlimited storage.', 'role': 'assistant', 'done': True})}\n\n"
+                     return
+
+            if intent == "show":
+                # 1️⃣ статус
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+                # 2️⃣ картинка
+                # Load history ONCE to avoid race conditions
+                history = dialog_history.load_history(ctx, chat)
+                
+                # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
+                img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history, save_history_flag=False)
+                logging.info(f"Generating image for prompt {prompt}")
+
+                # Generate image using prompt, DO NOT save yet
+                path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
+                
+                # Now perform atomic history update
+                history.append({"role": "user", "content": prompt})
+                history.append({"role": "assistant", "content": img_prompt, "image": {"path": path, "title": title, "description": description}})
+                dialog_history.save_history(ctx, history, chat)
+                
+                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                
+                skip_history = False
+                #Set specific instructions
+                instruction = (
+                    "You have ALREADY generated an image of yourself based on the user's request.\n"
+                    "The scene description is:\n"
+                    "{}\n\n"
+                    "YOUR TASK: Roleplay this scene. Describe your feelings, thoughts, or actions AS IF YOU ARE IN THE IMAGE RIGHT NOW.\n"
+                    "Create a caption for this photo or a continuation of the moment.\n"
+                    "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
+                    "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
+                ).format(img_prompt)
+                llm_message = prompt
+            elif intent == "view":
+                # 1️⃣ статус
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+
+                # 2️⃣ картинка
+                img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
+                logging.info(f"Generating image for prompt {prompt}")
+
+                # 3️⃣ Generate image
+                
+                path, title, description = await core_service.generate_image(ctx, img_prompt, chat)
+                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                skip_history = False
+                #Set specific instructions
+                instruction = (
+                    "You have ALREADY generated an image based on the user's request.\n"
+                    "The scene description is:\n"
+                    "{}\n\n"
+                    "YOUR TASK: Describe this image enthusiastically or provide a caption for it.\n"
+                    "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
+                    "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
+                ).format(img_prompt)
+                llm_message = prompt
+
+            elif intent == "explain" or intent == "think":    
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+        
+                instruction=(
+                    "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
+                    "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
+                    "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
+                )
+                llm_message = prompt
+            elif intent == "search":
+                yield f"data: {json.dumps({'status': 'searching'})}\n\n"
+                
+                # Extract query from prompt (remove /search prefix if present)
+                search_query = prompt
+                if prompt.lower().startswith("/search"):
+                    search_query = prompt[7:].strip()
+                
+                # Call search_web directly - no MCP, no hallucination
+                search_results = await core_service.search_web(ctx, search_query)
+                
+                # Save search to history
                 history = dialog_history.load_history(ctx, chat)
                 history.append({"role": "user", "content": prompt})
-                history.append({"role": "assistant", "content": tools_list})
-                dialog_history.save_history(ctx, history, chat)
+                
+                instruction = (
+                    f"The user asked to search the web. Here are the REAL search results:\n\n"
+                    f"{search_results}\n\n"
+                    "Summarize these results for the user in a helpful way. "
+                    "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
+                )
+                llm_message = search_query
+            elif intent.startswith("recognize"): 
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
-                yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
+                if ":" in intent:
+                    img_source = intent.split(":", 1)[1]
+            
+                instruction = (
+                    "Recognize the image according to context."
+                )
+                llm_message = prompt
+            elif intent.startswith("import"):
+                yield f"data: {json.dumps({'status': 'learning'})}\n\n"
+                doc_source = None
+                card = {}
+                if ":" in intent:
+                    doc_source = intent.split(":", 1)[1]
+                if doc_source:
+                    card = await core_service.import_doc(ctx, doc_source)   
+                new_knowledge = ""     
+                if card: 
+                    new_knowledge = card.get("text")
+                
+                if not new_knowledge:
+                    # FALLBACK: If import failed or was a directory, treat as chat so MCP can handle it
+                    logging.info(f"Import yielded no knowledge. Falling back to chat intent.")
+                    intent = "chat"
+                    llm_message = prompt
+                    instruction = (
+                        "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
+                        "If no *Known facts* provided, respond freely as a helpful conversational assistant."
+                    )
+                else:
+                    yield f"data: {json.dumps({'new_knowledge': new_knowledge})}\n\n"    
+                    logging.info(f"*New knowledge:*\n{new_knowledge}")
+                    instruction=(
+                        f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
+                    )
+                    llm_message = prompt
+                    mem_id = card.get("id")
+            elif intent.startswith("image"):
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+
+            elif intent == "generate":
+                # Ensure chat exists and update timestamp
+                chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
+                
+                # 1️⃣ статус
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+
+                # 2️⃣ Generate title from raw prompt
+                img_title = await core_service.generate_title_from_prompt(img_prompt)
+                
+                # Format prompt with title for generate_image to parse
+                formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
+                
+                logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
+                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
+                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 return
-            elif prompt.startswith("/import") or prompt.startswith("/learn"):  
-                m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
-                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-                if file_path_or_url:
-                    intent = f"import:{file_path_or_url}"
-            elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
-                m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
-                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-                if file_path_or_url:
-                    intent = f"recognize:{file_path_or_url}"
-            elif prompt.startswith("/think"):  
-                intent = "think"
-            elif prompt.startswith("/explain"):
-                intent = "explain"
-            elif prompt.startswith("/search"):
-                intent = "search"
-    
-        restricted_intents = ["tools"]
-        
-        # Check primary intent or prefixed intent (e.g. import:url)
-        check_intent = intent.split(":")[0] if ":" in intent else intent
-        
-        logging.info(f"Token Balance: {token_balance}")
-        if token_balance <= 0:
-             if check_intent in restricted_intents:
-                  yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                  return
 
-        logging.info(f"Check intent: {check_intent}")
-        if check_intent in ["tools", "search"]:
-             status_msg = "searching" if check_intent == "search" else "executing"
-             logging.info(f"Yielding {status_msg} status")
-             yield f"data: {json.dumps({'status': status_msg})}\n\n"
-             
-        if check_intent == "import":
-             # Limit to 10 items for free accounts
-             memories = memory_index.load_memories(ctx, collection="user")
-             if len(memories) >= 10:
-                 yield f"data: {json.dumps({'delta': 'Free accounts are limited to 10 knowledge base items. Upgrade to Premium for unlimited storage.', 'role': 'assistant', 'done': True})}\n\n"
-                 return
-
-        if intent == "show":
-            # 1️⃣ статус
-            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
-            # 2️⃣ картинка
-            # Load history ONCE to avoid race conditions
-            history = dialog_history.load_history(ctx, chat)
-            
-            # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
-            img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history, save_history_flag=False)
-            logging.info(f"Generating image for prompt {prompt}")
-
-            # Generate image using prompt, DO NOT save yet
-            path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
-            
-            # Now perform atomic history update
-            history.append({"role": "user", "content": prompt})
-            history.append({"role": "assistant", "content": img_prompt, "image": {"path": path, "title": title, "description": description}})
-            dialog_history.save_history(ctx, history, chat)
-            
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
-            
-            skip_history = False
-            #Set specific instructions
-            instruction = (
-                "You have ALREADY generated an image of yourself based on the user's request.\n"
-                "The scene description is:\n"
-                "{}\n\n"
-                "YOUR TASK: Roleplay this scene. Describe your feelings, thoughts, or actions AS IF YOU ARE IN THE IMAGE RIGHT NOW.\n"
-                "Create a caption for this photo or a continuation of the moment.\n"
-                "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
-                "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
-            ).format(img_prompt)
-            llm_message = prompt
-        elif intent == "view":
-            # 1️⃣ статус
-            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
-
-            # 2️⃣ картинка
-            img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
-            logging.info(f"Generating image for prompt {prompt}")
-
-            # 3️⃣ Generate image
-            
-            path, title, description = await core_service.generate_image(ctx, img_prompt, chat)
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
-            skip_history = False
-            #Set specific instructions
-            instruction = (
-                "You have ALREADY generated an image based on the user's request.\n"
-                "The scene description is:\n"
-                "{}\n\n"
-                "YOUR TASK: Describe this image enthusiastically or provide a caption for it.\n"
-                "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
-                "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
-            ).format(img_prompt)
-            llm_message = prompt
-
-        elif intent == "explain" or intent == "think":    
-            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-    
-            instruction=(
-                "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
-                "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
-                "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
-            )
-            llm_message = prompt
-        elif intent == "search":
-            yield f"data: {json.dumps({'status': 'searching'})}\n\n"
-            
-            # Extract query from prompt (remove /search prefix if present)
-            search_query = prompt
-            if prompt.lower().startswith("/search"):
-                search_query = prompt[7:].strip()
-            
-            # Call search_web directly - no MCP, no hallucination
-            search_results = await core_service.search_web(ctx, search_query)
-            
-            # Save search to history
-            history = dialog_history.load_history(ctx, chat)
-            history.append({"role": "user", "content": prompt})
-            
-            instruction = (
-                f"The user asked to search the web. Here are the REAL search results:\n\n"
-                f"{search_results}\n\n"
-                "Summarize these results for the user in a helpful way. "
-                "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
-            )
-            llm_message = search_query
-        elif intent.startswith("recognize"): 
-            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-
-            if ":" in intent:
-                img_source = intent.split(":", 1)[1]
-        
-            instruction = (
-                "Recognize the image according to context."
-            )
-            llm_message = prompt
-        elif intent.startswith("import"):
-            yield f"data: {json.dumps({'status': 'learning'})}\n\n"
-            doc_source = None
-            card = {}
-            if ":" in intent:
-                doc_source = intent.split(":", 1)[1]
-            if doc_source:
-                card = await core_service.import_doc(ctx, doc_source)   
-            new_knowledge = ""     
-            if card: 
-                new_knowledge = card.get("text")
-            
-            if not new_knowledge:
-                # FALLBACK: If import failed or was a directory, treat as chat so MCP can handle it
-                logging.info(f"Import yielded no knowledge. Falling back to chat intent.")
-                intent = "chat"
+            # 3️⃣ основной стрим чата
+            else:
+                skip_history = False
                 llm_message = prompt
                 instruction = (
-                    "If *Known facts* are provided in your prior system prompt and they are relevant to user's query, be extremely accurate, do not guess. "
-                    "If no *Known facts* provided, respond freely as a helpful conversational assistant."
+                    "Respond freely as a helpful conversational assistant."
                 )
-            else:
-                yield f"data: {json.dumps({'new_knowledge': new_knowledge})}\n\n"    
-                logging.info(f"*New knowledge:*\n{new_knowledge}")
-                instruction=(
-                    f"Base your answer on *New knowledge* ONLY, if present. *New knowledge:*\n{new_knowledge}"
-                )
-                llm_message = prompt
-                mem_id = card.get("id")
-        elif intent.startswith("image"):
-            yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-
-        elif intent == "generate":
-            # Ensure chat exists and update timestamp
-            chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
-            
-            # 1️⃣ статус
-            yield f"data: {json.dumps({'status': 'generating'})}\n\n"
-
-            # 2️⃣ Generate title from raw prompt
-            img_title = await core_service.generate_title_from_prompt(img_prompt)
-            
-            # Format prompt with title for generate_image to parse
-            formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
-            
-            logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-            path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
-            yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
-            return
-
-        # 3️⃣ основной стрим чата
-        else:
-            skip_history = False
-            llm_message = prompt
-            instruction = (
-                "Respond freely as a helpful conversational assistant."
-            )
-        # 3️⃣ ответ
-        async for chunk in await core_service.perform_prompt(
-            ctx,
-            instruction=instruction,
-            message=llm_message,
-            chat=chat,
-            skip_history=skip_history,
-            intent=intent,
-            mem_id=mem_id,
-            img_source=img_source,
-            event=event,
-            stream=True
-        ):
-            yield f"data: {json.dumps(chunk)}\n\n"
+            # 3️⃣ ответ
+            async for chunk in await core_service.perform_prompt(
+                ctx,
+                instruction=instruction,
+                message=llm_message,
+                chat=chat,
+                skip_history=skip_history,
+                intent=intent,
+                mem_id=mem_id,
+                img_source=img_source,
+                event=event,
+                stream=True
+            ):
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except Exception as e:
+            logging.error(f"Error in event_generator: {e}")
+            yield f"data: {json.dumps({'error': '⚠️ Storage error or request failed. Please try again later.', 'done': True})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
