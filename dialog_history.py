@@ -75,7 +75,7 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
                     ctx.history = history   
                     return  history
                 return []
-            elif resp.status_code == 404:
+            elif resp.status_code in (403, 404):
                 return []
             else:
                 resp.raise_for_status()
@@ -147,7 +147,7 @@ def load_chats_index(ctx: UserContext) -> dict:
                 if resp.text.strip():
                     return json.loads(resp.content.decode("utf-8"))
                 return {}
-            elif resp.status_code == 404:
+            elif resp.status_code in (403, 404):
                 return {}
             else:
                 resp.raise_for_status()
