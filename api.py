@@ -1120,7 +1120,17 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
                 path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
+                yield f"data: {json.dumps({'prompt': prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
+                
+                # Save to history to ensure the message persists across page reloads
+                history = dialog_history.load_history(ctx, chat)
+                history.append({"role": "user", "content": prompt})
+                history.append({
+                    "role": "assistant", 
+                    "content": prompt, # Use prompt as content because /generate usually doesn't have text
+                    "image": {"path": path, "title": title, "description": description}
+                })
+                dialog_history.save_history(ctx, history, chat)
                 return
 
             # 3️⃣ основной стрим чата
