@@ -1345,9 +1345,13 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     if chat == "default":
         history = []
-    else:
+    
+    if not skip_history:
         try:
-            history = load_history(ctx, chat)
+            if provided_history is not None:
+                 history = provided_history
+            else:
+                 history = load_history(ctx, chat) # Use 'chat' here for initial load, chat_name is determined later
         except Exception as e:
             logging.error(f"Failed to load history for chat {chat}: {e}")
             yield {"error": "⚠️ Failed to load chat history. Storage might be unavailable.", "done": True}
@@ -1358,7 +1362,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     strict_fact = ""
     facts_text = ""
     doc_ids = []
-    facts = []
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     logging.info(f"Loading facts: {collection} {is_rag}")
 
@@ -1468,7 +1471,10 @@ async def _perform_prompt_gen(ctx: UserContext,
     if not skip_history:
         # Re-load fresh history to be safe against race conditions
         try:
-            history = load_history(ctx, chat_name)
+            if provided_history is not None:
+                 history = provided_history
+            else:
+                 history = load_history(ctx, chat_name)
         except Exception as e:
             logging.error(f"Failed to reload history for chat {chat_name}: {e}")
             yield {"error": "⚠️ Failed to reload chat history. Storage might be unavailable.", "done": True}
@@ -1605,11 +1611,13 @@ async def _perform_prompt_gen(ctx: UserContext,
             response["facts"] = strict_fact
         if llm_think_response:    
             response["thinking"] = llm_think_response
-        # === Добавляем ответ ассистента в историю
         if not skip_history:
             # Re-load history to get the latest (including the user message we just saved + any parallel ones)
             try:
-                history = load_history(ctx, chat_name)
+                if provided_history is not None:
+                     history = provided_history
+                else:
+                     history = load_history(ctx, chat_name)
             except Exception as e:
                 logging.error(f"Failed to reload history before saving assistant response: {e}")
                 # We can't yield here as we are in process_response, but we should at least not save if loading failed.
@@ -1630,8 +1638,11 @@ async def _perform_prompt_gen(ctx: UserContext,
 
             history.append(history_entry)
 
-            #chat_info = await ensure_chat(ctx, chat, message)
-            save_history(ctx, history, chat_name)
+            # We DO NOT save history to legacy storage if it was strictly provided from OrbitDB frontend payload
+            # (If provided_history is not None, the client is responsible for saving its own append via OrbitDB)
+            if provided_history is None:
+                 #chat_info = await ensure_chat(ctx, chat, message)
+                 save_history(ctx, history, chat_name)
             
         response["chatinfo"] = chat_info
         return response
@@ -1696,11 +1707,34 @@ async def _perform_prompt_gen(ctx: UserContext,
         yield response
         return
 
-async def perform_prompt(*args, **kwargs) -> str | AsyncGenerator:
+async def perform_prompt(
+    ctx: UserContext,
+    instruction: str,
+    message: str,
+    chat: str="default", 
+    skip_history: bool=False,
+    intent: str|None=None,
+    mem_id: str|None=None,
+    img_source: str|None=None,
+    event: str|None=None,
+    stream: bool=False,
+    provided_history: list|None=None
+) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
-    stream = kwargs.get("stream", False)
     
-    gen = _perform_prompt_gen(*args, **kwargs)
+    gen = _perform_prompt_gen(
+        ctx=ctx,
+        instruction=instruction,
+        message=message,
+        chat=chat,
+        skip_history=skip_history,
+        intent=intent,
+        mem_id=mem_id,
+        img_source=img_source,
+        event=event,
+        stream=stream,
+        provided_history=provided_history
+    )
     
     if stream:
         return gen
@@ -1796,14 +1830,18 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 
 
 # === Intent ===
-async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
+async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default", provided_history: list|None = None) -> str:
     chat = chat or "default"
     system_prompt = INTENT_PROMPT + "\n\n" + MEMORIZATION_PROMPT
     
     # Get last 4 messages from history
     try:
-        from dialog_history import load_history
-        history = load_history(ctx, chat)
+        if provided_history is not None:
+             history = provided_history
+        else:
+             from dialog_history import load_history
+             history = load_history(ctx, chat)
+        
         last_messages = history[-4:] if history else []
         if last_messages:
             history_text = "\nChat History (last 4 messages):\n"

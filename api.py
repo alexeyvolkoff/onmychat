@@ -139,6 +139,12 @@ class ChatInput(BaseModel):
     prompt: str
     chat: str = "default"
 
+class ChatStreamInput(BaseModel):
+    omd_key: str
+    prompt: str
+    chat: str = "default"
+    history: list = []
+
 class ImportInput(BaseModel):
     omd_key: str
     url_or_path: str
@@ -784,8 +790,13 @@ async def chat_endpoint(data: ChatInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/chat/stream")
+async def chat_stream_post(request: Request, data: ChatStreamInput):
+    # Reuse the exact same streaming generator, passing in the frontend OrbitDB history
+    return await chat_stream(request, data.omd_key, data.prompt, data.chat, provided_history=data.history)
+
 @app.get("/chat/stream")
-async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default"):
+async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", provided_history: list|None = None):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
 
@@ -870,7 +881,9 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                         break
                 
                 if not raw_intent:
-                    raw_intent = await core_service.classify_user_intent(ctx, prompt, chat)
+                    # Check for RAG intent independently 
+                    # (so we don't accidentally class it as a tool if it isn't meant to be)
+                    raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
                     lines = raw_intent.strip().split("\n", 1)
                     intent_raw = lines[0].strip().lower()
                     
@@ -1149,7 +1162,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 mem_id=mem_id,
                 img_source=img_source,
                 event=event,
-                stream=True
+                stream=True,
+                provided_history=provided_history
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
