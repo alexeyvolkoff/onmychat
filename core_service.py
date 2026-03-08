@@ -219,6 +219,23 @@ MCP_TOOLS = [
               "required": ["root_directory", "condition"]
           }
       }
+  },
+  {
+      "type": "function",
+      "function": {
+          "name": "save_user_fact",
+          "description": "Save persistent, factual information explicitly stated by the user about themselves (e.g., biographical details, job roles, persistent preferences). DO NOT use for temporary context, emotions, or roleplay events.",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "fact": {
+                      "type": "string",
+                      "description": "The exact factual statement to memorize"
+                  }
+              },
+              "required": ["fact"]
+          }
+      }
   }
 ]
 
@@ -659,7 +676,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
             "find_omd_file": "searching",
             "write_omd_file": "writing",
             "search_web": "searching",
-            "search_memory": "searching"
+            "search_memory": "searching",
+            "save_user_fact": "learning"
         }
         status_msg = status_map.get(name, "executing")
         
@@ -823,6 +841,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                      query = args.get("query", "")
                      if query:
                          res = await search_memory_tool(ctx, query)
+             elif name == "save_user_fact":
+                 fact = args.get("fact", "")
+                 if fact:
+                     try:
+                         logging.info(f"[MCP] Agent actively memorizing: {fact}")
+                         memorize(ctx, fact)
+                         res = f"Success. Memorized: {fact}"
+                     except Exception as e:
+                         res = f"Error saving memory: {e}"
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
             msg_entry = {"role": "tool", "content": str(res)}
@@ -2519,6 +2546,61 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
 def memorize(ctx, text):
     # Добавление краткой аннотации в память
     return add_memory_card(ctx, text, collection="user", relevance="permanent")
+
+async def extract_and_save_memory(ctx: UserContext, message: str) -> str:
+    """
+    Evaluates if the user message contains a persistent fact explicitly stated by the user.
+    If so, calls the `save_user_fact` tool to save it down and returns the fact text for the UI.
+    Uses the tool-call background agent to avoid polluting the chat context.
+    """
+    # Use the existing prompt text, but instruct it to use the exact tool
+    prompt_text = MEMORIZATION_PROMPT.replace(
+        "append a line to your reply:\n\nMemorize: <the new fact>\n<why you decided to memorize this fact, which rule>",
+        "call the `save_user_fact` tool."
+    ).replace(
+        "If no memory qualifies, do not include “Memorize:” at all.",
+        "If no memory qualifies, do NOT call the tool and just say 'NO'."
+    )
+    
+    # We borrow the existing tool from MCP_TOOLS
+    tool_def = next((t for t in MCP_TOOLS if t["function"]["name"] == "save_user_fact"), None)
+    
+    messages = [
+        {"role": "system", "content": prompt_text},
+        {"role": "user", "content": f"Message to evaluate: {message}"}
+    ]
+    
+    payload = {
+        "model": SFW_MODEL,  # Use standard, fast model
+        "messages": messages,
+        "stream": False,
+        "tools": [tool_def] if tool_def else [],
+        "options": {
+            "temperature": 0.0
+        }
+    }
+    
+    try:
+        data = await llm_request(payload)
+        if not data or "message" not in data:
+            return None
+            
+        msg = data["message"]
+        tool_calls = msg.get("tool_calls", [])
+        
+        for tool_call in tool_calls:
+            if tool_call["function"]["name"] == "save_user_fact":
+                args = tool_call["function"]["arguments"]
+                fact = args.get("fact")
+                if fact:
+                    logging.info(f"[Background Agent] Actively memorizing fact: {fact}")
+                    memorize(ctx, fact)
+                    return fact
+                    
+    except Exception as e:
+        logging.error(f"Background memory extractor error: {e}")
+        
+    return None
 
 
 async def generate_avatar(ctx: UserContext, style: str, character_lora: str, prompt: str):
