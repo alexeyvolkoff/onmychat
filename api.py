@@ -798,7 +798,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             skip_history = False
             mem_id = None
             img_source = None
-            memory_task = None
 
             # Initialize chat if it's the first message of a new session
             if not chat or chat == "default":
@@ -891,8 +890,15 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 
                 logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
                 
-                # 2. Extract Memory Facts immediately (BACKGROUND AGENT)
-                memory_task = asyncio.create_task(core_service.extract_and_save_memory(ctx, prompt))
+                # 2. Extract Memory Facts immediately (from the combined intent/memory string)
+                memory_fact = memory_index.extract_memory_from_response(raw_intent)
+                if memory_fact:
+                    try:
+                        logging.info(f"Memorizing: {memory_fact}")
+                        memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="permanent")
+                        yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
+                    except Exception as e:
+                        logging.error(f"Vectorization error: {e}")
 
                 # 3. Handle Special Primary Intents (Slash overrides)
                 if prompt.startswith("/show"):
@@ -1146,18 +1152,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 stream=True
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
-                
-            # Post-stream: check if the background memory agent found something.
-            # We wait for it with a timeout so it doesn't hang the connection forever.
-            if memory_task:
-                 try:
-                     memory_fact = await asyncio.wait_for(memory_task, timeout=5.0)
-                     if memory_fact:
-                         yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
-                 except asyncio.TimeoutError:
-                     logging.warning("Background memory task timed out.")
-                 except Exception as e:
-                     logging.warning(f"Background memory task failed: {e}")
         except Exception as e:
             logging.error(f"Error in event_generator: {e}")
             yield f"data: {json.dumps({'error': '⚠️ Storage error or request failed. Please try again later.', 'done': True})}\n\n"

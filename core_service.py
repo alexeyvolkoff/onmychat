@@ -1798,7 +1798,7 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 # === Intent ===
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default") -> str:
     chat = chat or "default"
-    system_prompt = INTENT_PROMPT
+    system_prompt = INTENT_PROMPT + "\n\n" + MEMORIZATION_PROMPT
     
     # Get last 4 messages from history
     try:
@@ -1830,7 +1830,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
         "model": SFW_MODEL,
         "stream": False,
         "options": {
-            "temperature": 0.1, # Low temperature for classification
+            "temperature": 0.0, # Complete zero temperature for classification and strict facts
         }
     }
     
@@ -2559,58 +2559,8 @@ def memorize(ctx, text):
     return add_memory_card(ctx, text, collection="user", relevance="permanent")
 
 async def extract_and_save_memory(ctx: UserContext, message: str) -> str:
-    """
-    Evaluates if the user message contains a persistent fact explicitly stated by the user.
-    If so, calls the `save_user_fact` tool to save it down and returns the fact text for the UI.
-    Uses the tool-call background agent to avoid polluting the chat context.
-    """
-    # Use the existing prompt text, but instruct it to use the exact tool
-    prompt_text = MEMORIZATION_PROMPT.replace(
-        "append a line to your reply:\n\nMemorize: <the new fact>\n<why you decided to memorize this fact, which rule>",
-        "call the `save_user_fact` tool."
-    ).replace(
-        "If no memory qualifies, do not include “Memorize:” at all.",
-        "If no memory qualifies, do NOT call the tool and just say 'NO'."
-    )
-    
-    # We borrow the existing tool from MCP_TOOLS
-    tool_def = next((t for t in MCP_TOOLS if t["function"]["name"] == "save_user_fact"), None)
-    
-    messages = [
-        {"role": "system", "content": prompt_text},
-        {"role": "user", "content": f"Message to evaluate: {message}"}
-    ]
-    
-    payload = {
-        "model": SFW_MODEL,  # Use standard, fast model
-        "messages": messages,
-        "stream": False,
-        "tools": [tool_def] if tool_def else [],
-        "options": {
-            "temperature": 0.0
-        }
-    }
-    
-    try:
-        data = await llm_request(payload)
-        if not data or "message" not in data:
-            return None
-            
-        msg = data["message"]
-        tool_calls = msg.get("tool_calls", [])
-        
-        for tool_call in tool_calls:
-            if tool_call["function"]["name"] == "save_user_fact":
-                args = tool_call["function"]["arguments"]
-                fact = args.get("fact")
-                if fact:
-                    logging.info(f"[Background Agent] Actively memorizing fact: {fact}")
-                    memorize(ctx, fact)
-                    return fact
-                    
-    except Exception as e:
-        logging.error(f"Background memory extractor error: {e}")
-        
+    # Deprecated: Background extraction via tools proved too unstable for gemma3:12b without strict guidance.
+    # We now extract memories inside classify_user_intent.
     return None
 
 
