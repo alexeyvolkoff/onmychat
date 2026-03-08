@@ -1450,7 +1450,8 @@ async def _perform_prompt_gen(ctx: UserContext,
             "Filenames may be in Slovenian or Russian (e.g. 'račun' = 'invoice', 'prijavnica' = 'application'). Treat them as valid matches.\n"
             "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is INSIDE the file (items, totals). "
             "However, you DO know the existence and names of files discovered via 'list_omd_files' or 'find_omd_file'.\n"
-            "5. If 'System Tool Output' is truly empty, state: 'No data found in the system tools.'"
+            "5. If 'System Tool Output' is truly empty, state: 'No data found in the system tools.'\n"
+            "6. NEVER claim you created, saved, or updated a file unless the System Tool Output explicitly confirms a successful write operation."
         )
     elif nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
@@ -1512,7 +1513,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
     
     # [HALLUCINATION SHIELD]
-    instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output (MCP)*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content."
+    instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output:\n*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content. Do NOT pretend to run actions like saving files by inventing system logs."
 
     # Reminder
     if think:
@@ -1575,6 +1576,10 @@ async def _perform_prompt_gen(ctx: UserContext,
     async def process_response(data) -> dict: 
         logging.info(data)
         llm_response = data["message"]["content"]
+        
+        # Super Shield: Strip out any hallucinated generated tool output block from the actual response
+        llm_response = re.sub(r'(?i)\*?System Tool Output[\s\S]*', '', llm_response).strip()
+        
         llm_response = clean_response(llm_response)
         llm_think_response = None
         if data["message"].get("thinking"):
@@ -1664,6 +1669,12 @@ async def _perform_prompt_gen(ctx: UserContext,
                         delta = data["message"]["content"]
                         thinking = False
                         accumulated_response += delta
+                        
+                        # Only yield the delta if it doesn't cross into a hallucinated block
+                        if re.search(r'(?i)\*?System Tool Output', accumulated_response):
+                             logging.warning("Hallucinated Tool block encountered in stream, suppressing remainder.")
+                             break
+                        
                     yield {"delta": delta, "done": False, "thinking": thinking}
                 elif data.get("error"):    
                     logging.warning(f"{data['error']}")
