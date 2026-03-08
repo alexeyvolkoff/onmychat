@@ -1332,7 +1332,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          img_source: str = None,
                          stream: bool = False,
                          intent: str = "chat",
-                         event: str = None) -> AsyncGenerator:
+                         event: str = None,
+                         provided_history: list = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
