@@ -1169,9 +1169,15 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         except Exception as e:
             logging.error(f"Error in event_generator: {e}")
             yield f"data: {json.dumps({'error': '⚠️ Storage error or request failed. Please try again later.', 'done': True})}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 
