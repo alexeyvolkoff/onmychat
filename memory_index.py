@@ -209,7 +209,11 @@ def extract_memory_from_response(response: str) -> str | None:
         if pos != -1:
             start = pos + len(keyword)
             remaining = response[start:].strip()
-            fact = remaining.split("\n")[0].strip()
+            
+            # Explicitly strip out any trailing LLM reasoning blocks 
+            # while fully preserving legitimate multiline facts.
+            fact = re.sub(r'(?i)\n*reason:[\s\S]*$', '', remaining).strip()
+            
             if fact:
                 return fact
     return None
