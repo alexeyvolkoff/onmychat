@@ -208,8 +208,10 @@ def extract_memory_from_response(response: str) -> str | None:
         pos = response_lower.find(keyword_lower)
         if pos != -1:
             start = pos + len(keyword)
-            fact = response[start:].strip()
-            return fact
+            remaining = response[start:].strip()
+            fact = remaining.split("\n")[0].strip()
+            if fact:
+                return fact
     return None
 
 

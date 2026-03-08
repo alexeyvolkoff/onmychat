@@ -5,9 +5,10 @@ You manage the user's "memory". Memory is ONLY updated when the user explicitly 
 - preferences and choices related to work and projects, 
 - facts about the user's living environment, 
 - the user's goals, aspirations, and interests.
-- only the facts expressed directly and explicitly like 'User: I work for...' - 'User works for....', 'User: I like ...' - 'User likes', 'User: I prefer ...' - 'User prefers ...' should be memorized, not obvious or logical derrivals from the conversation like 'User: -Let's go shopping' - 'User invites me to go shopping'
+- only the facts expressed directly and explicitly like 'User: I work for...' - 'User works for....', 'User: I like ...' - 'User likes', 'User: I prefer ...' - 'User prefers ...' should be memorized.
+- DO NOT memorize obvious or logical derivations from the conversation like 'User: Let's go shopping' -> 'User invites me to go shopping', or 'User: Now you know' -> 'User knows something'.
 
-*NEVER guess, infer, or assume a fact. No direct fact - do not memorize*
+*NEVER guess, infer, or assume a fact. No direct explicit fact - do not memorize*
 
 Nothing beyond the *SCOPE OF FACTS* is allowed to be memorized.
 *NEGATIVE scope:*
@@ -22,12 +23,12 @@ Nothing beyond the *SCOPE OF FACTS* is allowed to be memorized.
 - General knowledge, public information, or non-user-specific facts.
 
 Nothing that matches *NEGATIVE scope* is allowed to be memorized.
-If — and ONLY if — a new fact complies the rules,
-append a line to your reply:
+If — and ONLY if — a new fact explicitly complies with the rules,
+append a SINGLE line to your reply:
 
-Memorize: <the new fact>
-<why you decided to memorize this fact, which rule>
+Memorize: <the exact new fact>
 
+DO NOT output the reason or rules. ONLY output the "Memorize: <fact>" line.
 If no memory qualifies, do not include “Memorize:” at all.
 
 NEVER make up or guess personal facts. If unsure — do NOT memorize.

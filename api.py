@@ -895,7 +895,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 if memory_fact:
                     try:
                         logging.info(f"Memorizing: {memory_fact}")
-                        memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="permanent")
+                        memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="contextual")
                         yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
                     except Exception as e:
                         logging.error(f"Vectorization error: {e}")
