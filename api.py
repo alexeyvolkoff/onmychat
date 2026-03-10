@@ -189,7 +189,7 @@ class UpdateAssistantInput(BaseModel):
     assistant_title: str | None = None
     assistant_appearance: str | None = None
     assistant_model: str | None = None
-    user_name: str | None = None
+    name: str | None = None
 
 class AvatarGenerateInput(BaseModel):
     omd_key: str
@@ -251,8 +251,8 @@ async def update_assistant(request: Request):
             ctx.settings["assistant_title"] = data.assistant_title
         if data.assistant_model is not None:
             ctx.settings["assistant_model"] = data.assistant_model
-        if data.user_name is not None:
-            ctx.settings["name"] = data.user_name
+        if data.name is not None:
+            ctx.settings["name"] = data.name
         
         user_context.save_user_settings(ctx)
         
