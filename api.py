@@ -143,8 +143,8 @@ class ChatStreamInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
-    history: list = []
-    settings: dict = {}
+    history: list | None = None
+    settings: dict | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -344,26 +344,6 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 
 # ==== Эндпоинты ====
 
-@app.get("/assistant")
-async def assistant_info(omd_key: str, storage: str = ""):
-    # Force reload settings from storage to ensure we have the latest data (bypass cache)
-    ctx = get_ctx(omd_key, storage=storage, force_reload=True)
-    try:
-        assistant = {
-            "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
-            "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
-            "system_prompt": ctx.settings.get("system_prompt", ""),
-            "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
-            "style": ctx.settings.get("style", ""),
-            "nsfw": ctx.settings.get("nsfw", False),
-            "model": ctx.settings.get("assistant_model", ""),
-            "avatar_version": await core_service.get_avatar_version(ctx),
-            "omd_key": ctx.omd_key or omd_key
-        }
-        return assistant
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/assistant/avatar")
