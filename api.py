@@ -144,6 +144,7 @@ class ChatStreamInput(BaseModel):
     prompt: str
     chat: str = "default"
     history: list = []
+    settings: dict = {}
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -793,12 +794,16 @@ async def chat_endpoint(data: ChatInput):
 @app.post("/chat/stream")
 async def chat_stream_post(request: Request, data: ChatStreamInput):
     # Reuse the exact same streaming generator, passing in the frontend OrbitDB history
-    return await chat_stream(request, data.omd_key, data.prompt, data.chat, provided_history=data.history)
+    return await chat_stream(request, data.omd_key, data.prompt, data.chat, provided_history=data.history, provided_settings=data.settings)
 
 @app.get("/chat/stream")
-async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", provided_history: list|None = None):
+async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", provided_history: list|None = None, provided_settings: dict|None = None):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
+
+    if provided_settings:
+        logging.info(f"Applying client-provided settings for {ctx.user_id}")
+        ctx.settings.update(provided_settings)
 
     async def event_generator():
         try:
