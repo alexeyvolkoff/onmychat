@@ -1254,17 +1254,20 @@ async def generate_image_workflow(workflow) -> bytes:
 
 
 # === RAG ===
-async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="") -> tuple[list[str], list[str]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
 
-    # Личные воспоминания
-    personal = search_memories(ctx, query, collection="user", mem_id=mem_id, top_k=3)
-    for m in personal:
-        facts.append(f"• {m['text']}")
-        doc_id = m.get("document_id")
-        if doc_id:
-            document_ids.append(doc_id)
+    # Личные воспоминания (только если предоставлены фронтендом)
+    if provided_knowledge is not None:
+        # If knowledge is provided via frontend, it fully replaces EXISTING personal memory access.
+        for m in provided_knowledge:
+            text = m.get("text", "") if isinstance(m, dict) else str(m)
+            if text:
+                facts.append(f"• {text}")
+                doc_id = m.get("document_id") if isinstance(m, dict) else None
+                if doc_id:
+                    document_ids.append(doc_id)
 
     # Общие знания — если есть collection
     if collection:
@@ -1333,7 +1336,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          stream: bool = False,
                          intent: str = "chat",
                          event: str = None,
-                         provided_history: list = None) -> AsyncGenerator:
+                         provided_history: list = None,
+                         provided_knowledge: list = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1400,7 +1404,7 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     # Only load KB facts if MCP didn't run OR if a specific memory ID is being queried
     if not mcp_result or mem_id:
-        facts, doc_ids = await inject_facts(ctx, message, collection, mem_id)
+        facts, doc_ids = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
         if facts:
             facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
     if is_rag:
@@ -1719,7 +1723,8 @@ async def perform_prompt(
     img_source: str|None=None,
     event: str|None=None,
     stream: bool=False,
-    provided_history: list|None=None
+    provided_history: list|None=None,
+    provided_knowledge: list|None=None
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -1734,7 +1739,8 @@ async def perform_prompt(
         img_source=img_source,
         event=event,
         stream=stream,
-        provided_history=provided_history
+        provided_history=provided_history,
+        provided_knowledge=provided_knowledge
     )
     
     if stream:
@@ -2570,22 +2576,29 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
                 "text": f"Error during conversion: {e}"
             }
 
-    # Векторизация и сохранение чанков
-    chunk_and_vectorize_to_file(
-        ctx,
-        text=raw_text,
-        document_id=url_or_path,
-        collection=collection
-    )
+    # Векторизация и сохранение чанков (только для общих коллекций)
+    if collection != "user":
+        chunk_and_vectorize_to_file(
+            ctx,
+            text=raw_text,
+            document_id=url_or_path,
+            collection=collection
+        )
+    else:
+        logging.info(f"[import] Skipping backend vectorization for user collection.")
 
-    # Добавление краткой аннотации в память
+    # Добавление краткой аннотации в память (только для общих коллекций)
     card_text = await summarize_for_memory(raw_text)
-    mem_id = add_memory_card(
-        ctx,
-        text=card_text,
-        document_id=url_or_path,
-        collection=collection
-    )
+    if collection != "user":
+        mem_id = add_memory_card(
+            ctx,
+            text=card_text,
+            document_id=url_or_path,
+            collection=collection
+        )
+    else:
+        logging.info(f"[import] Skipping backend memory card for user collection. Frontend handles personal knowledge.")
+        mem_id = f"user_{url_or_path}"
 
     mem_card = {
         "id": mem_id,
@@ -2594,8 +2607,10 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     return mem_card
 
 def memorize(ctx, text):
-    # Добавление краткой аннотации в память
-    return add_memory_card(ctx, text, collection="user", relevance="permanent")
+    # Backend memorization is disabled for "user" collection.
+    # New facts are extracted and sent to frontend via 'newFact' event in api.py
+    logging.info(f"[memory] Backend memorization skipped for: {text}")
+    return f"Fact received (backend memorization is disabled, frontend should handle it)"
 
 async def extract_and_save_memory(ctx: UserContext, message: str) -> str:
     # Deprecated: Background extraction via tools proved too unstable for gemma3:12b without strict guidance.

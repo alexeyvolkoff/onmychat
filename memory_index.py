@@ -57,34 +57,20 @@ def cosine_distance(a, b):
 def embed_text(text: str) -> list:
     return _model.encode(text, show_progress_bar=False).tolist()
 
-def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
-    index_path = ""
-    if collection == "user":
-        index_path = f"{USER_DATA_DIR}/{user_id}/memory.jsonl"
-    else:
-        index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
-    return index_path
+def get_index_path(user_id: str | None = None, collection: str = "shared") -> str:
+    return f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
 
 
 
 
-def save_memories(ctx: UserContext, memories: list[dict], collection: str = "user"):
+def save_memories(ctx: UserContext, memories: list[dict], collection: str = "shared"):
     try:
-        if (
-            ctx.storage
-            and ctx.omd_key
-            and collection == "user"
-        ):
-            dest = f"{ctx.storage}"
-            upload_vec_to_storage(ctx.omd_key, dest, "memory.jsonl", memories, "application/jsonl")
-        else:
-            # локальный fallback
-            path = get_index_path(ctx.user_id, collection)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                for m in memories:
-                    f.write(json.dumps(m, ensure_ascii=False) + "\n")
+        path = get_index_path(ctx.user_id, collection)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for m in memories:
+                f.write(json.dumps(m, ensure_ascii=False) + "\n")
     except Exception as e:
         print(f"[memory] Save error: {ctx.user_id} {collection} {e}")
 
@@ -92,7 +78,7 @@ def save_memories(ctx: UserContext, memories: list[dict], collection: str = "use
 def add_memory_card(
     ctx: UserContext,
     text: str,
-    collection: str = "user",
+    collection: str = "shared",
     relevance: str = "contextual",
     document_id: str | None = None,
     mem_id: str | None = None
@@ -148,7 +134,7 @@ def add_memory_card(
 def update_memory_card(
     ctx: UserContext,
     text: str,
-    collection: str = "user",
+    collection: str = "shared",
     relevance: str = "contextual",
     document_id: str | None = None,
     mem_id: str | None = None
@@ -174,7 +160,7 @@ def delete_memory_card(
     ctx: UserContext,
     mem_id: str | None = None,
     document_id: str | None = None,
-    collection: str = "user"
+    collection: str = "shared"
 ) -> bool:
     """
     Удаляет карточку памяти по mem_id или document_id.
@@ -287,30 +273,11 @@ def search_document_chunks(
     logging.info(f"Loading document: {vec_file} with threshold {distance_threshold}")
 
     try:
-        if collection == "user" and ctx.storage and ctx.omd_key:
-            # Подгружаем vec из OMD
-            url = f"{GATEWAY_URL}/{ctx.storage}/vecs/{vec_file}?nocache={int(time.time())}"
-            token = ctx.omd_key
-            headers = {"Authorization": f"token:{token}"}
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                lines = resp.text.splitlines()
-                #logging.info(f"Loaded document: {len(lines)}")
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        chunk_obj = json.loads(line)
-                        chunks.append(chunk_obj)
-                    except json.JSONDecodeError as e:
-                        print("JSON error:", e)
-        else:
-            if not os.path.exists(vec_path):
-                return []
-            vec_file_path = f"{vec_path}/{vec_file}"
-            with open(vec_file_path, "r", encoding="utf-8") as f:
-                chunks = [json.loads(line) for line in f if line.strip()]
+        if not os.path.exists(vec_path):
+            return []
+        vec_file_path = f"{vec_path}/{vec_file}"
+        with open(vec_file_path, "r", encoding="utf-8") as f:
+            chunks = [json.loads(line) for line in f if line.strip()]
     except Exception as e:
         print(f"⚠️ Ошибка чтения {vec_path}: {e}")
         return []
@@ -338,49 +305,29 @@ def search_document_chunks(
     return results[:top_k]
 
 
-def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
+def load_memories(ctx: UserContext, collection: str = "shared") -> list[dict]:
     try:
-        if (
-            ctx.storage
-            and ctx.omd_key
-            and collection == "user"
-        ):
-            url = f"{GATEWAY_URL}/{ctx.storage}/memory.jsonl?nocache={int(time.time())}"
-            headers = {"authorization": f"token:{ctx.omd_key}"}
-            logging.info(f"loading memories from {url}")
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.content.strip():
-                text = resp.content.decode("utf-8")
-                return [json.loads(line) for line in text.splitlines() if line.strip()]
+        index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
+
+        if not os.path.exists(index_path):
             return []
-        else:
-            # локальный fallback
-            if collection == "user":
-                index_path = f"{USER_DATA_DIR}/{ctx.user_id}/memory.jsonl"
-            else:
-                index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
-            if not os.path.exists(index_path):
-                return []
-
-            memories = []
-            logging.info(f"loading memories {index_path}")
-            with open(index_path, "r", encoding="utf-8") as f:
-                memories = [json.loads(line) for line in f if line.strip()]
-            return   memories
+        memories = []
+        logging.info(f"loading memories {index_path}")
+        with open(index_path, "r", encoding="utf-8") as f:
+            memories = [json.loads(line) for line in f if line.strip()]
+        return memories
 
 
     except Exception as e:
         print(f"[memory] No personal memories yet: {ctx.user_id} {collection} {e}")
         return []
 
-def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def search_memories(ctx: UserContext, query: str, collection: str = "shared", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
     # Load memories
     memories = load_memories(ctx, collection)
-    vec_path = ""
 
-    if not collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{collection}"
+    vec_path = f"{BASE_INDEX_DIR}/{collection}"
     
     if not memories:
         return []
@@ -487,7 +434,7 @@ def chunk_and_vectorize_to_file(
     ctx: UserContext,
     text: str,
     document_id: str,
-    collection: str = "user",
+    collection: str = "shared",
     chunk_size: int = 500,
     overlap: int = 50
 ):
@@ -517,27 +464,14 @@ def chunk_and_vectorize_to_file(
         entries.append(entry)
 
     try:
-        if (
-            ctx.storage
-            and ctx.omd_key
-            and collection == "user"
-        ):
-            # --- Хранение в OMD ---
-            dest = f"{ctx.storage}/vecs"
-            upload_vec_to_storage(ctx.omd_key, dest, f"{filename}.vec", entries, "application/jsonl")
-        else:
-            # --- Локальное хранение ---
-            if collection == "user":
-                vec_dir = f"{USER_DATA_DIR}/{ctx.user_id}/vecs"
-            else:
-                vec_dir = f"{BASE_INDEX_DIR}/{collection}"
+        # --- Локальное хранение для общих коллекций ---
+        vec_dir = f"{BASE_INDEX_DIR}/{collection}"
+        os.makedirs(vec_dir, exist_ok=True)
+        vec_path = os.path.join(vec_dir, f"{filename}.vec")
 
-            os.makedirs(vec_dir, exist_ok=True)
-            vec_path = os.path.join(vec_dir, f"{filename}.vec")
-
-            with open(vec_path, "w", encoding="utf-8") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(vec_path, "w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     except Exception as e:
         print(f"[vec] Save error: {ctx.user_id} {collection} {e}")

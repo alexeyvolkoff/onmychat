@@ -145,6 +145,7 @@ class ChatStreamInput(BaseModel):
     chat: str = "default"
     history: list | None = None
     settings: dict | None = None
+    knowledge: list | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -577,7 +578,7 @@ def delete_history(chat: str, number: int, omd_key: str = Header(..., alias="X-O
 
 
 @app.get("/memory")
-async def memory_endpoint(omd_key: str, collection: str = "user"):
+async def memory_endpoint(omd_key: str, collection: str = "shared"):
     ctx = get_ctx(omd_key)
     try:
         memories = memory_index.load_memories(ctx, collection=collection)
@@ -622,7 +623,7 @@ async def import_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-
 
 
 @app.delete("/memory/{mem_id}")
-async def delete_memory(mem_id: str, omd_key: str = Header(..., alias="X-OMD-Key"), collection: str = "user" ):
+async def delete_memory(mem_id: str, omd_key: str = Header(..., alias="X-OMD-Key"), collection: str = "shared" ):
     ctx = get_ctx(omd_key)
     print(f"KEY: {mem_id}")
     try:
@@ -774,10 +775,16 @@ async def chat_endpoint(data: ChatInput):
 @app.post("/chat/stream")
 async def chat_stream_post(request: Request, data: ChatStreamInput):
     # Reuse the exact same streaming generator, passing in the frontend OrbitDB history
-    return await chat_stream(request, data.omd_key, data.prompt, data.chat, provided_history=data.history, provided_settings=data.settings)
+    return await chat_stream(request, data.omd_key, data.prompt, data.chat, 
+                              provided_history=data.history, 
+                              provided_settings=data.settings,
+                              provided_knowledge=data.knowledge)
 
 @app.get("/chat/stream")
-async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", provided_history: list|None = None, provided_settings: dict|None = None):
+async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", 
+                      provided_history: list|None = None, 
+                      provided_settings: dict|None = None,
+                      provided_knowledge: list|None = None):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
 
@@ -892,11 +899,11 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 memory_fact = memory_index.extract_memory_from_response(raw_intent)
                 if memory_fact:
                     try:
-                        logging.info(f"Memorizing: {memory_fact}")
-                        memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="contextual")
+                        logging.info(f"Notifying frontend about new fact: {memory_fact}")
+                        # memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="contextual")
                         yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
                     except Exception as e:
-                        logging.error(f"Vectorization error: {e}")
+                        logging.error(f"Error sending fact notification: {e}")
 
                 # 3. Handle Special Primary Intents (Slash overrides)
                 if prompt.startswith("/show"):
@@ -931,10 +938,11 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
                     return
                 elif prompt.startswith("/import") or prompt.startswith("/learn"):  
-                    m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                    m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))(?:\s+(\S+))?', prompt)
                     file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                    collection = m.group(4) if m else "user"
                     if file_path_or_url:
-                        intent = f"import:{file_path_or_url}"
+                        intent = f"import:{file_path_or_url}:{collection}"
                 elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
                     m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
                     file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
@@ -966,7 +974,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                  
             if check_intent == "import":
                  # Limit to 10 items for free accounts
-                 memories = memory_index.load_memories(ctx, collection="user")
+                 memories = memory_index.load_memories(ctx, collection="shared")
                  if len(memories) >= 10:
                      yield f"data: {json.dumps({'delta': 'Free accounts are limited to 10 knowledge base items. Upgrade to Premium for unlimited storage.', 'role': 'assistant', 'done': True})}\n\n"
                      return
@@ -1072,11 +1080,14 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             elif intent.startswith("import"):
                 yield f"data: {json.dumps({'status': 'learning'})}\n\n"
                 doc_source = None
+                collection = "user"
                 card = {}
                 if ":" in intent:
-                    doc_source = intent.split(":", 1)[1]
+                    parts = intent.split(":", 2)
+                    doc_source = parts[1] if len(parts) > 1 else None
+                    collection = parts[2] if len(parts) > 2 else "user"
                 if doc_source:
-                    card = await core_service.import_doc(ctx, doc_source)   
+                    card = await core_service.import_doc(ctx, doc_source, collection=collection)   
                 new_knowledge = ""     
                 if card: 
                     new_knowledge = card.get("text")
@@ -1148,7 +1159,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 img_source=img_source,
                 event=event,
                 stream=True,
-                provided_history=provided_history
+                provided_history=provided_history,
+                provided_knowledge=provided_knowledge
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
@@ -1412,6 +1424,36 @@ async def openai_models(request: Request):
     return await proxy_request(target_url, request, method="GET")
 
 # --- Ollama Native Endpoints ---
+
+@app.post("/api/v1/extract")
+async def extract_knowledge(request: Request):
+    """
+    Extracts cleaned text from a URL or OMD path without saving/vectorizing on backend.
+    """
+    try:
+        data = await request.json()
+        url_or_path = data.get("url_or_path")
+        if not url_or_path:
+            raise HTTPException(status_code=400, detail="Missing url_or_path")
+            
+        token = request.headers.get("X-OMD-Key") or request.query_params.get("omd_key")
+        ctx = UserContext(omd_key=token, user_id=None, settings={})
+        
+        # We use a specialized branch of import logic that only returns text
+        logging.info(f"[extract] Extracting text from: {url_or_path}")
+        
+        # Reuse core_service logic but skip any storage
+        # We'll call a modified version or just ensure import_doc for "user" is safe
+        card = await core_service.import_doc(ctx, url_or_path, collection="user")
+        
+        if card and card.get("error"):
+             raise HTTPException(status_code=500, detail=card.get("text"))
+             
+        return {"text": card.get("text") or ""}
+        
+    except Exception as e:
+        logging.error(f"[extract] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
 async def ollama_chat(request: Request):
