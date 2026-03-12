@@ -27,13 +27,14 @@ RULES:
 7. import:<path>: ONLY for EXPLICIT "import", "learn", or "add to memory" commands with a FILE path.
    - *CRITICAL*: A directory path (e.g. /Data/) is NOT an import. Classify as 'tools'.
    - *CRITICAL*: Using a file for a task (e.g. "Create invoice based on /file") is NOT an import. Classify as 'tools'.
-8. tools: For questions about system capabilities OR ANY requests involving file system paths (e.g. /Data, /home, /Linux-desktop).
+8. tools: For requests involving file system paths (e.g. /Data, /home, /Linux-desktop, etc) not covered by import, learn or recognoze patterns.
 
 EXAMPLES:
 - "How are you?" -> chat
 - "Show me your photo" -> show
 - "Draw a cat" -> view
 - "Remember that party?" -> chat
+- "Explain how AI works" -> explain
 - "I saw you at the mall yesterday" -> chat (Narrative roleplay)
 - "You look beautiful in that dress" -> chat (Compliment, not an instruction)
 - "I'm hugging you tightly" -> chat (Dialogue flow)
