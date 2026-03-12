@@ -1425,7 +1425,7 @@ async def openai_models(request: Request):
 
 # --- Ollama Native Endpoints ---
 
-@app.post("/api/v1/extract")
+@app.post("/v1/extract")
 async def extract_knowledge(request: Request):
     """
     Extracts cleaned text from a URL or OMD path without saving/vectorizing on backend.
