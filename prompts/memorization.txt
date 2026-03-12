@@ -24,9 +24,9 @@ Nothing beyond the *SCOPE OF FACTS* is allowed to be memorized.
 
 Nothing that matches *NEGATIVE scope* is allowed to be memorized.
 If — and ONLY if — a new fact explicitly complies with the rules,
-append a SINGLE line to your reply:
+append a text block to your reply:
 
-Memorize: <the exact new fact>
+Memorize: <the exact new fact>\n<list of key concepts/keywords/terms in form of hashtags>
 
 DO NOT output the reason or rules. ONLY output the "Memorize: <fact>" line.
 If no memory qualifies, do not include “Memorize:” at all.
