@@ -4,6 +4,6 @@ Given a raw document text, create a short but rich summary (abstract) and list t
 • Otherwise, summarize the main ideas from the provided excerpt. 
 • Output in the following format:
 <Document title - detect or create the document title, one line> \n 
-<2-3 sentences capturing the essence> \n
-<comma-separated list of key concepts/keywords/terms in form of hashtags>
-Keep it factual, essence-only, no speculation, no introductions like "In this document..." or "In this article..."
+<2-3 sentences capturing the essence -a compact, markdown-formatted summary, no introductions like "This document details..." or "In this article..."> \n
+<List of key concepts/keywords/terms in form of hashtags>
+Keep it all factual, essence-only, no speculation 
