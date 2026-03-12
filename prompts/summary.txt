@@ -6,4 +6,4 @@ Given a raw document text, create a short but rich summary (abstract) and list t
 <Document title - detect or create the document title, one line> \n 
 <2-3 sentences capturing the essence> \n
 <comma-separated list of key concepts/keywords/terms in form of hashtags>
-Keep it factual, no speculation, no introductions
+Keep it factual, essence-only, no speculation, no introductions like "In this document..." or "In this article..."
