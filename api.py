@@ -1437,7 +1437,7 @@ async def extract_knowledge(request: Request):
             raise HTTPException(status_code=400, detail="Missing url_or_path")
             
         token = request.headers.get("X-OMD-Key") or request.query_params.get("omd_key")
-        ctx = UserContext(omd_key=token, user_id=None, settings={})
+        ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history={}, omd_key=token)
         
         # We use a specialized branch of import logic that only returns text
         logging.info(f"[extract] Extracting text from: {url_or_path}")
