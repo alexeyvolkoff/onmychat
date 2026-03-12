@@ -345,6 +345,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             and ctx.omd_key
             and collection == "user"
         ):
+            logging.info(f"loading memories from OMD {ctx.storage}")
             url = f"{GATEWAY_URL}/{ctx.storage}/memory.jsonl?nocache={int(time.time())}"
             headers = {"authorization": f"token:{ctx.omd_key}"}
             logging.info(f"loading memories from {url}")

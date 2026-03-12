@@ -578,7 +578,7 @@ def delete_history(chat: str, number: int, omd_key: str = Header(..., alias="X-O
 
 
 @app.get("/memory")
-async def memory_endpoint(omd_key: str, collection: str = "shared"):
+async def memory_endpoint(omd_key: str, collection: str = "user"):
     ctx = get_ctx(omd_key)
     try:
         memories = memory_index.load_memories(ctx, collection=collection)
