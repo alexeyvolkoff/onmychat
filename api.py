@@ -1449,7 +1449,10 @@ async def extract_knowledge(request: Request):
         if card and card.get("error"):
              raise HTTPException(status_code=500, detail=card.get("text"))
              
-        return {"text": card.get("text") or ""}
+        return {
+            "text": card.get("full_text") or "",
+            "card": card.get("text") or ""
+        }
         
     except Exception as e:
         logging.error(f"[extract] Error: {e}")

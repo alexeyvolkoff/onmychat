@@ -2602,7 +2602,8 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
 
     mem_card = {
         "id": mem_id,
-        "text": card_text
+        "text": card_text,
+        "full_text": raw_text
     }
     return mem_card
 
