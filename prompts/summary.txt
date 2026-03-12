@@ -3,7 +3,7 @@ Given a raw document text, create a short but rich summary (abstract) and list t
 • If the text contains an abstract or table of contents, rely on them primarily. 
 • Otherwise, summarize the main ideas from the provided excerpt. 
 • Output in the following format:
-<Document title> < detect or create the document title, one line/
-Summary: <2-3 sentences capturing the essence>
-Key Concepts: <comma-separated keywords/terms>
-Keep it factual, no speculation.
+<Document title - detect or create the document title, one line> \n 
+<2-3 sentences capturing the essence> \n
+<comma-separated list of key concepts/keywords/terms in form of hashtags>
+Keep it factual, no speculation, no introductions
