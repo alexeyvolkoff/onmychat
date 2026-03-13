@@ -1,0 +1,5 @@
+# Agent Rules: Avoid Terminal-based Grep Hangs
+
+- **Prefer Native Search**: Always use native search tools like `grep_search` or `find_by_name` instead of `run_command` + `grep`. 
+- **Backgrounding Caution**: Be aware that `run_command` can hang on backgrounded processes that yield empty output with non-zero exit codes (like `grep` not finding a match).
+- **Verification**: If a search yields no results, trust the native tools' "No results found" rather than retrying with terminal commands.
