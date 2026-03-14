@@ -76,8 +76,9 @@ def save_memories(ctx: UserContext, memories: list[dict], collection: str = "use
             and ctx.omd_key
             and collection == "user"
         ):
-            dest = f"{ctx.storage}"
-            upload_vec_to_storage(ctx.omd_key, dest, "memory.jsonl", memories, "application/jsonl")
+            # dest = f"{ctx.storage}"
+            # upload_vec_to_storage(ctx.omd_key, dest, "memory.jsonl", memories, "application/jsonl")
+            pass # redundant: handled by OrbitDB in frontend
         else:
             # локальный fallback
             path = get_index_path(ctx.user_id, collection)
@@ -352,7 +353,11 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
                 text = resp.content.decode("utf-8")
-                return [json.loads(line) for line in text.splitlines() if line.strip()]
+                try:
+                    return [json.loads(line) for line in text.splitlines() if line.strip()]
+                except json.JSONDecodeError as je:
+                    print(f"[memory] JSON Decode Error from storage: {je}")
+                    return []
             return []
         else:
             # локальный fallback
@@ -367,7 +372,11 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             memories = []
             logging.info(f"loading memories {index_path}")
             with open(index_path, "r", encoding="utf-8") as f:
-                memories = [json.loads(line) for line in f if line.strip()]
+                try:
+                    memories = [json.loads(line) for line in f if line.strip()]
+                except json.JSONDecodeError as je:
+                    print(f"[memory] JSON Decode Error from local: {je}")
+                    return []
             return   memories
 
 
@@ -524,8 +533,9 @@ def chunk_and_vectorize_to_file(
             and collection == "user"
         ):
             # --- Хранение в OMD ---
-            dest = f"{ctx.storage}/vecs"
-            upload_vec_to_storage(ctx.omd_key, dest, f"{filename}.vec", entries, "application/jsonl")
+            # dest = f"{ctx.storage}/vecs"
+            # upload_vec_to_storage(ctx.omd_key, dest, f"{filename}.vec", entries, "application/jsonl")
+            pass # redundant: handled by OrbitDB in frontend
         else:
             # --- Локальное хранение ---
             if collection == "user":

@@ -804,9 +804,13 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             # Initialize chat if it's the first message of a new session
             if not chat or chat == "default":
-                 chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-                 chat = chat_info["name"]
-                 yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
+                 try:
+                      chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+                      chat = chat_info["name"]
+                      yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
+                 except Exception as e:
+                      logging.error(f"Failed to ensure chat: {e}")
+                      chat = "default"
 
             # Enforce Rights (moved up)
             token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))
@@ -890,8 +894,11 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 # This ensures chat is in the index and has a title
                 if intent != "chat": # perform_prompt handles chat intent
                      # Only if we are branching away from perform_prompt
-                     chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-                     chat = chat_info.get("name", chat)
+                     try:
+                          chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+                          chat = chat_info.get("name", chat)
+                     except Exception as e:
+                          logging.error(f"Failed to ensure chat for intent {intent}: {e}")
                 
                 logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
                 
@@ -930,10 +937,13 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     tools_list = await core_service.list_supported_tools(ctx)
 
                     # Ensure history is saved for this interaction
-                    history = dialog_history.load_history(ctx, chat)
-                    history.append({"role": "user", "content": prompt})
-                    history.append({"role": "assistant", "content": tools_list})
-                    dialog_history.save_history(ctx, history, chat)
+                    try:
+                        history = dialog_history.load_history(ctx, chat)
+                        history.append({"role": "user", "content": prompt})
+                        history.append({"role": "assistant", "content": tools_list})
+                        dialog_history.save_history(ctx, history, chat)
+                    except Exception as e:
+                        logging.error(f"Failed to update history for tools command: {e}")
 
                     yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
                     return
@@ -984,7 +994,11 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 yield f"data: {json.dumps({'status': 'generating'})}\n\n"
                 # 2️⃣ картинка
                 # Load history ONCE to avoid race conditions
-                history = dialog_history.load_history(ctx, chat)
+                try:
+                    history = dialog_history.load_history(ctx, chat)
+                except Exception as e:
+                    logging.error(f"Failed to load history for show intent: {e}")
+                    history = []
                 
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
                 img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history, save_history_flag=False)
@@ -1057,8 +1071,12 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 search_results = await core_service.search_web(ctx, search_query)
                 
                 # Save search to history
-                history = dialog_history.load_history(ctx, chat)
-                history.append({"role": "user", "content": prompt})
+                try:
+                    history = dialog_history.load_history(ctx, chat)
+                    history.append({"role": "user", "content": prompt})
+                except Exception as e:
+                    logging.error(f"Failed to load history for search intent: {e}")
+                    history = []
                 
                 instruction = (
                     f"The user asked to search the web. Here are the REAL search results:\n\n"
@@ -1088,6 +1106,15 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     collection = parts[2] if len(parts) > 2 else "user"
                 if doc_source:
                     card = await core_service.import_doc(ctx, doc_source, collection=collection)   
+                try:
+                    if provided_knowledge is not None:
+                        knowledge = provided_knowledge
+                    else:
+                        knowledge = memory_index.load_memories(ctx)
+                except Exception as e:
+                    logging.error(f"Failed to load knowledge: {e}")
+                    knowledge = []
+                
                 new_knowledge = ""     
                 if card: 
                     new_knowledge = card.get("text")
@@ -1130,14 +1157,17 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 yield f"data: {json.dumps({'prompt': prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 
                 # Save to history to ensure the message persists across page reloads
-                history = dialog_history.load_history(ctx, chat)
-                history.append({"role": "user", "content": prompt})
-                history.append({
-                    "role": "assistant", 
-                    "content": prompt, # Use prompt as content because /generate usually doesn't have text
-                    "image": {"path": path, "title": title, "description": description}
-                })
-                dialog_history.save_history(ctx, history, chat)
+                try:
+                    history = dialog_history.load_history(ctx, chat)
+                    history.append({"role": "user", "content": prompt})
+                    history.append({
+                        "role": "assistant", 
+                        "content": prompt, # Use prompt as content because /generate usually doesn't have text
+                        "image": {"path": path, "title": title, "description": description}
+                    })
+                    dialog_history.save_history(ctx, history, chat)
+                except Exception as e:
+                    logging.error(f"Failed to save history for generate intent: {e}")
                 return
 
             # 3️⃣ основной стрим чата
@@ -1227,8 +1257,16 @@ async def generate_character_image(data: GenerateInput):
         filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
         
         # Update history if index provided
+        try:
+            if data.provided_history is not None:
+                history = data.provided_history
+            else:
+                history = dialog_history.load_history(ctx, data.chat)
+        except Exception as e:
+            logging.error(f"Failed to load history: {e}")
+            history = []
+        
         if data.message_index is not None:
-            history = dialog_history.load_history(ctx, chat=data.chat)
             if 0 <= data.message_index < len(history):
                 msg = history[data.message_index]
                 # Ensure it's an assistant message with image

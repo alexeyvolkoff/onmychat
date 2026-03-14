@@ -68,13 +68,15 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
             print(f"[loading history]: {ctx.user_id} {url} {token}")
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
-                if resp.text.strip():
+                try:
                     history = json.loads(resp.content.decode("utf-8"))
                     history = _inject_image_prompts(history)
                     # save chat history in context
                     ctx.history = history   
                     return  history
-                return []
+                except json.JSONDecodeError as je:
+                    print(f"[history] JSON Decode Error from storage: {je}")
+                    return []
             elif resp.status_code in (403, 404):
                 return []
             else:
@@ -85,11 +87,15 @@ def load_history(ctx: UserContext, chat: str = "default") -> list:
             if not os.path.exists(path):
                 return []
             with open(path, "r", encoding="utf-8") as f:
-                history = json.load(f)
-                history = _inject_image_prompts(history)
-                # save chat history in context
-                ctx.history = history   
-                return  history
+                try:
+                    history = json.load(f)
+                    history = _inject_image_prompts(history)
+                    # save chat history in context
+                    ctx.history = history   
+                    return  history
+                except json.JSONDecodeError as je:
+                    print(f"[history] JSON Decode Error from local: {je}")
+                    return []
         
     except Exception as e:
         print(f"[history] Empty history: {ctx.user_id} {ctx.storage} {chat} {e}")
@@ -103,8 +109,9 @@ def save_history(ctx: UserContext, history: list, chat: str = "default"):
              return
 
         if ctx.storage and ctx.omd_key:
-            dest = f"{ctx.storage}/chats"
-            upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")
+            # dest = f"{ctx.storage}/chats"
+            # upload_data_to_storage(ctx.omd_key, dest, f"{chat}.json", history, "application/json")
+            pass # redundant: handled by OrbitDB in frontend
         else:
             # локальный fallback - только для непривязанных телеграм акков
             if ctx.user_id.isdigit():
@@ -144,9 +151,11 @@ def load_chats_index(ctx: UserContext) -> dict:
             resp = requests.get(url, headers=headers, timeout=10)
 
             if resp.status_code == 200:
-                if resp.text.strip():
+                try:
                     return json.loads(resp.content.decode("utf-8"))
-                return {}
+                except json.JSONDecodeError as je:
+                    print(f"[chats] JSON Decode Error from storage index: {je}")
+                    return {}
             elif resp.status_code in (403, 404):
                 return {}
             else:
@@ -157,7 +166,11 @@ def load_chats_index(ctx: UserContext) -> dict:
         if not os.path.exists(path):
             return {}
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError as je:
+                print(f"[chats] JSON Decode Error from local index: {je}")
+                return {}
 
     except Exception as e:
         print(f"[chats] Load index error: {ctx.user_id} {e}")
@@ -175,14 +188,15 @@ def save_chats_index(ctx: UserContext, chats: dict):
         omd_key = ctx.omd_key
 
         if storage and omd_key:
-            dest = f"{storage}/chats"
-            upload_data_to_storage(
-                omd_key,
-                dest,
-                "chats.json",
-                chats,
-                "application/json"
-            )
+            # dest = f"{storage}/chats"
+            # upload_data_to_storage(
+            #     omd_key,
+            #     dest,
+            #     "chats.json",
+            #     chats,
+            #     "application/json"
+            # )
+            pass # redundant: handled by OrbitDB in frontend
         else:
             # --- локальный fallback - только для непривязанных телеграм акков ---
             if ctx.user_id.isdigit():
