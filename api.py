@@ -1400,7 +1400,13 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             data=body,
             timeout=None # Streaming responses can be long
         )
-        
+        try:
+            # Enter request context
+            resp = await req.__aenter__()
+            
+            # 4. Prepare Response Headers
+            response_headers = dict(resp.headers)
+
             # Cleanup: remove strictly forbidden headers
             for kl in [
                 "connection", "keep-alive", "proxy-authenticate", 
