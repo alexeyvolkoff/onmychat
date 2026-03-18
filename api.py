@@ -1401,23 +1401,15 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             timeout=None # Streaming responses can be long
         )
         
-        try:
-            # Enter request context
-            resp = await req.__aenter__()
-            
-            # 4. Prepare Response Headers
-            # We copy all headers and then remove only the hop-by-hop ones.
-            response_headers = dict(resp.headers)
-            
-            # Strictly filter out hop-by-hop and conflicting headers
+            # Cleanup: remove strictly forbidden headers
             for kl in [
                 "connection", "keep-alive", "proxy-authenticate", 
                 "proxy-authorization", "te", "trailers", 
                 "transfer-encoding", "upgrade", "content-length", "content-encoding"
             ]:
                 response_headers.pop(kl, None)
-                # Also try capitalized version just in case of non-standard dict behavior
                 response_headers.pop(kl.title(), None)
+                response_headers.pop(kl.lower(), None)
 
             async def stream_generator():
                 try:
@@ -1428,11 +1420,19 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                     await req.__aexit__(None, None, None)
                     await session.close()
 
-            # We pass headers directly. StreamingResponse will set media_type 
-            # from the 'content-type' header if present in headers dict.
+            # Get Content-Type from upstream
+            upstream_content_type = resp.headers.get("content-type")
+            
+            # For maximum compatibility with the OMD bridge/gateway:
+            # 1. Set media_type explicitly
+            # 2. Put it in headers with "Content-Type" casing
+            if upstream_content_type:
+                response_headers["Content-Type"] = upstream_content_type
+
             return StreamingResponse(
                 stream_generator(),
                 status_code=resp.status,
+                media_type=upstream_content_type,
                 headers=response_headers
             )
 
