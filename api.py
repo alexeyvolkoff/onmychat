@@ -1431,7 +1431,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                 stream_generator(),
                 status_code=resp.status,
                 media_type=resp.headers.get("content-type"),
-                # headers=response_headers 
+                headers=response_headers
             )
 
         except Exception as startup_error:
