@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
@@ -1379,79 +1379,74 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
     """
     Proxies a request to the upstream URL, streaming the response back.
     """
+    # 1. Prepare Headers
+    headers = dict(request.headers)
+    # Remove headers that might cause issues or are improper to forward blindly
+    headers.pop("host", None)
+    headers.pop("content-length", None) 
+    headers.pop("connection", None)
+    headers.pop("accept-encoding", None) # Let aiohttp handle encoding
+
+    # 2. Get Body (if any)
     try:
-        # 1. Prepare Headers
-        headers = dict(request.headers)
-        # Remove headers that might cause issues or are improper to forward blindly
-        headers.pop("host", None)
-        headers.pop("content-length", None) 
-        headers.pop("connection", None)
-        headers.pop("accept-encoding", None) # Let aiohttp handle encoding
-
-        # 2. Get Body (if any)
         body = await request.body()
+    except Exception:
+        body = None
 
-        # 3. Manually manage session/request lifecycle to keep connection open for streaming
-        session = aiohttp.ClientSession()
-        req = session.request(
-            method=method,
-            url=url,
-            headers=headers,
-            data=body,
-            timeout=None # Streaming responses can be long
+    # 3. Manually manage session/request lifecycle to keep connection open for streaming
+    session = aiohttp.ClientSession()
+    req = session.request(
+        method=method,
+        url=url,
+        headers=headers,
+        data=body,
+        timeout=None # Streaming responses can be long
+    )
+    try:
+        # Enter request context
+        resp = await req.__aenter__()
+        
+        # 4. Prepare Response Headers
+        response_headers = dict(resp.headers)
+        
+        # Cleanup: remove strictly forbidden headers
+        for kl in [
+            "connection", "keep-alive", "proxy-authenticate", 
+            "proxy-authorization", "te", "trailers", 
+            "transfer-encoding", "upgrade", "content-length", "content-encoding"
+        ]:
+            response_headers.pop(kl, None)
+            response_headers.pop(kl.title(), None)
+            response_headers.pop(kl.lower(), None)
+
+        # Force Content-Type specifically for the gateway
+        upstream_content_type = resp.headers.get("content-type")
+        if upstream_content_type:
+            response_headers["Content-Type"] = upstream_content_type
+
+        async def stream_generator():
+            try:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
+            finally:
+                # Cleanup resources when streaming is done or fails
+                await req.__aexit__(None, None, None)
+                await session.close()
+
+        return StreamingResponse(
+            stream_generator(),
+            status_code=resp.status,
+            media_type=upstream_content_type,
+            headers=response_headers
         )
-        try:
-            # Enter request context
-            resp = await req.__aenter__()
-            
-            # 4. Prepare Response Headers
-            response_headers = dict(resp.headers)
-            
-            # DEBUG
-            print(f"DEBUG: Upstream headers for {url}: {response_headers}")
-
-            # Cleanup: remove strictly forbidden headers
-            for kl in [
-                "connection", "keep-alive", "proxy-authenticate", 
-                "proxy-authorization", "te", "trailers", 
-                "transfer-encoding", "upgrade", "content-length", "content-encoding"
-            ]:
-                response_headers.pop(kl, None)
-                response_headers.pop(kl.title(), None)
-                response_headers.pop(kl.lower(), None)
-
-            async def stream_generator():
-                try:
-                    async for chunk in resp.content.iter_any():
-                        yield chunk
-                finally:
-                    # Cleanup resources when streaming is done or fails
-                    await req.__aexit__(None, None, None)
-                    await session.close()
-
-            # Get Content-Type from upstream
-            upstream_content_type = resp.headers.get("content-type")
-            
-            # For maximum compatibility with the OMD bridge/gateway:
-            # 1. Set media_type explicitly
-            # 2. Put it in headers with "Content-Type" casing
-            if upstream_content_type:
-                response_headers["Content-Type"] = upstream_content_type
-
-            return StreamingResponse(
-                stream_generator(),
-                status_code=resp.status,
-                media_type=upstream_content_type,
-                headers=response_headers
-            )
-
-        except Exception as startup_error:
-            # If we fail before returning response, we must clean up
-            await session.close()
-            raise startup_error
-
     except Exception as e:
         logging.error(f"[Proxy] Error proxying to {url}: {e}")
+        # Ensure cleanup if we fail before returning the StreamingResponse
+        try:
+            await req.__aexit__(None, None, None)
+        except:
+            pass
+        await session.close()
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
@@ -1463,6 +1458,60 @@ async def opencode_proxy(request: Request, path: str):
     if request.url.query:
         target_url += f"?{request.url.query}"
     return await proxy_request(target_url, request, method=request.method)
+
+@app.websocket("/code/{path:path}")
+async def opencode_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Proxies all WebSocket /code requests to local opencode service at port 4096.
+    Useful for terminal/PTY connections.
+    """
+    target_url = f"ws://127.0.0.1:4096/{path}"
+    query = str(websocket.query_params)
+    if query:
+        target_url += f"?{query}"
+    
+    await websocket.accept()
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.ws_connect(target_url) as ws:
+                async def forward_to_upstream():
+                    try:
+                        while True:
+                            message = await websocket.receive()
+                            if message["type"] == "websocket.receive":
+                                if "text" in message:
+                                    await ws.send_str(message["text"])
+                                elif "bytes" in message:
+                                    await ws.send_bytes(message["bytes"])
+                            elif message["type"] == "websocket.disconnect":
+                                break
+                    except Exception:
+                        pass
+
+                async def forward_to_client():
+                    try:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await websocket.send_text(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await websocket.send_bytes(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                                break
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                break
+                    except Exception:
+                        pass
+
+                # Run both tasks concurrently
+                await asyncio.gather(forward_to_upstream(), forward_to_client())
+        except Exception as e:
+            logging.error(f"[Proxy] WebSocket error for {path}: {e}")
+        finally:
+            try:
+                await websocket.close()
+            except:
+                pass
 
 # --- OpenAI Compatible Endpoints ---
 
