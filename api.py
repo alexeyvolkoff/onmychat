@@ -1406,22 +1406,18 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             resp = await req.__aenter__()
             
             # 4. Prepare Response Headers
-            # We use a dict with lowercase keys for easier filtering, but preserve 
-            # essential headers.
-            response_headers = {}
-            for k, v in resp.headers.items():
-                kl = k.lower()
-                # Filter out hop-by-hop headers
-                if kl in [
-                    "connection", "keep-alive", "proxy-authenticate", 
-                    "proxy-authorization", "te", "trailers", 
-                    "transfer-encoding", "upgrade", "content-encoding", "content-length"
-                ]:
-                    continue
-                # We'll set media_type explicitly, so remove content-type from headers dict
-                if kl == "content-type":
-                    continue
-                response_headers[k] = v
+            # We copy all headers and then remove only the hop-by-hop ones.
+            response_headers = dict(resp.headers)
+            
+            # Strictly filter out hop-by-hop and conflicting headers
+            for kl in [
+                "connection", "keep-alive", "proxy-authenticate", 
+                "proxy-authorization", "te", "trailers", 
+                "transfer-encoding", "upgrade", "content-length", "content-encoding"
+            ]:
+                response_headers.pop(kl, None)
+                # Also try capitalized version just in case of non-standard dict behavior
+                response_headers.pop(kl.title(), None)
 
             async def stream_generator():
                 try:
@@ -1432,13 +1428,11 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                     await req.__aexit__(None, None, None)
                     await session.close()
 
-            # Get Content-Type from upstream, fallback to None
-            upstream_content_type = resp.headers.get("content-type")
-
+            # We pass headers directly. StreamingResponse will set media_type 
+            # from the 'content-type' header if present in headers dict.
             return StreamingResponse(
                 stream_generator(),
                 status_code=resp.status,
-                media_type=upstream_content_type,
                 headers=response_headers
             )
 
