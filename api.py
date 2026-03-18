@@ -1443,6 +1443,16 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         logging.error(f"[Proxy] Error proxying to {url}: {e}")
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
+@app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def opencode_proxy(request: Request, path: str):
+    """
+    Proxies all /code requests to local opencode service at port 4096.
+    """
+    target_url = f"http://127.0.0.1:4096/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+    return await proxy_request(target_url, request, method=request.method)
+
 # --- OpenAI Compatible Endpoints ---
 
 @app.post("/v1/chat/completions")
