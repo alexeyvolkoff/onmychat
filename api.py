@@ -1406,17 +1406,22 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             resp = await req.__aenter__()
             
             # 4. Prepare Response Headers
-            response_headers = dict(resp.headers)
-            
-            # Filter out hop-by-hop headers
-            response_headers.pop("connection", None)
-            response_headers.pop("keep-alive", None)
-            response_headers.pop("proxy-authenticate", None)
-            response_headers.pop("proxy-authorization", None)
-            response_headers.pop("te", None)
-            response_headers.pop("trailers", None)
-            response_headers.pop("transfer-encoding", None)
-            response_headers.pop("upgrade", None)
+            # We use a dict with lowercase keys for easier filtering, but preserve 
+            # essential headers.
+            response_headers = {}
+            for k, v in resp.headers.items():
+                kl = k.lower()
+                # Filter out hop-by-hop headers
+                if kl in [
+                    "connection", "keep-alive", "proxy-authenticate", 
+                    "proxy-authorization", "te", "trailers", 
+                    "transfer-encoding", "upgrade", "content-encoding", "content-length"
+                ]:
+                    continue
+                # We'll set media_type explicitly, so remove content-type from headers dict
+                if kl == "content-type":
+                    continue
+                response_headers[k] = v
 
             async def stream_generator():
                 try:
@@ -1427,10 +1432,13 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                     await req.__aexit__(None, None, None)
                     await session.close()
 
+            # Get Content-Type from upstream, fallback to None
+            upstream_content_type = resp.headers.get("content-type")
+
             return StreamingResponse(
                 stream_generator(),
                 status_code=resp.status,
-                media_type=resp.headers.get("content-type"),
+                media_type=upstream_content_type,
                 headers=response_headers
             )
 
