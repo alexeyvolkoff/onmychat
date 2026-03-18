@@ -1406,6 +1406,9 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             
             # 4. Prepare Response Headers
             response_headers = dict(resp.headers)
+            
+            # DEBUG
+            print(f"DEBUG: Upstream headers for {url}: {response_headers}")
 
             # Cleanup: remove strictly forbidden headers
             for kl in [
