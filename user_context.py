@@ -88,62 +88,10 @@ def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) 
     if "assistant_appearance" not in settings:
          settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
 
-    # Try to load from storage if configured
-    if storage and omd_key:
-        try:
-            remote_settings = fetch_json_from_storage(
-                omd_key,
-                storage,
-                "settings.json"
-            )
-        except Exception as e:
-            logging.warning(f"Failed to load remote settings: {e}")
-            # Fallback to cache if available, even if force_reload was requested
-            if user_id in bindings["profiles"]:
-                 logging.warning(f"Using cached settings for {user_id} due to remote failure")
-                 return bindings["profiles"][user_id]
-            # Do not raise, just log and fall through to default/upload logic
-            remote_settings = None
-        if remote_settings:
-            logging.info(f"Loaded settings from storage for user {user_id}")
-            
-            # Ensure defaults for remote settings too
-            if "assistant_appearance" not in remote_settings:
-                remote_settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
-            
-            # Update local cache only if NOT using remote storage exclusively
-            if not (storage and omd_key):
-                try:
-                    os.makedirs(f"{USER_DATA_DIR}/{user_id}", exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(remote_settings, f, ensure_ascii=False, indent=2)
-                except Exception as e:
-                    logging.warning(f"Failed to update local settings cache: {e}")
-            
-            # Update memory cache
-            bindings["profiles"][user_id] = remote_settings
-            return remote_settings
-        else:
-             # If remote settings are missing or invalid, upload local settings
-             logging.info(f"Remote settings not found or invalid, uploading local settings for user {user_id}")
-             try:
-                upload_data_to_storage(
-                    omd_key,
-                    storage,
-                    "settings.json",
-                    settings,
-                    "application/json"
-                )
-             except Exception as e:
-                logging.warning(f"Failed to upload local settings: {e}")
-                # Update memory cache even if upload failed
-                bindings["profiles"][user_id] = settings
+    # OrbitDB: Load from storage is legacy, we now rely on data provided by client or local cache
     # Update memory cache
     bindings["profiles"][user_id] = settings
     return settings
-
-
-
 
 
 def save_user_settings(ctx: UserContext):
@@ -173,19 +121,49 @@ def save_user_settings(ctx: UserContext):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
 
-    # Save to storage if configured
-    if ctx.storage and ctx.omd_key:
+    # OrbitDB Sync: No longer uploading settings.json to remote storage.
+
+
+def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
+    """
+    Создаёт начальную структуру профиля пользователя в его OMD-хранилище.
+    Legacy folders (chats, vecs, generated) are no longer created.
+    """
+    if not storage or storage in ["undefined", "null"]:
+        logging.warning("Skipping profile creation: invalid or empty storage")
+        return {}
+
+    # Сохраняем выбранное хранилище в контекст
+    ctx.storage = storage
+
+    headers = {
+        "authorization": f"token:{omd_key}",
+        "Content-Type": "application/json"
+    }
+
+    # Только базовая папка хранилища
+    folders = [storage]
+
+    results = {}
+    for folder in folders:
+        payload = {"action": "createFolder", "newPath": folder}
+        logging.info(f"Creating profile dir: {folder}")
+
         try:
-            upload_data_to_storage(
-                ctx.omd_key,
-                ctx.storage,
-                "settings.json",
-                settings_to_save,
-                "application/json"
-            )
-            logging.info(f"Saved settings to storage for user {ctx.user_id}")
+            resp = requests.post(f"{GATEWAY_URL}/{folder}", headers=headers, json=payload, timeout=10)
+            resp.raise_for_status()
+            logging.info(f"Dir info: {resp.json()}")
+            results[folder] = resp.json()
         except Exception as e:
-            logging.warning(f"Failed to save settings to storage: {e}")
+            logging.warning(f"Error while creating profile dir: {e}")
+            results[folder] = {"error": str(e)}
+    
+    # Update context
+    ctx.storage = storage
+    ctx.omd_key = omd_key
+    ctx.settings["name"] = "User"
+    save_user_settings(ctx)
+    return results
 
 
 def load_bindings():
