@@ -1337,7 +1337,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          intent: str = "chat",
                          event: str = None,
                          provided_history: list = None,
-                         provided_knowledge: list = None) -> AsyncGenerator:
+                         provided_knowledge: list = None,
+                         save_user_message: bool = True) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1473,7 +1474,7 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     # === SAVE USER MESSAGE IMMEDIATELY ===
     # This prevents message loss if the stream is interrupted or if another message comes in
-    if not skip_history:
+    if not skip_history and save_user_message:
         # Re-load fresh history to be safe against race conditions
         try:
             if provided_history is not None:
@@ -1724,7 +1725,8 @@ async def perform_prompt(
     event: str|None=None,
     stream: bool=False,
     provided_history: list|None=None,
-    provided_knowledge: list|None=None
+    provided_knowledge: list|None=None,
+    save_user_message: bool=True
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -1740,7 +1742,8 @@ async def perform_prompt(
         event=event,
         stream=stream,
         provided_history=provided_history,
-        provided_knowledge=provided_knowledge
+        provided_knowledge=provided_knowledge,
+        save_user_message=save_user_message
     )
     
     if stream:

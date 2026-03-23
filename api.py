@@ -799,6 +799,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             intent = "chat"
             event = None
             skip_history = False
+            save_user_message = True
             mem_id = None
             img_source = None
 
@@ -1025,7 +1026,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
                     "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
                 ).format(img_prompt)
-                llm_message = prompt
+                llm_message = "Please describe the image or roleplay as requested."
+                save_user_message = False
             elif intent == "view":
                 # 1️⃣ статус
                 yield f"data: {json.dumps({'status': 'generating'})}\n\n"
@@ -1048,7 +1050,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
                     "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
                 ).format(img_prompt)
-                llm_message = prompt
+                llm_message = "Please describe the image as requested."
+                save_user_message = False
 
             elif intent == "explain" or intent == "think":    
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
@@ -1190,7 +1193,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 event=event,
                 stream=True,
                 provided_history=provided_history,
-                provided_knowledge=provided_knowledge
+                provided_knowledge=provided_knowledge,
+                save_user_message=save_user_message
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
