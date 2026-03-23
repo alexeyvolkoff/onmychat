@@ -916,6 +916,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 }
                 check_intent_status = intent.split(":")[0] if ":" in intent else intent
                 if check_intent_status in status_map:
+                    logging.info(f"Notifying frontend about new status: {status_map[check_intent_status]}")
                     yield f"data: {json.dumps({'status': status_map[check_intent_status]})}\n\n"
 
                 # 2. Extract Memory Facts immediately (from the combined intent/memory string)
