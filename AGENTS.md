@@ -11,7 +11,8 @@
 3. Never try to rebuild or restart Docker containers. It is done by CI
 4. Never try to restart or investigate nginx proxy. This project runs on staging environment, not locally.
 5. Never rebuild the frontend. It is done by CI
-
+6. Never try to restart the backend. Ask user to do it manually.
+7. Never call shell commands that require sudo
 
 ## SYSTEM COMPATIBILITY (Ubuntu 24.04)
 - Use standard bash syntax. 

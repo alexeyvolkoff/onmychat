@@ -15,7 +15,7 @@ from config import USER_DATA_DIR
 
 from utils import clean_response, upload_to_storage, upload_data_to_storage, get_image_from_source
 
-from dialog_history import load_history, save_history, load_chats_index, save_chats_index
+# [LEGACY HISTORY] from dialog_history import load_chats_index, save_chats_index removed - handled by frontend/OrbitDB
 import user_context
 from user_context import UserContext
 from datetime import datetime, timezone
@@ -1337,8 +1337,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                          intent: str = "chat",
                          event: str = None,
                          provided_history: list = None,
-                         provided_knowledge: list = None,
-                         save_user_message: bool = True) -> AsyncGenerator:
+                         provided_knowledge: list = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
     model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
@@ -1353,15 +1352,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         history = []
     
     if not skip_history:
-        try:
-            if provided_history is not None:
-                 history = provided_history
-            else:
-                 history = load_history(ctx, chat) # Use 'chat' here for initial load, chat_name is determined later
-        except Exception as e:
-            logging.error(f"Failed to load history for chat {chat}: {e}")
-            yield {"error": "⚠️ Failed to load chat history. Storage might be unavailable.", "done": True}
-            return
+        history = provided_history or []
     
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -1472,31 +1463,8 @@ async def _perform_prompt_gen(ctx: UserContext,
     chat_info = await ensure_chat(ctx, chat, message)
     chat_name = chat_info.get("name", chat or "default")
 
-    # === SAVE USER MESSAGE IMMEDIATELY ===
-    # This prevents message loss if the stream is interrupted or if another message comes in
-    if not skip_history and save_user_message:
-        # Re-load fresh history to be safe against race conditions
-        try:
-            if provided_history is not None:
-                 history = provided_history
-            else:
-                 history = load_history(ctx, chat_name)
-        except Exception as e:
-            logging.error(f"Failed to reload history for chat {chat_name}: {e}")
-            yield {"error": "⚠️ Failed to reload chat history. Storage might be unavailable.", "done": True}
-            return
-
-        user_message_to_save = {
-            "role": "user",
-            "content": message
-        }
-        if mem_id:
-             user_message_to_save["mem_id"] = mem_id
-        
-        # Don't duplicate if already there (e.g. retry or rapid double-click)
-        if not history or history[-1].get("content") != message or history[-1].get("role") != "user":
-            history.append(user_message_to_save)
-            save_history(ctx, history, chat_name)
+    # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
+    chat_name = chat_info.get("name", chat or "default")
 
     # Персонализация
     username = ctx.settings.get("name") or ctx.settings.get("username", "User")
@@ -1725,8 +1693,7 @@ async def perform_prompt(
     event: str|None=None,
     stream: bool=False,
     provided_history: list|None=None,
-    provided_knowledge: list|None=None,
-    save_user_message: bool=True
+    provided_knowledge: list|None=None
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -1742,8 +1709,7 @@ async def perform_prompt(
         event=event,
         stream=stream,
         provided_history=provided_history,
-        provided_knowledge=provided_knowledge,
-        save_user_message=save_user_message
+        provided_knowledge=provided_knowledge
     )
     
     if stream:
@@ -1797,46 +1763,15 @@ async def generate_chat_title(message: str) -> str:
 
 
 async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
-    """
-    Убедиться, что чат есть в chats.json и файлы подготовлены.
-    Если чат = default → сгенерировать нормальное название на основе первого сообщения.
-    """
-    try:
-        chats = load_chats_index(ctx)
-    except Exception as e:
-        logging.error(f"Failed to load chats index: {e}")
-        # Re-raise to allow caller to handle storage unavailability
-        raise e
+    # [LEGACY HISTORY] Backend-side chats index removed - handled by frontend/OrbitDB
     chat = chat or "default"
-
-    if chat not in chats or chat == "default":
-        title = f"Chat {chat}"
-
-        if (chat == "default" or not chat) and first_message:
-            try:
-                title = await generate_chat_title(first_message)
-                chat = title.lower().replace(" ", "_")  # имя файла без пробелов
-                chat = re.sub(r'[^\w]+', '', chat).strip()
-                chat = chat.lstrip('_')  # Удаляет "_" слева (в начале)
-            except Exception as e:
-                print(f"[chats] Title generation error: {e}")
-
-        chats[chat] = {
-            "title": title,
-            "file": f"{chat}.json",
-            "name": chat,
-            "created": datetime.now(timezone.utc).isoformat(),
-            "updated": datetime.now(timezone.utc).isoformat()
-        }
-
-        
-    else:
-        # обновляем дату, если чат уже существует
-        chats[chat]["updated"] = datetime.now(timezone.utc).isoformat()
-
-    save_chats_index(ctx, chats)
-
-    return chats[chat]
+    return {
+        "name": chat,
+        "title": chat,
+        "file": f"{chat}.json",
+        "created": datetime.now(timezone.utc).isoformat(),
+        "updated": datetime.now(timezone.utc).isoformat()
+    }
 
 
 # === Intent ===
@@ -1849,8 +1784,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
         if provided_history is not None:
              history = provided_history
         else:
-             from dialog_history import load_history
-             history = load_history(ctx, chat)
+             history = []
         
         last_messages = history[-4:] if history else []
         if last_messages:
@@ -1914,7 +1848,7 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
     
     return "SAFE" # Default fallback
 
-async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default", history: list = None, save_history_flag: bool = True) -> str:
+async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default", history: list = None) -> str:
     chat = chat or "default"
     user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
@@ -1967,30 +1901,27 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         # на случай, если ответ в другом формате
         response = data.get("content") or str(data)
 
-    if save_history_flag:
-        history.append({"role": "user", "content": prompt })
-        #history.append({"role": "assistant", "content": response}) 
-        save_history(ctx, history, chat)       
+    # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
     return response.strip()
 
 
 # Generate character image, returns full path for further sending or conversion
-async def generate_character_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None, save_history_flag: bool = True) -> str:
+async def generate_character_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None) -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx,  SYSTEM_INSTRUCTION_CHARACTER, prompt, chat, history, save_history_flag)
+    return await generate_image_prompt(ctx,  SYSTEM_INSTRUCTION_CHARACTER, prompt, chat, history)
 
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None, save_history_flag: bool = True) -> str:
+async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default", history: list = None) -> str:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
     #Улучшаем промпт
-    return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat, history, save_history_flag)
+    return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat, history)
 
 
 def extract_title_and_prompt(response: str) -> tuple[str, str]:
@@ -2313,22 +2244,6 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         readme_path = os.path.join(user_folder, readme_filename)
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(formatted_readme)
-    if update_history:
-        try:
-            history = load_history(ctx, chat)
-        except Exception as e:
-            logging.error(f"Failed to load history in generate_image: {e}")
-            raise e
-        history.append({
-            "role": "assistant", 
-            "content": img_prompt, 
-            "image": {
-                "path": filename, 
-                "title": img_title,
-                "description": neutral_description
-            }
-        })
-        save_history(ctx, history, chat)
     return filename, img_title, neutral_description
 
 async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> tuple[str, str, str]:
@@ -2350,7 +2265,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
 
     try:
-        history = load_history(ctx, chat)
+        history = []
     except Exception as e:
         logging.error(f"Failed to load history in recognize_image: {e}")
         raise e
@@ -2384,7 +2299,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
         response = data.get("content") or str(data)
 
     history.append({"role": "assistant", "content": response})
-    save_history(ctx, history, chat)
+    # [LEGACY HISTORY] Save history removed
 
     return response.lower().strip()
 

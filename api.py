@@ -17,7 +17,7 @@ import asyncio
 
 import core_service
 import user_context
-import dialog_history
+# [LEGACY HISTORY] import dialog_history removed
 import memory_index
 import logging
 import json
@@ -179,6 +179,7 @@ class GenerateInput(BaseModel):
     prompt: str
     chat: str = "default"
     message_index: int | None = None
+    message_nonce: str | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -525,55 +526,11 @@ async def get_assistant_avatars_endpoint(omd_key: str):
     return {"status": "ok", "avatars": avatars}
 
 
-@app.get("/history")
-async def history_endpoint(omd_key: str, chat: str = "default"):
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-    try:
-        history = dialog_history.load_history(ctx, chat=chat)
-        return {"chat": chat, "history": history}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# [LEGACY HISTORY] /history endpoints removed
 
 
 
-@app.delete("/history/{chat}/{number:int}")
-def delete_history(chat: str, number: int, omd_key: str = Header(..., alias="X-OMD-Key")):
-    """
-    Удаляет сообщение по индексу (0-based) из истории указанного чата пользователя.
-    """
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-
-    try:
-        # Загружаем историю чата
-        history = dialog_history.load_history(ctx, chat=chat)
-
-        if not history:
-            raise HTTPException(status_code=404, detail=f"Chat '{chat}' is empty or not found")
-
-        # Проверка диапазона индекса
-        if number < -len(history) or number >= len(history):
-            raise HTTPException(status_code=404, detail="Message index out of range")
-
-        # Удаляем сообщение
-        deleted_msg = history.pop(number)
-
-        # Сохраняем обратно
-        dialog_history.save_history(ctx, history, chat=chat)
-
-        return {
-            "status": "ok",
-            "chat": chat,
-            "deleted_index": number,
-            "deleted_role": deleted_msg.get("role"),
-            "remaining": len(history)
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# [LEGACY HISTORY] delete_history removed
 
 
 
@@ -650,110 +607,7 @@ async def get_memory(omd_key: str, collection: str, mem_id: str):
 
 
 
-@app.get("/chats")
-async def chats_endpoint(omd_key: str, storage: str = ""):
-    ctx = get_ctx(omd_key, storage)
-    try:
-        if not ctx.storage and storage:
-            logging.info(f"Creating profile for user {ctx.user_id}, {ctx.type}, storage: {storage}")
-            user_context.create_profile(ctx, omd_key, storage)
-
-        from dialog_history import load_chats_index
-        chats = load_chats_index(ctx)
-        return chats
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/chats/{chat}/archive")
-async def archive_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-    try:
-        from dialog_history import load_chats_index, save_chats_index
-        chats = load_chats_index(ctx)
-        if chat in chats:
-            # Set to a very old date to "archive" it (make it disappear from recent list)
-            # Using epoch start: 1970-01-01T00:00:00Z
-            chats[chat]["updated"] = "1970-01-01T00:00:00Z"
-            save_chats_index(ctx, chats)
-            return {"status": "ok", "chat": chat}
-        raise HTTPException(status_code=404, detail="Chat not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/chats/{chat}/restore")
-async def restore_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-    try:
-        from dialog_history import load_chats_index, save_chats_index
-        chats = load_chats_index(ctx)
-        if chat in chats:
-            # Set to current date to "restore" it to the top
-            chats[chat]["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-            save_chats_index(ctx, chats)
-            return {"status": "ok", "chat": chat}
-        raise HTTPException(status_code=404, detail="Chat not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/chats/{chat}")
-async def delete_chat(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-    try:
-        from dialog_history import load_chats_index, save_chats_index, reset_history
-        chats = load_chats_index(ctx)
-        if chat in chats:
-            del chats[chat]
-            save_chats_index(ctx, chats)
-            
-            # Delete the chat history file
-            # Note: reset_history takes user_id, but we need to delete specific chat file
-            # We'll implement a specific delete function or use os.remove directly if possible,
-            # but better to use a helper if available. 
-            # dialog_history.py has _get_path but it is internal.
-            # Let's check dialog_history.py again or just implement file deletion here safely.
-            
-            # Re-implementing safe deletion logic here for now or adding to dialog_history
-            # Since we are in api.py, let's use dialog_history helper if we can add one, 
-            # or just do it here if we are confident.
-            # dialog_history.py has reset_history(user_id) which deletes ALL history? No, let's check.
-            # reset_history deletes _get_path(user_id) which seems to be a single file? 
-            # Wait, _get_path takes (user_id, chat).
-            
-            # Let's assume we can just remove the file.
-            chat_file = f"{USER_DATA_DIR}/{ctx.user_id}/chats/{chat}.json"
-            if os.path.exists(chat_file):
-                os.remove(chat_file)
-            
-            # Also need to handle remote storage deletion if applicable
-            if ctx.storage and ctx.omd_key:
-                 # Remote deletion not fully implemented in provided snippets, 
-                 # but we can try to upload empty or use a delete endpoint if it existed.
-                 # For now, let's just update the index which hides it.
-                 pass
-
-            return {"status": "ok", "chat": chat}
-        raise HTTPException(status_code=404, detail="Chat not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/chats/{chat}/nsfw")
-async def toggle_chat_nsfw(chat: str, omd_key: str = Header(..., alias="X-OMD-Key")):
-    chat = chat or "default"
-    ctx = get_ctx(omd_key)
-    try:
-        from dialog_history import load_chats_index, save_chats_index
-        chats = load_chats_index(ctx)
-        if chat in chats:
-            current_nsfw = chats[chat].get("nsfw", False)
-            chats[chat]["nsfw"] = not current_nsfw
-            save_chats_index(ctx, chats)
-            return {"status": "ok", "chat": chat, "nsfw": chats[chat]["nsfw"]}
-        raise HTTPException(status_code=404, detail="Chat not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# [LEGACY HISTORY] /chats endpoints removed
 
 @app.post("/chat")
 async def chat_endpoint(data: ChatInput):
@@ -795,9 +649,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
     async def event_generator():
         try:
             nonlocal chat
-            # WARM UP THE STREAM (Bypass buffers)
-            yield ": ping\n\n"
-            await asyncio.sleep(0.1)
 
             # 0. IMMEDIATE STATUS FOR SLASH COMMANDS
             status_map_immediate = {
@@ -820,7 +671,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             intent = "chat"
             event = None
             skip_history = False
-            save_user_message = True
+            # [LEGACY HISTORY] save_user_message removed
             mem_id = None
             img_source = None
 
@@ -899,9 +750,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                         break
                 
                 if not raw_intent:
-                    # Provide immediate "thinking" status for LLM-based intent detection
-                    yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-                    await asyncio.sleep(0.1)
 
                     # Check for RAG intent independently 
                     # (so we don't accidentally class it as a tool if it isn't meant to be)
@@ -978,14 +826,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     # Provide an immediate, reliable list of tools
                     tools_list = await core_service.list_supported_tools(ctx)
 
-                    # Ensure history is saved for this interaction
-                    try:
-                        history = dialog_history.load_history(ctx, chat)
-                        history.append({"role": "user", "content": prompt})
-                        history.append({"role": "assistant", "content": tools_list})
-                        dialog_history.save_history(ctx, history, chat)
-                    except Exception as e:
-                        logging.error(f"Failed to update history for tools command: {e}")
+                    # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
 
                     yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
                     return
@@ -1032,27 +873,20 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                      return
 
             if intent == "show":
-                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
                 # 2️⃣ картинка
-                # Load history ONCE to avoid race conditions
-                try:
-                    history = dialog_history.load_history(ctx, chat)
-                except Exception as e:
-                    logging.error(f"Failed to load history for show intent: {e}")
-                    history = []
+                # [LEGACY HISTORY] Load history removed
+                history = provided_history or []
                 
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
-                img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history, save_history_flag=False)
+                img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
                 logging.info(f"Generating image for prompt {prompt}")
 
                 # Generate image using prompt, DO NOT save yet
                 path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
                 
-                # Now perform atomic history update
-                history.append({"role": "user", "content": prompt})
-                history.append({"role": "assistant", "content": img_prompt, "image": {"path": path, "title": title, "description": description}})
-                dialog_history.save_history(ctx, history, chat)
+                # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 
+
                 yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
                 
                 skip_history = False
@@ -1062,12 +896,11 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     "The scene description is:\n"
                     "{}\n\n"
                     "YOUR TASK: Roleplay this scene. Describe your feelings, thoughts, or actions AS IF YOU ARE IN THE IMAGE RIGHT NOW.\n"
-                    "Create a caption for this photo or a continuation of the moment.\n"
                     "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
                     "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
                 ).format(img_prompt)
                 llm_message = "Please describe the image or roleplay as requested."
-                save_user_message = False
+                # [LEGACY HISTORY] save_user_message removed
             elif intent == "view":
                 # 1️⃣ статус
 
@@ -1090,7 +923,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
                 ).format(img_prompt)
                 llm_message = "Please describe the image as requested."
-                save_user_message = False
+                # [LEGACY HISTORY] save_user_message removed
 
             elif intent == "explain" or intent == "think":    
                 instruction=(
@@ -1108,13 +941,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 # Call search_web directly - no MCP, no hallucination
                 search_results = await core_service.search_web(ctx, search_query)
                 
-                # Save search to history
-                try:
-                    history = dialog_history.load_history(ctx, chat)
-                    history.append({"role": "user", "content": prompt})
-                except Exception as e:
-                    logging.error(f"Failed to load history for search intent: {e}")
-                    history = []
+                # [LEGACY HISTORY] Load history removed
+                history = provided_history or []
                 
                 instruction = (
                     f"The user asked to search the web. Here are the REAL search results:\n\n"
@@ -1191,18 +1019,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
                 yield f"data: {json.dumps({'prompt': prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 
-                # Save to history to ensure the message persists across page reloads
-                try:
-                    history = dialog_history.load_history(ctx, chat)
-                    history.append({"role": "user", "content": prompt})
-                    history.append({
-                        "role": "assistant", 
-                        "content": prompt, # Use prompt as content because /generate usually doesn't have text
-                        "image": {"path": path, "title": title, "description": description}
-                    })
-                    dialog_history.save_history(ctx, history, chat)
-                except Exception as e:
-                    logging.error(f"Failed to save history for generate intent: {e}")
+                # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
 
             # 3️⃣ основной стрим чата
@@ -1225,8 +1042,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 event=event,
                 stream=True,
                 provided_history=provided_history,
-                provided_knowledge=provided_knowledge,
-                save_user_message=save_user_message
+                provided_knowledge=provided_knowledge
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
@@ -1238,7 +1054,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity"
         }
     )
 
@@ -1290,28 +1107,16 @@ async def generate_character_image(data: GenerateInput):
     ctx = get_ctx(data.omd_key)
     try:
         # generate_image returns (filename, title, description)
-        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, data.message_index is None)
+        is_new = data.message_nonce is None and data.message_index is None
+        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, is_new)
         
-        # Update history if index provided
-        try:
-            if data.provided_history is not None:
-                history = data.provided_history
-            else:
-                history = dialog_history.load_history(ctx, data.chat)
-        except Exception as e:
-            logging.error(f"Failed to load history: {e}")
-            history = []
+        # [LEGACY HISTORY] Load history removed
+        history = []
         
         if data.message_index is not None:
-            if 0 <= data.message_index < len(history):
-                msg = history[data.message_index]
-                # Ensure it's an assistant message with image
-                if msg.get("role") == "assistant" and "image" in msg:
-                    msg["image"]["path"] = filename
-                    msg["image"]["title"] = title
-                    msg["image"]["description"] = description
-                    history[data.message_index] = msg
-                    dialog_history.save_history(ctx, history, chat=data.chat)
+             # This part might still be needed if we want to return the updated description,
+             # but we don't save it to local disk anymore.
+             pass
 
         return {"image": filename, "description": description}
     except Exception as e:
