@@ -795,6 +795,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
     async def event_generator():
         try:
             nonlocal chat
+            # WARM UP THE STREAM (Bypass buffers)
+            yield ": ping\n\n"
+            await asyncio.sleep(0.1)
+
             # 0. IMMEDIATE STATUS FOR SLASH COMMANDS
             status_map_immediate = {
                 "/show": "generating",
@@ -809,7 +813,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             for prefix, status in status_map_immediate.items():
                 if prompt.startswith(prefix):
                     yield f"data: {json.dumps({'status': status})}\n\n"
-                    await asyncio.sleep(0) # Force yield to loop
+                    await asyncio.sleep(0.1) # Force yield to loop and flush
                     break
 
             # defaults
@@ -897,7 +901,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 if not raw_intent:
                     # Provide immediate "thinking" status for LLM-based intent detection
                     yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(0.1)
 
                     # Check for RAG intent independently 
                     # (so we don't accidentally class it as a tool if it isn't meant to be)
@@ -939,7 +943,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 if check_intent_status in status_map_detected:
                     logging.info(f"Notifying frontend about new status: {status_map_detected[check_intent_status]}")
                     yield f"data: {json.dumps({'status': status_map_detected[check_intent_status]})}\n\n"
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(0.1)
 
                 # 2. Extract Memory Facts immediately (from the combined intent/memory string)
                 memory_fact = memory_index.extract_memory_from_response(raw_intent)
