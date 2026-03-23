@@ -128,7 +128,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
                 ),
                 message=recognition_prompt,
                 chat="telegram", 
-                skip_history=True
             )
             explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)
@@ -160,7 +159,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, comman
                 message=recognition_prompt,
                 #b64_image=b64_image,
                 chat="telegram",
-                skip_history=False
             )
             explained = response.get("content") or "✅ done" 
             result = format_response_for_markdown_v2(explained)

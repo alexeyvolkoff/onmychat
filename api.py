@@ -17,7 +17,7 @@ import asyncio
 
 import core_service
 import user_context
-# [LEGACY HISTORY] import dialog_history removed
+
 import memory_index
 import logging
 import json
@@ -670,7 +670,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
             # defaults
             intent = "chat"
             event = None
-            skip_history = False
             # [LEGACY HISTORY] save_user_message removed
             mem_id = None
             img_source = None
@@ -691,10 +690,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             # perform commands
             if prompt.startswith("/nsfw"):
-                skip_history = True
-
-
-
                 args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
                 nsfw_enabled = False
 
@@ -711,7 +706,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
                 if len(args) > 1:
                     llm_message = args[1].strip()
-                    skip_history = False
             
 
                 ctx.settings["nsfw"] = nsfw_enabled
@@ -889,7 +883,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
                 yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
                 
-                skip_history = False
+
                 #Set specific instructions
                 instruction = (
                     "You have ALREADY generated an image of yourself based on the user's request.\n"
@@ -912,7 +906,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 
                 path, title, description = await core_service.generate_image(ctx, img_prompt, chat)
                 yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
-                skip_history = False
+
                 #Set specific instructions
                 instruction = (
                     "You have ALREADY generated an image based on the user's request.\n"
@@ -1024,7 +1018,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
 
             # 3️⃣ основной стрим чата
             else:
-                skip_history = False
+
                 llm_message = prompt
                 instruction = (
                     "Respond freely as a helpful conversational assistant."
@@ -1035,7 +1029,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 instruction=instruction,
                 message=llm_message,
                 chat=chat,
-                skip_history=skip_history,
                 intent=intent,
                 mem_id=mem_id,
                 img_source=img_source,

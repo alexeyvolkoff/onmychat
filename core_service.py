@@ -15,7 +15,7 @@ from config import USER_DATA_DIR
 
 from utils import clean_response, upload_to_storage, upload_data_to_storage, get_image_from_source
 
-# [LEGACY HISTORY] from dialog_history import load_chats_index, save_chats_index removed - handled by frontend/OrbitDB
+
 import user_context
 from user_context import UserContext
 from datetime import datetime, timezone
@@ -1329,7 +1329,6 @@ async def _perform_prompt_gen(ctx: UserContext,
                          instruction: str,
                          message: str,
                          is_rag: bool=False,
-                         skip_history: bool=False,
                          chat: str = "default",
                          mem_id: str = None,
                          img_source: str = None,
@@ -1348,11 +1347,11 @@ async def _perform_prompt_gen(ctx: UserContext,
     is_rag = intent in ["explain", "think"]
     think = intent == "think"
 
+    # History is derived from provided_history or managed via frontend OrbitDB sync.
     if chat == "default":
         history = []
     
-    if not skip_history:
-        history = provided_history or []
+    history = provided_history or []
     
     system_prompt = ""
     # === ВСПОМНИМ ФАКТЫ ===
@@ -1585,13 +1584,12 @@ async def _perform_prompt_gen(ctx: UserContext,
             response["facts"] = strict_fact
         if llm_think_response:    
             response["thinking"] = llm_think_response
-        if not skip_history:
+        # History entries are now managed via frontend OrbitDB sync.
+        # We still return the assistant response for the client to process.
+        if True: # Always process response, skip_history is redundant
             # Re-load history to get the latest (including the user message we just saved + any parallel ones)
             try:
-                if provided_history is not None:
-                     history = provided_history
-                else:
-                     history = load_history(ctx, chat_name)
+                history = provided_history or []
             except Exception as e:
                 logging.error(f"Failed to reload history before saving assistant response: {e}")
                 # We can't yield here as we are in process_response, but we should at least not save if loading failed.
@@ -1612,11 +1610,8 @@ async def _perform_prompt_gen(ctx: UserContext,
 
             history.append(history_entry)
 
-            # We DO NOT save history to legacy storage if it was strictly provided from OrbitDB frontend payload
-            # (If provided_history is not None, the client is responsible for saving its own append via OrbitDB)
-            if provided_history is None:
-                 #chat_info = await ensure_chat(ctx, chat, message)
-                 save_history(ctx, history, chat_name)
+            # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
+            pass
             
         response["chatinfo"] = chat_info
         return response
@@ -1686,7 +1681,6 @@ async def perform_prompt(
     instruction: str,
     message: str,
     chat: str="default", 
-    skip_history: bool=False,
     intent: str|None=None,
     mem_id: str|None=None,
     img_source: str|None=None,
@@ -1702,7 +1696,6 @@ async def perform_prompt(
         instruction=instruction,
         message=message,
         chat=chat,
-        skip_history=skip_history,
         intent=intent,
         mem_id=mem_id,
         img_source=img_source,
@@ -1862,12 +1855,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         image_instruction = instruction.format(prompt=prompt, appearance=ctx.settings.get('assistant_appearance', ''))
 
 
-    if history is None:
-        try:
-            history = load_history(ctx, chat)
-        except Exception as e:
-            logging.error(f"Failed to load history in generate_image_prompt: {e}")
-            raise e
+    history = history or []
 
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
