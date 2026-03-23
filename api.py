@@ -795,6 +795,23 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
     async def event_generator():
         try:
             nonlocal chat
+            # 0. IMMEDIATE STATUS FOR SLASH COMMANDS
+            status_map_immediate = {
+                "/show": "generating",
+                "/view": "generating", "/imagine": "generating",
+                "/generate": "generating",
+                "/search": "searching",
+                "/import": "learning", "/learn": "learning",
+                "/recognize": "thinking", "/detect": "thinking",
+                "/think": "thinking",
+                "/explain": "thinking"
+            }
+            for prefix, status in status_map_immediate.items():
+                if prompt.startswith(prefix):
+                    yield f"data: {json.dumps({'status': status})}\n\n"
+                    await asyncio.sleep(0) # Force yield to loop
+                    break
+
             # defaults
             intent = "chat"
             event = None
@@ -878,6 +895,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                         break
                 
                 if not raw_intent:
+                    # Provide immediate "thinking" status for LLM-based intent detection
+                    yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+                    await asyncio.sleep(0)
+
                     # Check for RAG intent independently 
                     # (so we don't accidentally class it as a tool if it isn't meant to be)
                     raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
@@ -903,8 +924,8 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 
                 logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
                 
-                # 1.5. Yield status as early as possible to provide immediate feedback
-                status_map = {
+                # Yield specialized status if it matches (overwrite thinking)
+                status_map_detected = {
                     "show": "generating",
                     "view": "generating",
                     "generate": "generating",
@@ -915,9 +936,10 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     "import": "learning"
                 }
                 check_intent_status = intent.split(":")[0] if ":" in intent else intent
-                if check_intent_status in status_map:
-                    logging.info(f"Notifying frontend about new status: {status_map[check_intent_status]}")
-                    yield f"data: {json.dumps({'status': status_map[check_intent_status]})}\n\n"
+                if check_intent_status in status_map_detected:
+                    logging.info(f"Notifying frontend about new status: {status_map_detected[check_intent_status]}")
+                    yield f"data: {json.dumps({'status': status_map_detected[check_intent_status]})}\n\n"
+                    await asyncio.sleep(0)
 
                 # 2. Extract Memory Facts immediately (from the combined intent/memory string)
                 memory_fact = memory_index.extract_memory_from_response(raw_intent)
