@@ -943,7 +943,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 if check_intent_status in status_map_detected:
                     logging.info(f"Notifying frontend about new status: {status_map_detected[check_intent_status]}")
                     yield f"data: {json.dumps({'status': status_map_detected[check_intent_status]})}\n\n"
-                    await asyncio.sleep(0.1)
 
                 # 2. Extract Memory Facts immediately (from the combined intent/memory string)
                 memory_fact = memory_index.extract_memory_from_response(raw_intent)
@@ -1033,6 +1032,7 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                      return
 
             if intent == "show":
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
                 # 2️⃣ картинка
                 # Load history ONCE to avoid race conditions
                 try:
