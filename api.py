@@ -903,6 +903,21 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 
                 logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
                 
+                # 1.5. Yield status as early as possible to provide immediate feedback
+                status_map = {
+                    "show": "generating",
+                    "view": "generating",
+                    "generate": "generating",
+                    "explain": "thinking",
+                    "think": "thinking",
+                    "search": "searching",
+                    "recognize": "thinking",
+                    "import": "learning"
+                }
+                check_intent_status = intent.split(":")[0] if ":" in intent else intent
+                if check_intent_status in status_map:
+                    yield f"data: {json.dumps({'status': status_map[check_intent_status]})}\n\n"
+
                 # 2. Extract Memory Facts immediately (from the combined intent/memory string)
                 memory_fact = memory_index.extract_memory_from_response(raw_intent)
                 if memory_fact:
@@ -991,8 +1006,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                      return
 
             if intent == "show":
-                # 1️⃣ статус
-                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
                 # 2️⃣ картинка
                 # Load history ONCE to avoid race conditions
                 try:
@@ -1030,7 +1043,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 save_user_message = False
             elif intent == "view":
                 # 1️⃣ статус
-                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
                 # 2️⃣ картинка
                 img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
@@ -1054,8 +1066,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 save_user_message = False
 
             elif intent == "explain" or intent == "think":    
-                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-        
                 instruction=(
                     "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
                     "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
@@ -1063,8 +1073,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 )
                 llm_message = prompt
             elif intent == "search":
-                yield f"data: {json.dumps({'status': 'searching'})}\n\n"
-                
                 # Extract query from prompt (remove /search prefix if present)
                 search_query = prompt
                 if prompt.lower().startswith("/search"):
@@ -1089,7 +1097,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 )
                 llm_message = search_query
             elif intent.startswith("recognize"): 
-                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
 
                 if ":" in intent:
                     img_source = intent.split(":", 1)[1]
@@ -1099,7 +1106,6 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                 )
                 llm_message = prompt
             elif intent.startswith("import"):
-                yield f"data: {json.dumps({'status': 'learning'})}\n\n"
                 doc_source = None
                 collection = "user"
                 card = {}
@@ -1140,14 +1146,13 @@ async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "
                     llm_message = prompt
                     mem_id = card.get("id")
             elif intent.startswith("image"):
-                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+                pass
 
             elif intent == "generate":
                 # Ensure chat exists and update timestamp
                 chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
                 
                 # 1️⃣ статус
-                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
                 # 2️⃣ Generate title from raw prompt
                 img_title = await core_service.generate_title_from_prompt(img_prompt)
