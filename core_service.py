@@ -2045,9 +2045,13 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
 
 
 async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> tuple[str, str, str]:
-    user_id = ctx.user_id
     if not prompt:
         raise Exception("Please explain what do you want to see.")
+
+    if not ctx.storage:
+        raise Exception("⚠️ Default storage is not available. Please connect your device.")
+
+    user_id = ctx.user_id
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
 

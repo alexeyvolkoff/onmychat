@@ -109,9 +109,7 @@ def save_user_settings(ctx: UserContext):
 
     # Update bindings if we have omd_key (account_id)
     if ctx.omd_key and ctx.omd_key in bindings["by_account"]:
-        if ctx.storage:
-            bindings["by_account"][ctx.omd_key]["storage"] = ctx.storage
-            save_bindings()
+        save_bindings()
 
     # Save to local disk as cache/backup ONLY if no remote storage
     # AND only for Telegram users (numeric IDs) - strict separation for OMD users
@@ -207,13 +205,8 @@ def get_context(telegram_id: int) -> UserContext:
         binding = bindings["by_telegram"][telegram_id]
         account_id = binding.get("account_id")
         
-        # Try to find storage in account binding
-        storage = None
-        if account_id and account_id in bindings["by_account"]:
-             storage = bindings["by_account"][account_id].get("storage")
-
-        settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage)
-        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
+        settings = load_user_settings(binding["username"], omd_key=account_id)
+        ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id)
     else:
         settings = load_user_settings(str(telegram_id))
         ctx = UserContext(type="temp", user_id=str(telegram_id), settings=settings, history=[])
@@ -234,13 +227,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
 
     if account_id in bindings["by_account"]:
         binding = bindings["by_account"][account_id]
-        # Prioritize storage from binding if set, otherwise use passed storage
-        if not storage:
-            storage = binding.get("storage")
-        else:
-             # Update storage in binding if passed
-             binding["storage"] = storage
-
+        
         settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage, force_reload=force_reload)
         #logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
@@ -262,7 +249,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
             if profile_storage:
                 storage = profile_storage
             
-            bindings["by_account"][account_id] = {"telegram_id": None, "username": username, "storage": storage}
+            bindings["by_account"][account_id] = {"telegram_id": None, "username": username}
             save_bindings()
             
             settings = load_user_settings(username, storage=storage, omd_key=account_id, force_reload=force_reload)
@@ -278,7 +265,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
     user_id = f"temp_{account_id}" if account_id else "temp_anon"
     
     if storage and account_id:
-         bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id, "storage": storage}
+         bindings["by_account"][account_id] = {"telegram_id": None, "username": user_id}
          save_bindings()
 
     settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)

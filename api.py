@@ -138,11 +138,13 @@ class ChatInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
+    storage: str = ""
 
 class ChatStreamInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
+    storage: str = ""
     history: list | None = None
     settings: dict | None = None
     knowledge: list | None = None
@@ -611,7 +613,7 @@ async def get_memory(omd_key: str, collection: str, mem_id: str):
 
 @app.post("/chat")
 async def chat_endpoint(data: ChatInput):
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
     try:
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
@@ -630,17 +632,19 @@ async def chat_endpoint(data: ChatInput):
 async def chat_stream_post(request: Request, data: ChatStreamInput):
     # Reuse the exact same streaming generator, passing in the frontend OrbitDB history
     return await chat_stream(request, data.omd_key, data.prompt, data.chat, 
+                              storage=data.storage,
                               provided_history=data.history, 
                               provided_settings=data.settings,
                               provided_knowledge=data.knowledge)
 
 @app.get("/chat/stream")
 async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", 
+                      storage: str = "",
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
                       provided_knowledge: list|None = None):
     chat = chat or "default"
-    ctx = get_ctx(omd_key)
+    ctx = get_ctx(omd_key, storage=storage)
 
     if provided_settings:
         logging.info(f"Applying client-provided settings for {ctx.user_id}")
