@@ -182,6 +182,7 @@ class RecognizeInput(BaseModel):
     omd_key: str
     prompt: str = ""
     chat: str = "default"
+    storage: str = ""
 
 class MemoryUpdate(BaseModel):
     text: str
@@ -202,6 +203,7 @@ class GenerateInput(BaseModel):
     chat: str = "default"
     message_index: int | None = None
     message_nonce: str | None = None
+    storage: str = ""
 
 
 class UpdateAssistantInput(BaseModel):
@@ -220,6 +222,7 @@ class AvatarGenerateInput(BaseModel):
     style: str | None = None
     character_lora: str | None = None
     prompt: str = ""
+    storage: str = ""
 
 # ... (ommitted lines)
 
@@ -430,7 +433,7 @@ async def assistant_avatar(
 
 @app.post("/assistant/avatar/generate")
 async def generate_avatar_endpoint(data: AvatarGenerateInput):
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
     try:
         # Use hardcoded prompt for avatar generation as requested
         prompt = "social profile photo, office style, headshot"
@@ -1109,10 +1112,11 @@ async def recognize_endpoint(
     omd_key: str | None = Depends(get_omd_key),
     chat: str = Form("default"),
     prompt: str = Form(""),
+    storage: str = Form(""),
     file: UploadFile = File(...)
 ):
     chat = chat or "default"
-    ctx = get_ctx(omd_key)
+    ctx = get_ctx(omd_key, storage=storage)
     try:
         img_bytes = await file.read()
         result = await core_service.recognize_image(ctx, img_bytes, prompt, chat)
@@ -1124,7 +1128,7 @@ async def recognize_endpoint(
 @app.post("/generate/image/character")
 async def generate_character_image(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
     try:
         # generate_image returns (filename, title, description)
         is_new = data.message_nonce is None and data.message_index is None
@@ -1145,7 +1149,7 @@ async def generate_character_image(data: GenerateInput):
 
 @app.post("/generate/image/general")
 async def generate_general_image(data: GenerateInput):
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
     try:
         # generate_image returns (filename, title, description)
         filename, title, description = await core_service.generate_image(ctx, data.prompt)
