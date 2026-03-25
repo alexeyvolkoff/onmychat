@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
-from fastapi import Header
+from fastapi import Header, Depends
 from PIL import Image
 import io
 import re
@@ -110,6 +110,26 @@ def not_authorized(request: Request):
         return True
     return False
 
+def get_omd_key(
+    request: Request,
+    omd_key: str | None = Query(None),
+    x_omd_key: str | None = Header(None, alias="X-OMD-Key"),
+    authorization: str | None = Header(None)
+):
+    if x_omd_key:
+        return x_omd_key
+    if authorization:
+        # Handle "Bearer <token>", "token:<token>", "token <token>" or just "<token>"
+        auth_val = authorization.strip()
+        if auth_val.startswith("Bearer "):
+            return auth_val[7:].strip()
+        if auth_val.startswith("token:"):
+            return auth_val[6:].strip()
+        if auth_val.startswith("token "):
+            return auth_val[6:].strip()
+        return auth_val
+    return omd_key
+
 
 
 
@@ -204,7 +224,7 @@ class AvatarGenerateInput(BaseModel):
 # ... (ommitted lines)
 
 @app.get("/assistant")
-async def assistant_info(omd_key: str):
+async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
     # Force reload settings from storage to ensure we have the latest data (bypass cache)
     ctx = get_ctx(omd_key, force_reload=True)
     try:
@@ -281,7 +301,7 @@ class SignoutInput(BaseModel):
 
 # ==== Хелпер ====
 
-def get_ctx(omd_key: str, storage: str = "", force_reload: bool = False):
+def get_ctx(omd_key: str | None, storage: str = "", force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
     if storage in ["undefined", "null"]:
@@ -353,7 +373,7 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 @app.get("/assistant/avatar")
 async def assistant_avatar(
     request: Request,
-    omd_key: str,
+    omd_key: str | None = Depends(get_omd_key),
     size: int = 80
 ):
     ctx = get_ctx(omd_key)
@@ -491,7 +511,7 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/assistant/loras")
-async def get_loras(omd_key: str):
+async def get_loras(omd_key: str | None = Depends(get_omd_key), list: str | None = Query(None)):
     ctx = get_ctx(omd_key)
     return core_service.get_available_loras(ctx)
 
@@ -499,7 +519,7 @@ async def get_loras(omd_key: str):
 async def model_avatar(
     request: Request,
     lora_name: str,
-    omd_key: str,
+    omd_key: str | None = Depends(get_omd_key),
     size: int = 80
 ):
     ctx = get_ctx(omd_key)
@@ -522,7 +542,7 @@ async def model_avatar(
     
     
 @app.get("/assistant/avatars")
-async def get_assistant_avatars_endpoint(omd_key: str):
+async def get_assistant_avatars_endpoint(omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     avatars = await core_service.get_generated_avatars(ctx)
     return {"status": "ok", "avatars": avatars}
@@ -537,7 +557,7 @@ async def get_assistant_avatars_endpoint(omd_key: str):
 
 
 @app.get("/memory")
-async def memory_endpoint(omd_key: str, collection: str = "user"):
+async def memory_endpoint(omd_key: str | None = Depends(get_omd_key), collection: str = "user"):
     ctx = get_ctx(omd_key)
     try:
         memories = memory_index.load_memories(ctx, collection=collection)
@@ -546,7 +566,7 @@ async def memory_endpoint(omd_key: str, collection: str = "user"):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/memory")
-async def update_memory(data: MemoryUpdate, omd_key: str = Header(..., alias="X-OMD-Key")):
+async def update_memory(data: MemoryUpdate, omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)  
     try:
         updated_id = memory_index.update_memory_card(
@@ -564,7 +584,7 @@ async def update_memory(data: MemoryUpdate, omd_key: str = Header(..., alias="X-
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/memory/import")
-async def import_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-OMD-Key")):
+async def import_memory(data: MemoryImport, omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)  
     try:
         card = await core_service.import_doc(
@@ -582,7 +602,7 @@ async def import_memory(data: MemoryImport, omd_key: str = Header(..., alias="X-
 
 
 @app.delete("/memory/{mem_id}")
-async def delete_memory(mem_id: str, omd_key: str = Header(..., alias="X-OMD-Key"), collection: str = "shared" ):
+async def delete_memory(mem_id: str, omd_key: str | None = Depends(get_omd_key), collection: str = "shared" ):
     ctx = get_ctx(omd_key)
     print(f"KEY: {mem_id}")
     try:
@@ -596,7 +616,7 @@ async def delete_memory(mem_id: str, omd_key: str = Header(..., alias="X-OMD-Key
 
 
 @app.get("/memory/{collection}/{mem_id}")
-async def get_memory(omd_key: str, collection: str, mem_id: str):
+async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     try:
         memories = memory_index.load_memories(ctx, collection)
@@ -638,7 +658,7 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
                               provided_knowledge=data.knowledge)
 
 @app.get("/chat/stream")
-async def chat_stream(request: Request, omd_key: str, prompt: str, chat: str = "default", 
+async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depends(get_omd_key), chat: str = "default", 
                       storage: str = "",
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
@@ -1084,7 +1104,7 @@ async def memorize_endpoint(data: MemorizeInput):
 
 @app.post("/recognize")
 async def recognize_endpoint(
-    omd_key: str = Form(...),
+    omd_key: str | None = Depends(get_omd_key),
     chat: str = Form("default"),
     prompt: str = Form(""),
     file: UploadFile = File(...)
