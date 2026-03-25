@@ -650,12 +650,16 @@ async def chat_endpoint(data: ChatInput):
 
 @app.post("/chat/stream")
 async def chat_stream_post(request: Request, data: ChatStreamInput):
-    # Reuse the exact same streaming generator, passing in the frontend OrbitDB history
-    return await chat_stream(request, data.omd_key, data.prompt, data.chat, 
-                              storage=data.storage,
-                              provided_history=data.history, 
-                              provided_settings=data.settings,
-                              provided_knowledge=data.knowledge)
+    return await chat_stream(
+        request,
+        prompt=data.prompt,
+        omd_key=data.omd_key,
+        chat=data.chat,
+        storage=data.storage,
+        provided_history=data.history,
+        provided_settings=data.settings,
+        provided_knowledge=data.knowledge
+    )
 
 @app.get("/chat/stream")
 async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depends(get_omd_key), chat: str = "default", 
@@ -1028,7 +1032,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # 1️⃣ статус
 
                 # 2️⃣ Generate title from raw prompt
-                img_title = await core_service.generate_title_from_prompt(img_prompt)
+                img_title = await core_service.generate_title_from_prompt(ctx, img_prompt)
                 
                 # Format prompt with title for generate_image to parse
                 formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
@@ -1071,8 +1075,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Content-Encoding": "identity"
+            "X-Accel-Buffering": "no"
         }
     )
 

@@ -203,19 +203,32 @@ def delete_memory_card(
 
 
 def extract_memory_from_response(response: str) -> str | None:
-    response_lower = response.lower()
+    # Use regex to find keywords at the beginning of a line to avoid matching instructions in the system prompt
+    # We look for keywords followed by a space or newline.
     for keyword in MEMORY_KEYWORDS:
-        keyword_lower = keyword.lower()
-        pos = response_lower.find(keyword_lower)
-        if pos != -1:
-            start = pos + len(keyword)
-            remaining = response[start:].strip()
+        # Escape keyword for regex just in case
+        esc_kw = re.escape(keyword)
+        # Match keyword at the start of the string or after a newline
+        pattern = rf"(?:^|\n){esc_kw}\s*(.*)"
+        match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
+        
+        if match:
+            remaining = match.group(1).strip()
             
             # Explicitly strip out any trailing LLM reasoning blocks 
             # while fully preserving legitimate multiline facts.
+            # We also stop if we encounter another "Memorize:" or similar, 
+            # or if we see common instruction markers like "DO NOT" or "Chat History"
+            # which might indicate the model is echoing the prompt.
+            
+            # 1. Strip 'reason:' block
             fact = re.sub(r'(?i)\n*reason:[\s\S]*$', '', remaining).strip()
             
-            if fact:
+            # 2. Strip instructions if the model starts echoing the system prompt
+            # (e.g. "DO NOT output the reason", "Chat History", etc.)
+            fact = re.split(r'(?i)\n*(?:DO NOT output|Chat History|NEVER make up|\*SCOPE OF FACTS\*)', fact)[0].strip()
+            
+            if fact and len(fact) < 1000: # Sanity check for fact length
                 return fact
     return None
 

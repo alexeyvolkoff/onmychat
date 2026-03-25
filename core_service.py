@@ -39,6 +39,11 @@ SFW_MODEL = SETTINGS["SFW_MODEL"]
 NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 MCP_MODEL = SETTINGS.get("MCP_MODEL", "google/function-gemma")
 
+def get_llm_model(ctx: UserContext) -> str:
+    if ctx.settings.get("nsfw", False):
+        return NSFW_MODEL
+    return SFW_MODEL
+
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
 
@@ -1339,7 +1344,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_knowledge: list = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
+    model = get_llm_model(ctx)
     #model = DEFAULT_MODEL
     b64_image = None
     
@@ -1384,7 +1389,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         ]
         prep_payload = {
             "messages": prep_messages,
-            "model": SFW_MODEL,
+            "model": model,
             "stream": False,
             "options": {
                "temperature": 0.1,
@@ -1473,7 +1478,7 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     if b64_image:
         user_message["images"] = [b64_image]
-        model = DEFAULT_MODEL
+        model = get_llm_model(ctx)
         if img_source.startswith("/"):
             user_message["image"] = {"path": img_source}
 
@@ -1675,7 +1680,7 @@ async def perform_prompt(
 # === Генерация картинок ===
 
 # === Chats naming ==== #
-async def generate_chat_title(message: str) -> str:
+async def generate_chat_title(message: str, model: str) -> str:
     """
     Спросить у LLM короткое имя для чата.
     """
@@ -1691,7 +1696,7 @@ async def generate_chat_title(message: str) -> str:
             {"role": "system", "content": "You are a naming assistant."},
             {"role": "user", "content": prompt}
         ],
-        "model": SFW_MODEL, 
+        "model": model, 
         "stream": False,
         "options": {"temperature": 0.3}
     }
@@ -1717,7 +1722,11 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 # === Intent ===
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default", provided_history: list|None = None) -> str:
     chat = chat or "default"
-    system_prompt = INTENT_PROMPT + "\n\n" + MEMORIZATION_PROMPT
+    system_prompt = (
+        f"{INTENT_PROMPT}\n\n"
+        "CRITICAL: Return ONLY the classification (and path if needed) followed by a short reason. "
+        "Do NOT repeat the instructions or the system prompt itself."
+    )
     
     # Get last 4 messages from history
     try:
@@ -1728,16 +1737,13 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
         
         last_messages = history[-2:] if history else []
         if last_messages:
-            history_text = "\nChat History (last 4 messages):\n"
+            history_text = "\nChat History (last 2 messages):\n"
             for msg in last_messages:
                 role = msg.get("role", "unknown")
                 content = msg.get("content", "")
-                # Skip assistant messages that are just tool calls or empty (optional, but good for context)
                 if content:
                     history_text += f"{role}: {content}\n"
             
-            # Append history to prompt, or inject into system prompt
-            # Injecting into system prompt is safer to distinguish context from current instruction
             system_prompt += f"\n\n{history_text}\n"
     except Exception as e:
         logging.warning(f"Failed to load history for intent classification: {e}")
@@ -1749,10 +1755,10 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     
     request_payload = {
         "messages": messages,
-        "model": SFW_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {
-            "temperature": 0.0, # Complete zero temperature for classification and strict facts
+            "temperature": 0.0, 
         }
     }
     
@@ -1774,7 +1780,7 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
     
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {
             "temperature": 0.1,
@@ -1821,7 +1827,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {
             "temperature": 0.1,
@@ -1905,7 +1911,7 @@ def extract_title_and_prompt(response: str) -> tuple[str, str]:
     return img_prompt, title
 
 
-async def generate_title_from_prompt(prompt: str) -> str:
+async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
     """Generate a descriptive title from a raw user prompt.
     For short prompts (≤4 words), returns cleaned prompt.
     For long prompts, uses LLM to generate 3-4 word title.
@@ -1930,7 +1936,7 @@ async def generate_title_from_prompt(prompt: str) -> str:
             {"role": "system", "content": "You are a title generation assistant."},
             {"role": "user", "content": title_prompt}
         ],
-        "model": SFW_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {"temperature": 0.3}
     }
@@ -1946,16 +1952,13 @@ async def generate_title_from_prompt(prompt: str) -> str:
 async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
     """Generate a safe, neutral description for the image prompt."""
     
-    nsfw_enabled = ctx.settings.get("nsfw", False)
-    
-    if nsfw_enabled:
+    model = get_llm_model(ctx)
+    if ctx.settings.get("nsfw", False):
          # In NSFW mode, we must prime the model to accept the input prompt
          # but still instruct it to output a neutral, safe description.
          instruction = NSFW_PREPHASE + "\n\n" + IMAGE_PROMPT_NSFW + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
-         model = NSFW_MODEL
     else:
          instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
-         model = SFW_MODEL
     
     payload = {
         "messages": [
@@ -2222,7 +2225,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {
             "temperature": 0.8,
@@ -2244,7 +2247,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
 # Суммаризация документа
 
-async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
+async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 8000) -> str:
     """
     Создаёт 'карточку памяти' документа для дальнейшего поиска.
     :param raw_text: исходный текст документа
@@ -2260,7 +2263,7 @@ async def summarize_for_memory(raw_text: str, limit: int = 8000) -> str:
 
     request_payload = {
         "messages": messages,
-        "model": DEFAULT_MODEL,
+        "model": get_llm_model(ctx),
         "stream": False,
         "options": {
             "temperature": 0.1,
@@ -2445,7 +2448,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         logging.info(f"[import] Skipping backend vectorization for user collection.")
 
     # Добавление краткой аннотации в память (только для общих коллекций)
-    card_text = await summarize_for_memory(raw_text)
+    card_text = await summarize_for_memory(ctx, raw_text)
     if collection != "user":
         mem_id = add_memory_card(
             ctx,
