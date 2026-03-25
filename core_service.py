@@ -1361,43 +1361,10 @@ async def _perform_prompt_gen(ctx: UserContext,
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     logging.info(f"Loading facts: {collection} {is_rag}")
 
-    # === MCP Intent Check ===
-    # NOTE: "search" intent is handled separately in api.py where search_web is called directly
-    # and results are passed in the instruction parameter. MCP is only for file operations.
-    mcp_result = ""
-    if intent == "tools":
-        # Handle streaming MCP execution
-        async for update in check_and_execute_mcp(ctx, message):
-            if update["type"] == "status":
-                # Pass status update to the client with 'executing' state so frontend spinner works,
-                # but with specific message text.
-                if stream:
-                    yield {"status": "executing", "message": update["content"], "args": update.get("args")}
-            elif update["type"] == "result":
-                mcp_result = update["content"]
-    
-    # Flag that we are working with documents
-    is_work_mode = False 
-
-    if mcp_result:
-        facts_text += f"\n\n*System Tool Output:*\n{mcp_result}"
-        # Trigger work mode if tools were attempted. 
-        is_work_mode = True
-        
-        # Override/Append instruction
-        instruction += (
-             "\n\nResults from System Tools (MCP) are provided above. "
-             "They are the ABSOLUTE SOURCE OF TRUTH. "
-             "If the 'System Tool Output' section above contains filenames, paths, or content, you MUST acknowledge and use them. "
-             "If it is empty, you have ZERO knowledge. "
-             "Strictly forbid yourself from saying 'It seems that' or 'I found' using non-existent data."
-        )
-
-    # Only load KB facts if MCP didn't run OR if a specific memory ID is being queried
-    if not mcp_result or mem_id:
-        facts, doc_ids = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
-        if facts:
-            facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
+    # === Facts injection ===
+    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
+    if facts:
+        facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         logging.info(f"RAG request: {collection}")
@@ -1436,23 +1403,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         if strict_fact:
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
         
-    # Apply Work Mode override if file operations were attempted
-    if is_work_mode:
-        # COMPLETELY override personality during file operations
-        system_prompt = (
-            "You are a professional document processing assistant.\n"
-            "Be concise, factual, and professional. Do not roleplay.\n\n"
-            "ABSOLUTE RULES FOR TRUSTED DATA:\n"
-            "1. You are FORBIDDEN from generating fake tool results or simulating file reads.\n"
-            "2. NEVER use the phrase '*System Tool Output:*' in your response. That header is for the SYSTEM only.\n"
-            "3. If the 'System Tool Output' provided earlier contains filenames or paths, report them as found. "
-            "Filenames may be in Slovenian or Russian (e.g. 'račun' = 'invoice', 'prijavnica' = 'application'). Treat them as valid matches.\n"
-            "4. LOGICAL VOID: If no file content was provided via 'read_omd_file', you DO NOT know what is INSIDE the file (items, totals). "
-            "However, you DO know the existence and names of files discovered via 'list_omd_files' or 'find_omd_file'.\n"
-            "5. If 'System Tool Output' is truly empty, state: 'No data found in the system tools.'\n"
-            "6. NEVER claim you created, saved, or updated a file unless the System Tool Output explicitly confirms a successful write operation."
-        )
-    elif nsfw_enabled:
+    if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
     else:  
         system_prompt = f"{BASE_SYSTEM_PROMPT}"
@@ -1775,7 +1726,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
         else:
              history = []
         
-        last_messages = history[-4:] if history else []
+        last_messages = history[-2:] if history else []
         if last_messages:
             history_text = "\nChat History (last 4 messages):\n"
             for msg in last_messages:

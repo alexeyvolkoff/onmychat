@@ -751,7 +751,6 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "/show": "show",
                     "/view": "view", "/imagine": "view",
                     "/generate": "generate",
-                    "/tools": "tools",
                     "/import": "import", "/learn": "import",
                     "/recognize": "recognize", "/detect": "recognize",
                     "/think": "think",
@@ -777,7 +776,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     intent_raw = lines[0].strip().lower()
                     
                     # Whitelist and sanitize intent
-                    allowed_intents = ["show", "view", "explain", "recognize", "import", "tools", "chat", "search"]
+                    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search"]
                     for allowed in allowed_intents:
                         if intent_raw.startswith(allowed):
                             intent = allowed
