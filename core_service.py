@@ -1555,10 +1555,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     async def process_response(data) -> dict: 
         logging.info(data)
         llm_response = data["message"]["content"]
-        
-        # Super Shield: Strip out any hallucinated generated tool output block from the actual response
-        llm_response = re.sub(r'(?i)\*?System Tool Output[\s\S]*', '', llm_response).strip()
-        
         llm_response = clean_response(llm_response)
         llm_think_response = None
         if data["message"].get("thinking"):
