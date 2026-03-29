@@ -8,9 +8,9 @@ deploy_job:
   only:
     - main
   script:
-    - sudo -u alexey git -C /home/alexey/projects/onmychat fetch --all
-    - sudo -u alexey git -C /home/alexey/projects/onmychat checkout main
-    - sudo -u alexey git -C /home/alexey/projects/onmychat pull
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmychat fetch --all
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmychat checkout main
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmychat pull
     - sudo systemctl restart onmychat
 
 upgrade_job:
