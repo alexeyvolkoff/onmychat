@@ -159,6 +159,8 @@ class ChatInput(BaseModel):
     prompt: str
     chat: str = "default"
     storage: str = ""
+    settings: dict | None = None
+    history: list | None = None
 
 class ChatStreamInput(BaseModel):
     omd_key: str
@@ -183,6 +185,8 @@ class RecognizeInput(BaseModel):
     prompt: str = ""
     chat: str = "default"
     storage: str = ""
+    settings: dict | None = None
+    history: list | None = None
 
 class MemoryUpdate(BaseModel):
     text: str
@@ -204,6 +208,8 @@ class GenerateInput(BaseModel):
     message_index: int | None = None
     message_nonce: str | None = None
     storage: str = ""
+    settings: dict | None = None
+    history: list | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -223,6 +229,8 @@ class AvatarGenerateInput(BaseModel):
     character_lora: str | None = None
     prompt: str = ""
     storage: str = ""
+    settings: dict | None = None
+    history: list | None = None
 
 # ... (ommitted lines)
 
@@ -434,6 +442,8 @@ async def assistant_avatar(
 @app.post("/assistant/avatar/generate")
 async def generate_avatar_endpoint(data: AvatarGenerateInput):
     ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
         # Use hardcoded prompt for avatar generation as requested
         prompt = "social profile photo, office style, headshot"
@@ -637,6 +647,8 @@ async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends
 @app.post("/chat")
 async def chat_endpoint(data: ChatInput):
     ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
@@ -646,6 +658,7 @@ async def chat_endpoint(data: ChatInput):
             instruction=instruction,
             message=data.prompt,
             chat=data.chat,
+            provided_history=data.history
         )
         return response
     except Exception as e:
@@ -930,7 +943,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # 1️⃣ статус
 
                 # 2️⃣ картинка
-                img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat)
+                img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
                 logging.info(f"Generating image for prompt {prompt}")
 
                 # 3️⃣ Generate image
@@ -1113,10 +1126,26 @@ async def recognize_endpoint(
     chat: str = Form("default"),
     prompt: str = Form(""),
     storage: str = Form(""),
+    settings: str = Form(None),
+    history: str = Form(None),
     file: UploadFile = File(...)
 ):
     chat = chat or "default"
     ctx = get_ctx(omd_key, storage=storage)
+    if settings:
+        try:
+            provided_settings = json.loads(settings)
+            ctx.settings.update(provided_settings)
+        except:
+             logging.warning("Failed to parse settings in /recognize")
+    
+    provided_history = None
+    if history:
+         try:
+              provided_history = json.loads(history)
+         except:
+              logging.warning("Failed to parse history in /recognize")
+
     try:
         img_bytes = await file.read()
         result = await core_service.recognize_image(ctx, img_bytes, prompt, chat)
@@ -1129,6 +1158,8 @@ async def recognize_endpoint(
 async def generate_character_image(data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
         # generate_image returns (filename, title, description)
         is_new = data.message_nonce is None and data.message_index is None
@@ -1149,10 +1180,13 @@ async def generate_character_image(data: GenerateInput):
 
 @app.post("/generate/image/general")
 async def generate_general_image(data: GenerateInput):
+    data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
         # generate_image returns (filename, title, description)
-        filename, title, description = await core_service.generate_image(ctx, data.prompt)
+        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False)
         return {"image": filename, "description": description}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1164,9 +1198,11 @@ async def generate_general_image(data: GenerateInput):
 @app.post("/generate/prompt/character")
 async def generate_character_image_prompt(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
-        result = await core_service.generate_character_image_prompt(ctx, data.prompt, data.chat)
+        result = await core_service.generate_character_image_prompt(ctx, data.prompt, data.chat, history=data.history)
         return {"prompt": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1177,9 +1213,11 @@ async def generate_character_image_prompt(data: GenerateInput):
 @app.post("/generate/prompt/general")
 async def generate_general_image_prompt(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key)
+    ctx = get_ctx(data.omd_key, storage=data.storage)
+    if data.settings:
+        ctx.settings.update(data.settings)
     try:
-        result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat)
+        result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat, history=data.history)
         return {"prompt": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -68,11 +68,8 @@ def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) 
         return profile
     #ogging.info(f"[DEBUG] Cache miss for {user_id}")
 
-    path = f"{USER_DATA_DIR}/{user_id}/settings.json"
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    else:
+    # OMD users: strictly no backend caching allowed.
+    if omd_key and not user_id.isdigit():
         settings = {
             "nsfw": False,
             "style": "realistic",
@@ -83,6 +80,22 @@ def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) 
             "assistant_model": "Domi",
             "kb_id": DEFAULT_KB_ID
         }
+    else:
+        path = f"{USER_DATA_DIR}/{user_id}/settings.json"
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        else:
+            settings = {
+                "nsfw": False,
+                "style": "realistic",
+                "system_prompt": DEFAULT_USER_PROMPT,
+                "assistant_name": DEFAULT_ASSISTANT_NAME,
+                "assistant_title": DEFAULT_ASSISTANT_TITLE,
+                "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
+                "assistant_model": "Domi",
+                "kb_id": DEFAULT_KB_ID
+            }
 
     # Ensure defaults for new fields
     if "assistant_appearance" not in settings:
@@ -275,54 +288,6 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
 
 
 
-def create_profile(ctx: "UserContext", omd_key: str, storage: str) -> dict:
-    """
-    Создаёт начальную структуру профиля пользователя в его OMD-хранилище:
-    - {storage}/onmychat/vecs
-    - {storage}/onmychat/chats
-    - {storage}/onmychat/generated
-
-    ctx      — контекст пользователя (мы обновим ctx.settings["storage"])
-    omd_key  — авторизационный ключ (token)
-    storage  — базовый путь в OMD, например: "storage/user123"
-    """
-    if not storage or storage in ["undefined", "null"]:
-        logging.warning("Skipping profile creation: invalid or empty storage")
-        return {}
-
-    # Сохраняем выбранное хранилище в контекст
-    ctx.storage = storage
-    
-
-    headers = {
-        "authorization": f"token:{omd_key}",
-        "Content-Type": "application/json"
-    }
-
-    # Список папок, которые нужно создать
-    folders = [storage, f"{storage}/vecs", f"{storage}/chats", f"{storage}/generated"]
-
-    results = {}
-    for folder in folders:
-        payload = {"action": "createFolder", "newPath": folder}
-        logging.info(f"Creating profile dir: {folder}")
-
-        try:
-            resp = requests.post(f"{GATEWAY_URL}/{folder}", headers=headers, json=payload, timeout=10)
-            resp.raise_for_status()
-            logging.info(f"Dir info: {resp.json()}")
-            results[folder] = resp.json()
-        except Exception as e:
-            # Можно залогировать или выбросить исключение
-            logging.warning(f"Error while creating profile dir: {e}")
-            results[folder] = {"error": str(e)}
-    
-    # Update context with new storage and key
-    ctx.storage = storage
-    ctx.omd_key = omd_key
-    ctx.settings["name"] = "User"
-    save_user_settings(ctx)
-    return results
 
 
 def bind(ctx: UserContext, account_id: str) -> UserContext:
