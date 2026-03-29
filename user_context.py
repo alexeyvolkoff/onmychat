@@ -30,8 +30,7 @@ BINDINGS_FILE = f"{USER_DATA_DIR}/bindings.json"
 # }
 bindings = {
     "by_telegram": {},
-    "by_account": {},
-    "profiles": {}
+    "by_account": {}
 }
 
 
@@ -59,78 +58,37 @@ DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
 DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
 def load_user_settings(user_id, omd_key=None, storage=None, force_reload=False) :
-    # Check cache first
-    if not force_reload and user_id in bindings["profiles"]:
-        #logging.info(f"[DEBUG] Cache hit for {user_id}: {bindings['profiles'][user_id].get('nsfw')}")
-        profile = bindings["profiles"][user_id]
-        if "assistant_appearance" not in profile:
-             profile["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
-        return profile
-    #ogging.info(f"[DEBUG] Cache miss for {user_id}")
-
-    # OMD users: strictly no backend caching allowed.
-    if omd_key and not user_id.isdigit():
-        settings = {
-            "nsfw": False,
-            "style": "realistic",
-            "system_prompt": DEFAULT_USER_PROMPT,
-            "assistant_name": DEFAULT_ASSISTANT_NAME,
-            "assistant_title": DEFAULT_ASSISTANT_TITLE,
-            "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
-            "assistant_model": "Domi",
-            "kb_id": DEFAULT_KB_ID
-        }
-    else:
-        path = f"{USER_DATA_DIR}/{user_id}/settings.json"
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-        else:
-            settings = {
-                "nsfw": False,
-                "style": "realistic",
-                "system_prompt": DEFAULT_USER_PROMPT,
-                "assistant_name": DEFAULT_ASSISTANT_NAME,
-                "assistant_title": DEFAULT_ASSISTANT_TITLE,
-                "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
-                "assistant_model": "Domi",
-                "kb_id": DEFAULT_KB_ID
-            }
+    # No disk or memory caching allowed. Always return fresh default settings.
+    # The endpoint is responsible for applying client-provided overrides.
+    settings = {
+        "nsfw": False,
+        "style": "realistic",
+        "system_prompt": DEFAULT_USER_PROMPT,
+        "assistant_name": DEFAULT_ASSISTANT_NAME,
+        "assistant_title": DEFAULT_ASSISTANT_TITLE,
+        "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
+        "assistant_model": "Domi",
+        "kb_id": DEFAULT_KB_ID
+    }
 
     # Ensure defaults for new fields
     if "assistant_appearance" not in settings:
          settings["assistant_appearance"] = DEFAULT_ASSISTANT_APPEARANCE
-
-    # OrbitDB: Load from storage is legacy, we now rely on data provided by client or local cache
-    # Update memory cache
-    bindings["profiles"][user_id] = settings
+    
     return settings
 
 
 def save_user_settings(ctx: UserContext):
-    # Remove newUser flag before saving (from both memory and storage)
+    # No newUser flag in settings
     if "newUser" in ctx.settings:
         ctx.settings.pop("newUser")
-
-    # Update memory cache (with username if present)
-    bindings["profiles"][ctx.user_id] = ctx.settings
-    logging.info(f"[DEBUG] Updated cache for {ctx.user_id}: {ctx.settings.get('nsfw')}")
-
-    # Prepare settings for saving (exclude username)
-    settings_to_save = ctx.settings.copy()
-    settings_to_save.pop("username", None)
 
     # Update bindings if we have omd_key (account_id)
     if ctx.omd_key and ctx.omd_key in bindings["by_account"]:
         save_bindings()
 
-    # Save to local disk as cache/backup ONLY if no remote storage
-    # AND only for Telegram users (numeric IDs) - strict separation for OMD users
-    if not (ctx.storage and ctx.omd_key) and ctx.user_id.isdigit():
-        os.makedirs(f"{USER_DATA_DIR}/{ctx.user_id}", exist_ok=True)
-        path = f"{USER_DATA_DIR}/{ctx.user_id}/settings.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
+    # Legacy: saving settings.json to local disk removed.
+    # Memory caching (bindings["profiles"]) removed.
 
     # OrbitDB Sync: No longer uploading settings.json to remote storage.
 
@@ -189,8 +147,6 @@ def load_bindings():
                     data["by_telegram"] = {int(k): v for k, v in data["by_telegram"].items()}
                 bindings["by_telegram"] = data.get("by_telegram", {})
                 bindings["by_account"] = data.get("by_account", {})
-                # profiles are not saved, so we keep them empty or retain existing if any (though load overwrites)
-                bindings["profiles"] = {} 
 
         except Exception as e:
             print(f"[bindings] Load error: {e}")
