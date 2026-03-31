@@ -969,7 +969,7 @@ def get_model_avatar_path(model_name: str) -> str:
     return avatar_path
 
 
-def get_available_loras(ctx: UserContext = None) -> list:
+def get_available_loras(ctx: UserContext = None, nsfw: bool | None = None) -> list:
     lora_file = os.path.join(os.path.dirname(__file__), "analog_character_lora.json")
     if os.path.exists(lora_file):
         try:
@@ -985,13 +985,19 @@ def get_available_loras(ctx: UserContext = None) -> list:
                     for input_key, input_val in inputs.items():
                         if input_key.startswith("lora_") and isinstance(input_val, dict):
                             if "name" in input_val:
+                                # Prioritize explicit nsfw flag, then fallback to ctx
+                                if nsfw is not None:
+                                    user_nsfw = nsfw
+                                elif ctx:
+                                    user_nsfw = ctx.settings.get("nsfw", False)
+                                else:
+                                    user_nsfw = False
+                                    
                                 # Filter based on NSFW setting
                                 lora_nsfw = input_val.get("nsfw", False)
-                                if ctx:
-                                    user_nsfw = ctx.settings.get("nsfw", False)
-                                    # Skip NSFW loras if user has NSFW disabled
-                                    if lora_nsfw and not user_nsfw:
-                                        continue
+                                # Skip NSFW loras if user has NSFW disabled
+                                if lora_nsfw and not user_nsfw:
+                                    continue
                                 
                                 loras.append({
                                     "name": input_val["name"],

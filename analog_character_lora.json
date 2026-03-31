@@ -160,6 +160,12 @@
         "lora": "BEATRICE-XSTAR-XL-FINAL.safetensors",
         "strength": 1
       },
+      "lora_11": {
+        "name": "Minerva",
+        "type": "character",
+        "lora": "MINERVA-XSTAR-XL-FINAL.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
       "model": [
         "126",

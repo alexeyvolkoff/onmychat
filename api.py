@@ -524,9 +524,9 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/assistant/loras")
-async def get_loras(omd_key: str | None = Depends(get_omd_key), list: str | None = Query(None)):
+async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    return core_service.get_available_loras(ctx)
+    return core_service.get_available_loras(ctx, nsfw=nsfw)
 
 @app.get("/assistant/model/{lora_name}/avatar")
 async def model_avatar(
