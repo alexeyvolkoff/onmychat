@@ -2593,9 +2593,8 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
 
 
                     # Construct public URL
-                    base_url = GATEWAY_URL.rstrip("/")
                     clean_storage = ctx.storage.strip("/")
-                    full_url = f"{base_url}/{clean_storage}/generated/{filename}"
+                    full_url = f"/{clean_storage}/generated/{filename}"
                     
                     return {"image": filename, "url": full_url}
                 except Exception as e:
