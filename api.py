@@ -389,40 +389,6 @@ async def assistant_avatar(
 ):
     ctx = get_ctx(omd_key)
     try:
-        # Check for custom avatar in remote storage
-        if ctx.storage and ctx.omd_key:
-            storage_id = ctx.storage
-            storage_key = ctx.omd_key
-            
-            base_url = user_context.GATEWAY_URL.rstrip("/")
-            clean_storage_id = storage_id.strip("/")
-            
-            # Use avatar.png as standard user avatar name
-            # We can try to HEAD checks first? Or just try GET with stream.
-            url = f"{base_url}/{clean_storage_id}/avatar.png"
-            params = {"token": storage_key}
-            if size:
-                params["resize"] = "true"
-                params["width"] = size
-                params["height"] = size
-            
-            try:
-                # Use requests with stream=True for proxying
-                resp = requests.get(url, params=params, stream=True, timeout=5)
-                
-                content_type = resp.headers.get("Content-Type", "")
-                if resp.status_code == 200 and content_type.startswith("image/"):
-                    # Success
-                    return StreamingResponse(resp.iter_content(chunk_size=8192), media_type=content_type)
-                elif resp.status_code == 404:
-                    # Not found, fallback to default
-                    pass
-                else:
-                    logging.warning(f"Storage returned {resp.status_code} for avatar")
-                    
-            except Exception as e:
-                logging.warning(f"Failed to fetch avatar from storage: {e}")
-
         # Fallback to default model avatar
         storage_path = core_service.get_assistant_avatar_path(ctx)
         
