@@ -129,23 +129,7 @@ def get_omd_key(
             return auth_val[6:].strip()
         return auth_val
     return omd_key
-
-
-
-
-origins = [
-    "http://localhost:8080",  
-    "http://localhost:8081", 
-    f"{GATEWAY_URL}",
-    "*",  # Caution: Allow all origins (not recommended for production)
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-)
+# CORS middleware already added at line 34
 
 @app.on_event("startup")
 async def startup_event():
