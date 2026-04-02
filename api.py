@@ -225,7 +225,8 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key, force_reload=True)
     try:
         assistant = {
-            "name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
+            "assistant_name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
+            "name": ctx.settings.get("name", "User"),
             "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
             "system_prompt": ctx.settings.get("system_prompt", ""),
             "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
@@ -233,8 +234,7 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "nsfw": ctx.settings.get("nsfw", False),
             "model": ctx.settings.get("assistant_model", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
-            "omd_key": ctx.omd_key or omd_key,
-            "user_name": ctx.settings.get("name", "User")
+            "omd_key": ctx.omd_key or omd_key
         }
         return assistant
 
