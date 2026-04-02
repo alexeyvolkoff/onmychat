@@ -2443,6 +2443,11 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
                  logging.info("[import] Crawl4AI yielded no result, falling back to standard fetch")
             raw_text = await fetch_document_text(url_or_path)
 
+    if not raw_text or not raw_text.strip():
+        # This catch-all ensures we don't proceed with an empty string, 
+        # which would trigger a generic frontend error.
+        raw_text = "Failed to fetch document: Unsupported file type or document has no selectable text."
+
     if raw_text.startswith("Failed to fetch document:") or raw_text.startswith("Unsupported file type:"):
         logging.error(f"[import] failed fetch: {raw_text}")    
         return {

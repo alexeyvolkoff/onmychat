@@ -473,9 +473,16 @@ async def fetch_document_text(url: str, token: str = None) -> str:
             # Detection of login page (indicates authentication failure even if 200)
             is_login = "FileManagerApp" in text or "login" in text.lower()[:500]
             
+            if status == 204:
+                return f"Failed to fetch document: Document is empty or could not be converted."
+            
             if status != 200 or is_login:
+                msg = "Access denied (403/401) or invalid token." if (status in [401, 403] or is_login) else f"HTTP Error {status}"
                 logging.error(f"[fetch] Failed to retrieve document: {url.split('?')[0]} (Status {status}, Login {is_login})")
-                return f"Failed to fetch document: Access denied (403/401) or invalid token."
+                return f"Failed to fetch document: {msg}"
+
+    if not text or not text.strip():
+        return f"Failed to fetch document: Unsupported file type or document has no selectable text (e.g. scanned image)."
 
     # Conversion for HTML
     if url.split("?")[0].lower().endswith((".html", ".htm")) or "<html" in text.lower()[:100]:
