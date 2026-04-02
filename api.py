@@ -1263,8 +1263,13 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         
         # 4. Prepare Response Headers
         response_headers = {}
+        content_type = None
         for k, v in resp.headers.items():
             lk = k.lower()
+            if lk == "content-type":
+                content_type = v
+                continue # We set it via media_type parameter
+                
             if lk in [
                 "connection", "keep-alive", "proxy-authenticate", 
                 "proxy-authorization", "te", "trailers", 
@@ -1274,15 +1279,14 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                 continue
             response_headers[k] = v
 
-        # Upstream media type
-        content_type = response_headers.get("Content-Type") or response_headers.get("content-type")
-        
+        if not content_type:
+            # Fallback to aiohttp property
+            content_type = resp.content_type
+            if not content_type:
+                logging.warning(f"[Proxy] Missing Content-Type from {url}")
+
         # Add buffering optimization for Nginx (essential for SSE/chunked)
         response_headers["X-Accel-Buffering"] = "no"
-
-        # Log for diagnostics
-        # logging.info(f"[Proxy] Upstream path: {url}")
-        # logging.info(f"[Proxy] Final Headers: {response_headers}")
 
         async def stream_generator():
             try:
