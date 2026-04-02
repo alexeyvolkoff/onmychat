@@ -1713,15 +1713,19 @@ async def generate_chat_title(message: str, model: str) -> str:
     return data["message"]["content"].strip() or "New chat"
 
 
+def slugify(text):
+    # Lowercase, remove special characters, replace spaces with underscores
+    text = text.lower()
+    # Remove emoji and most non-ascii characters (basic)
+    text = re.sub(r'[^\w\s]', '', text)
+    # Replace spaces and multiple underscores with single underscore
+    text = re.sub(r'[\s_]+', '_', text)
+    return text.strip('_')
+
 async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
     # [LEGACY HISTORY] Backend-side chats index removed - handled by frontend/OrbitDB
     if not chat or chat in ["default", "newchat"]:
-        # Generate new chat name and title
-        timestamp = int(time.time())
-        unique_id = str(uuid.uuid4())[:8]
-        chat_name = f"chat_{timestamp}_{unique_id}"
-        
-        # Try to generate a nice title from first message
+        # 1. Try to generate a nice title from first message first
         chat_title = "New chat"
         if first_message:
             try:
@@ -1730,6 +1734,14 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
             except Exception as e:
                 logging.warning(f"Failed to generate chat title: {e}")
                 chat_title = first_message[:30] + "..." if len(first_message) > 30 else first_message
+                
+        # 2. Generate new chat name (ID) using slugified title as prefix
+        timestamp = int(time.time())
+        title_slug = slugify(chat_title)
+        if not title_slug or title_slug == "new_chat":
+             title_slug = "chat"
+             
+        chat_name = f"{title_slug}_{timestamp}"
         
         return {
             "name": chat_name,
