@@ -1277,6 +1277,12 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
         # Force Content-Type normalization and specifically for the gateway
         upstream_content_type = resp.headers.get("content-type")
+        if not upstream_content_type:
+            # Guess from url path if missing
+             guessed_type, _ = mimetypes.guess_type(url)
+             if guessed_type:
+                  upstream_content_type = guessed_type
+
         if upstream_content_type:
             response_headers["Content-Type"] = upstream_content_type
 
