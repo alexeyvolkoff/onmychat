@@ -1270,21 +1270,13 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                 "connection", "keep-alive", "proxy-authenticate", 
                 "proxy-authorization", "te", "trailers", 
                 "transfer-encoding", "upgrade", "content-length", 
-                "content-encoding", "access-control-allow-origin"
+                "content-encoding"
             ]:
                 continue
             response_headers[k] = v
 
-        # Force Content-Type normalization and specifically for the gateway
-        upstream_content_type = resp.headers.get("content-type")
-        if not upstream_content_type:
-            # Guess from url path if missing
-             guessed_type, _ = mimetypes.guess_type(url)
-             if guessed_type:
-                  upstream_content_type = guessed_type
-
-        if upstream_content_type:
-            response_headers["Content-Type"] = upstream_content_type
+        # Upstream media type
+        content_type = resp.headers.get("content-type")
 
         # Add buffering optimization for Nginx (essential for SSE/chunked)
         response_headers["X-Accel-Buffering"] = "no"
@@ -1301,7 +1293,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         return StreamingResponse(
             stream_generator(),
             status_code=resp.status,
-            media_type=upstream_content_type,
+            media_type=content_type,
             headers=response_headers
         )
     except Exception as e:
