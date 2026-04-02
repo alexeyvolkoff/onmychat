@@ -1261,22 +1261,26 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         resp = await req.__aenter__()
         
         # 4. Prepare Response Headers
-        response_headers = dict(resp.headers)
-        
-        # Cleanup: remove strictly forbidden headers
-        for kl in [
-            "connection", "keep-alive", "proxy-authenticate", 
-            "proxy-authorization", "te", "trailers", 
-            "transfer-encoding", "upgrade", "content-length", "content-encoding"
-        ]:
-            response_headers.pop(kl, None)
-            response_headers.pop(kl.title(), None)
-            response_headers.pop(kl.lower(), None)
+        response_headers = {}
+        for k, v in resp.headers.items():
+            lower_k = k.lower()
+            # Standard hop-by-hop headers to skip
+            if lower_k in [
+                "connection", "keep-alive", "proxy-authenticate", 
+                "proxy-authorization", "te", "trailers", 
+                "transfer-encoding", "upgrade", "content-length", 
+                "content-encoding", "access-control-allow-origin"
+            ]:
+                continue
+            response_headers[k] = v
 
-        # Force Content-Type specifically for the gateway
+        # Force Content-Type normalization and specifically for the gateway
         upstream_content_type = resp.headers.get("content-type")
         if upstream_content_type:
             response_headers["Content-Type"] = upstream_content_type
+
+        # Add buffering optimization for Nginx (essential for SSE/chunked)
+        response_headers["X-Accel-Buffering"] = "no"
 
         async def stream_generator():
             try:
@@ -1307,11 +1311,24 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 async def opencode_proxy(request: Request, path: str):
     """
     Proxies all /code requests to local opencode service at port 4096.
+    Specialized handling for SSE and static sub-endpoints.
     """
     target_url = f"http://127.0.0.1:4096/{path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
-    return await proxy_request(target_url, request, method=request.method)
+    
+    # SSE Detection
+    is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
+    
+    resp = await proxy_request(target_url, request, method=request.method)
+    
+    if is_sse:
+        resp.media_type = "text/event-stream"
+        resp.headers["Cache-Control"] = "no-cache"
+        resp.headers["Connection"] = "keep-alive"
+        resp.headers["X-Accel-Buffering"] = "no"
+
+    return resp
 
 @app.websocket("/code/{path:path}")
 async def opencode_ws_proxy(websocket: WebSocket, path: str):
