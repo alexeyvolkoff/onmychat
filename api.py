@@ -1239,7 +1239,8 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
     headers.pop("host", None)
     headers.pop("content-length", None) 
     headers.pop("connection", None)
-    headers.pop("accept-encoding", None) # Let aiohttp handle encoding
+    headers.pop("accept-encoding", None)
+    headers["accept-encoding"] = "identity" # Force no encoding from upstream
 
     # 2. Get Body (if any)
     try:
