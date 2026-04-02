@@ -1264,9 +1264,8 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         # 4. Prepare Response Headers
         response_headers = {}
         for k, v in resp.headers.items():
-            lower_k = k.lower()
-            # Standard hop-by-hop headers to skip
-            if lower_k in [
+            lk = k.lower()
+            if lk in [
                 "connection", "keep-alive", "proxy-authenticate", 
                 "proxy-authorization", "te", "trailers", 
                 "transfer-encoding", "upgrade", "content-length", 
@@ -1276,10 +1275,14 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             response_headers[k] = v
 
         # Upstream media type
-        content_type = resp.headers.get("content-type")
-
+        content_type = response_headers.get("Content-Type") or response_headers.get("content-type")
+        
         # Add buffering optimization for Nginx (essential for SSE/chunked)
         response_headers["X-Accel-Buffering"] = "no"
+
+        # Log for diagnostics
+        # logging.info(f"[Proxy] Upstream path: {url}")
+        # logging.info(f"[Proxy] Final Headers: {response_headers}")
 
         async def stream_generator():
             try:
