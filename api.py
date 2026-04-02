@@ -671,14 +671,14 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             img_source = None
 
             # Initialize chat if it's the first message of a new session
-            if not chat or chat == "default":
+            if not chat or chat == "default" or chat == "newchat":
                  try:
                       chat_info = await core_service.ensure_chat(ctx, chat, prompt)
                       chat = chat_info["name"]
                       yield f"data: {json.dumps({'event': 'newchat', 'chatinfo': chat_info})}\n\n"
                  except Exception as e:
                       logging.error(f"Failed to ensure chat: {e}")
-                      chat = "default"
+                      chat = chat or "default"
 
             # Enforce Rights (moved up)
             token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))

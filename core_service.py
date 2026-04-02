@@ -1715,7 +1715,30 @@ async def generate_chat_title(message: str, model: str) -> str:
 
 async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) -> dict:
     # [LEGACY HISTORY] Backend-side chats index removed - handled by frontend/OrbitDB
-    chat = chat or "default"
+    if not chat or chat in ["default", "newchat"]:
+        # Generate new chat name and title
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        chat_name = f"chat_{timestamp}_{unique_id}"
+        
+        # Try to generate a nice title from first message
+        chat_title = "New chat"
+        if first_message:
+            try:
+                model = get_llm_model(ctx)
+                chat_title = await generate_chat_title(first_message, model)
+            except Exception as e:
+                logging.warning(f"Failed to generate chat title: {e}")
+                chat_title = first_message[:30] + "..." if len(first_message) > 30 else first_message
+        
+        return {
+            "name": chat_name,
+            "title": chat_title,
+            "file": f"{chat_name}.json",
+            "created": datetime.now(timezone.utc).isoformat(),
+            "updated": datetime.now(timezone.utc).isoformat()
+        }
+        
     return {
         "name": chat,
         "title": chat,
