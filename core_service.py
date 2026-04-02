@@ -1735,13 +1735,15 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
                 logging.warning(f"Failed to generate chat title: {e}")
                 chat_title = first_message[:30] + "..." if len(first_message) > 30 else first_message
                 
-        # 2. Generate new chat name (ID) using slugified title as prefix
-        timestamp = int(time.time())
+        # 2. Generate new chat name (ID) using slugified title
         title_slug = slugify(chat_title)
         if not title_slug or title_slug == "new_chat":
              title_slug = "chat"
              
-        chat_name = f"{title_slug}_{timestamp}"
+        # Use a shorter unique suffix instead of a long timestamp if needed, 
+        # but let's try to keep it as clean as possible.
+        unique_suffix = str(uuid.uuid4())[:4]
+        chat_name = f"{title_slug}_{unique_suffix}"
         
         return {
             "name": chat_name,
