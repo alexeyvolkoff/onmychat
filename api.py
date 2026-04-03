@@ -1315,67 +1315,6 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         await session.close()
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
-@app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-async def opencode_proxy(request: Request, path: str):
-    """
-    Proxies all /code requests to local opencode service at port 4096.
-    Specialized handling for SSE, static sub-endpoints, and PTY WebSocket bridging.
-    """
-    target_url = f"http://127.0.0.1:4096/{path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
-    
-    # Refuse raw WebSocket upgrade requests — the @app.websocket handler takes these.
-    if request.headers.get("upgrade", "").lower() == "websocket":
-        from fastapi.responses import Response as FResponse
-        return FResponse(status_code=426, headers={"Upgrade": "websocket"})
-
-    # PTY /connect bridge: OpenCode expects a WebSocket on /pty/.../connect.
-    # When the C++ gateway routes this as HTTP RPC, we bridge it to a WS upstream
-    # connection and stream the terminal output back as chunked HTTP.
-    if "/pty/" in path and path.endswith("/connect"):
-        ws_url = f"ws://127.0.0.1:4096/{path}"
-        if request.url.query:
-            ws_url += f"?{request.url.query}"
-
-        async def pty_stream_generator():
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url) as ws:
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                yield msg.data.encode()
-                            elif msg.type == aiohttp.WSMsgType.BINARY:
-                                yield msg.data
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                break
-            except Exception as e:
-                logging.error(f"[Proxy] PTY bridge error for {path}: {e}")
-
-        return StreamingResponse(
-            pty_stream_generator(),
-            status_code=200,
-            media_type="application/octet-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "stream": "true",
-            }
-        )
-
-    # SSE Detection
-    is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
-    
-    resp = await proxy_request(target_url, request, method=request.method)
-    
-    if is_sse:
-        resp.media_type = "text/event-stream"
-        resp.headers["Cache-Control"] = "no-cache"
-        resp.headers["Connection"] = "keep-alive"
-        resp.headers["X-Accel-Buffering"] = "no"
-
-    return resp
-
 @app.websocket("/code/{path:path}")
 async def opencode_ws_proxy(websocket: WebSocket, path: str):
     """
@@ -1457,6 +1396,29 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                 await websocket.close()
             except:
                 pass
+
+@app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def opencode_proxy(request: Request, path: str):
+    """
+    Proxies all /code requests to local opencode service at port 4096.
+    Specialized handling for SSE and static sub-endpoints.
+    """
+    target_url = f"http://127.0.0.1:4096/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+    
+    # SSE Detection
+    is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
+    
+    resp = await proxy_request(target_url, request, method=request.method)
+    
+    if is_sse:
+        resp.media_type = "text/event-stream"
+        resp.headers["Cache-Control"] = "no-cache"
+        resp.headers["Connection"] = "keep-alive"
+        resp.headers["X-Accel-Buffering"] = "no"
+
+    return resp
 
 # --- OpenAI Compatible Endpoints ---
 
