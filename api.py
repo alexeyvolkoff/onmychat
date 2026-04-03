@@ -1323,72 +1323,70 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             pass
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
+@app.websocket("/code/{path:path}")
+async def opencode_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Generalized WebSocket proxy for OpenCode.
+    Tunnels all WebSocket traffic to the local OpenCode service.
+    """
+    await websocket.accept()
+    
+    # Construct target WS URL
+    target_ws_url = f"ws://127.0.0.1:4096/{path}"
+    query = str(websocket.query_params)
+    if query:
+        target_ws_url += f"?{query}"
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.ws_connect(target_ws_url, timeout=None) as target_ws:
+                # Bidirectional proxying tasks
+                async def client_to_target():
+                    try:
+                        async for message in websocket.iter_text():
+                            await target_ws.send_str(message)
+                        async for message in websocket.iter_bytes():
+                            await target_ws.send_bytes(message)
+                    except Exception:
+                        pass
+
+                async def target_to_client():
+                    try:
+                        async for msg in target_ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await websocket.send_text(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await websocket.send_bytes(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                    except Exception:
+                        pass
+
+                await asyncio.gather(client_to_target(), target_to_client())
+        except Exception as e:
+            logging.error(f"[Proxy] WebSocket error for {path}: {e}")
+        finally:
+            try:
+                await websocket.close()
+            except:
+                pass
+
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
     """
-    Proxies all /code requests to local opencode service at port 4096.
-    Specialized handling for SSE and static sub-endpoints.
+    Proxies all /code requests.
+    Intelligently routes v1/ and api/ to the AI backend, 
+    and everything else to the OpenCode frontend at port 4096.
     """
-    target_url = f"http://127.0.0.1:4096/{path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
+    # Reroute AI API calls to Ollama (the actual backend)
+    if path.startswith("v1/") or path.startswith("api/"):
+        target_url = f"{core_service.OLLAMA_URL}/{path}"
+    else:
+        # Static assets and local OpenCode endpoints
+        target_url = f"http://127.0.0.1:4096/{path}"
     
-    # PTY /connect bridge: Link protocol cannot tunnel WebSockets.
-    # We bridge the internal WS on 4096 to an HTTP stream for the Gateway.
-    if "/pty/" in path and path.endswith("/connect"):
-        ws_url = f"ws://127.0.0.1:4096/{path}"
-        if request.url.query:
-            ws_url += f"?{request.url.query}"
+    return await proxy_request(target_url, request, method=request.method)
 
-        async def pty_stream_generator():
-            try:
-                # Use a single session per terminal stream
-                async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url, timeout=None) as ws:
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                yield msg.data.encode()
-                            elif msg.type == aiohttp.WSMsgType.BINARY:
-                                yield msg.data
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                break
-            except Exception as e:
-                logging.error(f"[Proxy] PTY bridge error for {path}: {e}")
-
-        return StreamingResponse(
-            pty_stream_generator(),
-            status_code=200,
-            media_type="application/octet-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "stream": "true",
-            }
-        )
-
-    # SSE Detection
-    is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
-    
-    # If it's a POST request, we might find "stream": true in the body
-    if not is_sse and request.method == "POST":
-        try:
-            body = await request.json()
-            if body.get("stream"):
-                is_sse = True
-        except:
-            pass
-
-    resp = await proxy_request(target_url, request, method=request.method)
-    
-    if is_sse:
-        # Force these headers for streaming responses
-        resp.media_type = "text/event-stream"
-        resp.headers["Content-Type"] = "text/event-stream"
-        resp.headers["Cache-Control"] = "no-cache"
-        resp.headers["Connection"] = "keep-alive"
-        resp.headers["X-Accel-Buffering"] = "no"
-
-    return resp
 
 # --- OpenAI Compatible Endpoints ---
 
