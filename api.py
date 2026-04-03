@@ -1273,8 +1273,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             if lk in [
                 "connection", "keep-alive", "proxy-authenticate", 
                 "proxy-authorization", "te", "trailers", 
-                "transfer-encoding", "upgrade", "content-length", 
-                "content-encoding"
+                "transfer-encoding", "upgrade"
             ]:
                 continue
             response_headers[k] = v
