@@ -15,3 +15,4 @@ duckduckgo-search
 chromadb
 lxml
 beautifulsoup4
+websockets

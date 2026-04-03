@@ -47,6 +47,9 @@ try:
     SEARCH_TOKEN = SETTINGS.get("SEARCH_TOKEN", "") # Ensure this key exists in config or is empty
     search_node = SearchNode(storage_path=USER_DATA_DIR, token=SEARCH_TOKEN)
     logging.info("[api] SearchNode initialized")
+except ImportError as e:
+    logging.error(f"[api] SearchNode initialization failed: Missing dependency - {e}. Please run 'pip install chromadb' in the venv.")
+    search_node = None
 except Exception as e:
     logging.error(f"[api] Error initializing SearchNode: {e}")
     search_node = None
@@ -1361,9 +1364,13 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                                 elif "bytes" in message:
                                     await ws.send_bytes(message["bytes"])
                             elif message["type"] == "websocket.disconnect":
+                                logging.info(f"[Proxy] Client disconnected for {path}")
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.error(f"[Proxy] Error forwarding to upstream: {e}")
+                    finally:
+                        if not ws.closed:
+                            await ws.close()
 
                 async def forward_to_client():
                     try:
@@ -1372,17 +1379,37 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                                 await websocket.send_text(msg.data)
                             elif msg.type == aiohttp.WSMsgType.BINARY:
                                 await websocket.send_bytes(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                            elif msg.type == aiohttp.WSMsgType.CLOSED or msg.type == aiohttp.WSMsgType.ERROR:
                                 break
-                            elif msg.type == aiohttp.WSMsgType.ERROR:
-                                break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.error(f"[Proxy] Error forwarding to client: {e}")
+                    finally:
+                        # Close client connection if upstream closes
+                        try:
+                            await websocket.close()
+                        except:
+                            pass
 
-                # Run both tasks concurrently
-                await asyncio.gather(forward_to_upstream(), forward_to_client())
+                # Run both directions concurrently
+                upstream_task = asyncio.create_task(forward_to_upstream())
+                client_task = asyncio.create_task(forward_to_client())
+                
+                # Wait for either to finish
+                done, pending = await asyncio.wait(
+                    [upstream_task, client_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel the other task
+                for task in pending:
+                    task.cancel()
+                    
         except Exception as e:
-            logging.error(f"[Proxy] WebSocket error for {path}: {e}")
+            logging.error(f"[Proxy] WebSocket connection failed for {path}: {e}")
+            try:
+                await websocket.close(code=1011) # Internal Error
+            except:
+                pass
         finally:
             try:
                 await websocket.close()
