@@ -18,6 +18,15 @@ import asyncio
 import core_service
 import user_context
 
+# Create a global session for proxying to avoid socket exhaustion
+_proxy_session = None
+
+async def get_proxy_session():
+    global _proxy_session
+    if _proxy_session is None or _proxy_session.closed:
+        _proxy_session = aiohttp.ClientSession()
+    return _proxy_session
+
 import memory_index
 import logging
 import json
@@ -1251,8 +1260,8 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
     except Exception:
         body = None
 
-    # 3. Manually manage session/request lifecycle to keep connection open for streaming
-    session = aiohttp.ClientSession()
+    # 3. Use global session for proxying
+    session = await get_proxy_session()
     req = session.request(
         method=method,
         url=url,
@@ -1297,7 +1306,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             finally:
                 # Cleanup resources when streaming is done or fails
                 await req.__aexit__(None, None, None)
-                await session.close()
+                # DO NOT close global session here
 
         return StreamingResponse(
             stream_generator(),
@@ -1307,12 +1316,11 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         )
     except Exception as e:
         logging.error(f"[Proxy] Error proxying to {url}: {e}")
-        # Ensure cleanup if we fail before returning the StreamingResponse
+        # Ensure cleanup if we fail before returning the StreamingResponse (session is global)
         try:
             await req.__aexit__(None, None, None)
         except:
             pass
-        await session.close()
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
@@ -1361,10 +1369,21 @@ async def opencode_proxy(request: Request, path: str):
     # SSE Detection
     is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
     
+    # If it's a POST request, we might find "stream": true in the body
+    if not is_sse and request.method == "POST":
+        try:
+            body = await request.json()
+            if body.get("stream"):
+                is_sse = True
+        except:
+            pass
+
     resp = await proxy_request(target_url, request, method=request.method)
     
     if is_sse:
+        # Force these headers for streaming responses
         resp.media_type = "text/event-stream"
+        resp.headers["Content-Type"] = "text/event-stream"
         resp.headers["Cache-Control"] = "no-cache"
         resp.headers["Connection"] = "keep-alive"
         resp.headers["X-Accel-Buffering"] = "no"
