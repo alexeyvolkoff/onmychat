@@ -1315,88 +1315,6 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         await session.close()
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
-@app.websocket("/code/{path:path}")
-async def opencode_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Proxies all WebSocket /code requests to local opencode service at port 4096.
-    Useful for terminal/PTY connections.
-    """
-    target_url = f"ws://127.0.0.1:4096/{path}"
-    query = str(websocket.query_params)
-    if query:
-        target_url += f"?{query}"
-    
-    await websocket.accept()
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.ws_connect(target_url) as ws:
-                async def forward_to_upstream():
-                    try:
-                        while True:
-                            message = await websocket.receive()
-                            if message["type"] == "websocket.receive":
-                                if "text" in message:
-                                    await ws.send_str(message["text"])
-                                elif "bytes" in message:
-                                    await ws.send_bytes(message["bytes"])
-                            elif message["type"] == "websocket.disconnect":
-                                logging.info(f"[Proxy] Client disconnected for {path}")
-                                break
-                    except Exception as e:
-                        logging.error(f"[Proxy] Error forwarding to upstream: {e}")
-                    finally:
-                        if not ws.closed:
-                            await ws.close()
-
-                async def forward_to_client():
-                    try:
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                await websocket.send_text(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.BINARY:
-                                await websocket.send_bytes(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.CLOSED or msg.type == aiohttp.WSMsgType.ERROR:
-                                break
-                    except Exception as e:
-                        logging.error(f"[Proxy] Error forwarding to client: {e}")
-                    finally:
-                        # Close client connection if upstream closes
-                        try:
-                            await websocket.close()
-                        except:
-                            pass
-
-                # Run both directions concurrently
-                upstream_task = asyncio.create_task(forward_to_upstream())
-                client_task = asyncio.create_task(forward_to_client())
-                
-                # Wait for either to finish
-                done, pending = await asyncio.wait(
-                    [upstream_task, client_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                # Cancel the other task
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                    
-        except Exception as e:
-            logging.error(f"[Proxy] WebSocket connection failed for {path}: {e}")
-            try:
-                await websocket.close(code=1011) # Internal Error
-            except:
-                pass
-        finally:
-            try:
-                await websocket.close()
-            except:
-                pass
-
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
     """
@@ -1407,6 +1325,39 @@ async def opencode_proxy(request: Request, path: str):
     if request.url.query:
         target_url += f"?{request.url.query}"
     
+    # PTY /connect bridge: Link protocol cannot tunnel WebSockets.
+    # We bridge the internal WS on 4096 to an HTTP stream for the Gateway.
+    if "/pty/" in path and path.endswith("/connect"):
+        ws_url = f"ws://127.0.0.1:4096/{path}"
+        if request.url.query:
+            ws_url += f"?{request.url.query}"
+
+        async def pty_stream_generator():
+            try:
+                # Use a single session per terminal stream
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url, timeout=None) as ws:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                yield msg.data.encode()
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                yield msg.data
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+            except Exception as e:
+                logging.error(f"[Proxy] PTY bridge error for {path}: {e}")
+
+        return StreamingResponse(
+            pty_stream_generator(),
+            status_code=200,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "stream": "true",
+            }
+        )
+
     # SSE Detection
     is_sse = path.endswith("/stream") or "text/event-stream" in request.headers.get("accept", "")
     
