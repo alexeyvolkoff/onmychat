@@ -16,3 +16,4 @@ chromadb
 lxml
 beautifulsoup4
 websockets
+httpx~=0.25.2
