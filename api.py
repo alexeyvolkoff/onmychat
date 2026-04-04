@@ -1490,18 +1490,7 @@ async def proxy_opencode_messages(request: Request, session_id: str):
     try:
         async with session.get(target_url, headers=headers) as resp:
             data = await resp.json()
-            # Map MessageV2 to history format
-            history = []
-            if isinstance(data, list):
-                for msg in data:
-                    msg_info = msg.get("info", {})
-                    history.append({
-                        "role": msg_info.get("role"),
-                        "content": msg_info.get("content") or msg_info.get("title") or "",
-                        "timestamp": msg_info.get("time", {}).get("created"),
-                        "id": msg_info.get("id")
-                    })
-            return {"messages": history}
+            return data
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
         return {"messages": []}
