@@ -1288,6 +1288,8 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
                 "transfer-encoding", "upgrade"
             ]:
                 continue
+            if lk == "content-security-policy":
+                v = v.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")
             response_headers[k] = v
 
         if not content_type:
