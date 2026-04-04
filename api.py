@@ -1502,21 +1502,9 @@ async def proxy_opencode_messages(request: Request, session_id: str):
                         "id": msg_info.get("id")
                     })
             return {"messages": history}
-@app.websocket("/code/pty/{path:path}")
-async def opencode_pty_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Dedicated WebSocket proxy for OpenCode PTY.
-    """
-    return await opencode_ws_proxy(websocket, f"pty/{path}")
-
-@app.websocket("/code/{path:path}")
-async def opencode_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Generalized WebSocket proxy for OpenCode.
-    Tunnels all WebSocket traffic to the local OpenCode service.
-    """
-    # ... logic stays same ...
-    # (Rest of the function follows)
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
+        return {"messages": []}
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
@@ -1598,10 +1586,6 @@ async def extract_knowledge(request: Request):
         logging.error(f"[extract] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-    except Exception as e:
-        logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
-        return {"messages": []}
 
 @app.post("/api/chat")
 async def ollama_chat(request: Request):
