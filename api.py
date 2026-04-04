@@ -1335,25 +1335,29 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     subprotocols = websocket.scope.get("subprotocols")
     await websocket.accept(subprotocol=subprotocols[0] if subprotocols else None)
     
-    # Construct target WS URL
-    target_ws_url = f"ws://127.0.0.1:4096/{path}"
-    query = str(websocket.query_params)
+    # Construct target WS URL using the RAW query string from the client
+    query = websocket.url.query
+    target_ws_url = f"ws://localhost:4096/{path}"
     if query:
         target_ws_url += f"?{query}"
     
     # Propagate important headers (auth, etc)
     headers = {
-        "Host": "127.0.0.1:4096",
+        "Host": "localhost:4096",
     }
     for k, v in websocket.headers.items():
         lk = k.lower()
-        if lk in ["authorization", "cookie", "user-agent", "origin", "sec-websocket-protocol", "sec-websocket-extensions"]:
+        # EXCLUDE headers that aiohttp manages itself for the handshake
+        if lk.startswith("sec-websocket-") or lk in ["connection", "upgrade", "host"]:
+            continue
+        if lk in ["authorization", "cookie", "user-agent", "origin"]:
             headers[k] = v
 
     try:
         # Use a new session for WebSocket to manage its own lifecycle
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols or []) as target_ws:
+                logging.info(f"[Proxy] WS Connected to backend: {target_ws_url}")
                 
                 async def client_to_target():
                     try:
@@ -1364,9 +1368,10 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                             elif "bytes" in message:
                                 await target_ws.send_bytes(message["bytes"])
                             elif message.get("type") == "websocket.disconnect":
+                                logging.info(f"[Proxy] WS Client disconnected: {path}")
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.debug(f"[Proxy] WS Client to Target error: {e}")
 
                 async def target_to_client():
                     try:
@@ -1377,12 +1382,11 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                                 await websocket.send_bytes(msg.data)
                             elif msg.type == aiohttp.WSMsgType.PING:
                                 await target_ws.pong(msg.data)
-                                # await websocket.send_bytes(msg.data) # Optional: pass ping to client
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                logging.info(f"[Proxy] Target WS closed: {msg.type} {msg.data}")
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
+                                logging.info(f"[Proxy] WS Target closed: {msg.type} ({msg.data if hasattr(msg, 'data') else 'no data'})")
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.error(f"[Proxy] WS Target to Client error: {e}")
 
                 # Run both loops until one of them finishes
                 await asyncio.wait(
@@ -1391,7 +1395,7 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                     return_when=asyncio.FIRST_COMPLETED
                 )
     except Exception as e:
-        logging.error(f"[Proxy] WebSocket error for {path}: {e}")
+        logging.error(f"[Proxy] WS Error for {path}: {e}")
     finally:
         try:
             await websocket.close()
