@@ -1355,7 +1355,8 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
         # Use a new session for WebSocket to manage its own lifecycle
         async with aiohttp.ClientSession() as session:
             # CONNECT to target FIRST before accepting client
-            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols) as target_ws:
+            # Disable compression (compress=0) to avoid permessage-deflate issues
+            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols, compress=0) as target_ws:
                 logging.info(f"[Proxy] WS Target connected: {target_ws_url} (Protocol: {target_ws.protocol})")
                 
                 # NOW accept client with the protocol agreed by target
@@ -1371,9 +1372,9 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                                 await target_ws.send_bytes(message["bytes"])
                             elif message.get("type") == "websocket.disconnect":
                                 logging.info(f"[Proxy] WS Client disconnected: {path} (Code: {message.get('code')})")
-                                break
+                                return
                     except Exception as e:
-                        logging.error(f"[Proxy] WS Client to Target error: {e}")
+                        logging.debug(f"[Proxy] WS Client-to-Target loop stopped: {e}")
 
                 async def target_to_client():
                     try:
@@ -1385,17 +1386,20 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                             elif msg.type == aiohttp.WSMsgType.PING:
                                 await target_ws.pong(msg.data)
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
-                                logging.info(f"[Proxy] WS Target closed: {msg.type} ({msg.data if hasattr(msg, 'data') else 'no data'})")
-                                break
+                                logging.info(f"[Proxy] WS Target closed: {msg.type}")
+                                return
                     except Exception as e:
-                        logging.error(f"[Proxy] WS Target to Client error: {e}")
+                        logging.error(f"[Proxy] WS Target-to-Client loop error: {e}")
 
                 # Run both loops until one of them finishes
-                await asyncio.wait(
-                    [asyncio.create_task(client_to_target()), 
-                     asyncio.create_task(target_to_client())],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
+                tasks = [
+                    asyncio.create_task(client_to_target()),
+                    asyncio.create_task(target_to_client())
+                ]
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
     except Exception as e:
         logging.error(f"[Proxy] WS Error for {path}: {e}")
     finally:
