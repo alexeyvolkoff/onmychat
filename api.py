@@ -1325,88 +1325,6 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
             pass
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
-@app.websocket("/code/{path:path}")
-async def opencode_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Generalized WebSocket proxy for OpenCode.
-    Tunnels all WebSocket traffic to the local OpenCode service.
-    """
-    # Construct target WS URL using the RAW query string from the client
-    query = websocket.url.query
-    target_ws_url = f"ws://localhost:4096/{path}"
-    if query:
-        target_ws_url += f"?{query}"
-    
-    # FORCE Origin to localhost to prevent backend security rejection
-    headers = {
-        "Host": "localhost:4096",
-        "Origin": "http://localhost:4096"
-    }
-    for k, v in websocket.headers.items():
-        lk = k.lower()
-        if lk.startswith("sec-websocket-") or lk in ["connection", "upgrade", "host", "origin"]:
-            continue
-        if lk in ["authorization", "cookie", "user-agent"]:
-            headers[k] = v
-
-    subprotocols = websocket.scope.get("subprotocols", [])
-
-    try:
-        # Use a new session for WebSocket to manage its own lifecycle
-        async with aiohttp.ClientSession() as session:
-            # CONNECT to target FIRST before accepting client
-            # Disable compression (compress=0) to avoid permessage-deflate issues
-            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols, compress=0) as target_ws:
-                logging.info(f"[Proxy] WS Target connected: {target_ws_url} (Protocol: {target_ws.protocol})")
-                
-                # NOW accept client with the protocol agreed by target
-                await websocket.accept(subprotocol=target_ws.protocol)
-                
-                async def client_to_target():
-                    try:
-                        while True:
-                            message = await websocket.receive()
-                            if "text" in message:
-                                await target_ws.send_str(message["text"])
-                            elif "bytes" in message:
-                                await target_ws.send_bytes(message["bytes"])
-                            elif message.get("type") == "websocket.disconnect":
-                                logging.info(f"[Proxy] WS Client disconnected: {path} (Code: {message.get('code')})")
-                                return
-                    except Exception as e:
-                        logging.debug(f"[Proxy] WS Client-to-Target loop stopped: {e}")
-
-                async def target_to_client():
-                    try:
-                        async for msg in target_ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                await websocket.send_text(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.BINARY:
-                                await websocket.send_bytes(msg.data)
-                            elif msg.type == aiohttp.WSMsgType.PING:
-                                await target_ws.pong(msg.data)
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
-                                logging.info(f"[Proxy] WS Target closed: {msg.type}")
-                                return
-                    except Exception as e:
-                        logging.error(f"[Proxy] WS Target-to-Client loop error: {e}")
-
-                # Run both loops until one of them finishes
-                tasks = [
-                    asyncio.create_task(client_to_target()),
-                    asyncio.create_task(target_to_client())
-                ]
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-    except Exception as e:
-        logging.error(f"[Proxy] WS Error for {path}: {e}")
-    finally:
-        try:
-            await websocket.close()
-        except:
-            pass
 
 @app.websocket("/code/pty/{path:path}")
 async def opencode_pty_ws_proxy(websocket: WebSocket, path: str):
@@ -1431,11 +1349,6 @@ async def opencode_proxy(request: Request, path: str):
     Intelligently routes v1/ and api/ to the AI backend, 
     and everything else to the OpenCode frontend at port 4096.
     """
-    # WEBSOCKET HANDSHAKE GUARD:
-    # If a WebSocket upgrade request hits this HTTP handler, it's a routing failure.
-    if request.headers.get("upgrade", "").lower() == "websocket":
-        logging.warning(f"[Proxy] WebSocket handshake for {path} caught by HTTP handler. Rejecting with 426.")
-        return Response(status_code=426, content="Upgrade Required")
 
     # Only route specific Ollama paths to the Ollama backend
     is_ollama = (
@@ -1508,6 +1421,149 @@ async def extract_knowledge(request: Request):
     except Exception as e:
         logging.error(f"[extract] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- OpenCode Integration ----
+
+@app.get("/ai/code/sessions")
+async def proxy_opencode_sessions_list(request: Request):
+    target_url = "http://localhost:4096/session"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    try:
+        async with session.get(target_url, headers=headers) as resp:
+            data = await resp.json()
+            return {"sessions": data}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error listing sessions: {e}")
+        return {"sessions": []}
+
+@app.post("/ai/code/sessions")
+async def proxy_opencode_sessions_create(request: Request):
+    target_url = "http://localhost:4096/session"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    body = await request.body()
+    try:
+        async with session.post(target_url, data=body, headers=headers) as resp:
+            data = await resp.json()
+            return {"session": data}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error creating session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.api_route("/ai/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
+async def proxy_opencode_session_item(request: Request, session_id: str):
+    target_url = f"http://localhost:4096/session/{session_id}"
+    return await proxy_request(target_url, request, method=request.method)
+
+@app.api_route("/ai/code/sessions/{session_id}/message/chat/stream", methods=["POST"])
+async def proxy_opencode_prompt_stream(request: Request, session_id: str):
+    target_url = f"http://localhost:4096/session/{session_id}/message"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.api_route("/ai/code/sessions/{session_id}/message", methods=["POST"])
+async def proxy_opencode_prompt(request: Request, session_id: str):
+    target_url = f"http://localhost:4096/session/{session_id}/message"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.get("/ai/code/changes")
+async def proxy_opencode_changes(request: Request, session_id: str = Query(...)):
+    """
+    OnMyDisk expects: { "changes": [ { "id": "msg_id", "title": "...", "timestamp": ... } ] }
+    OpenCode returns: [ MessageV2, ... ]
+    """
+    target_url = f"http://localhost:4096/session/{session_id}/message"
+    
+    # Use proxy_request but we need to intercept the response for transformation
+    # Optimization: if we don't want to re-implement proxy_request here, 
+    # we can just fetch it manually.
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        async with session.get(target_url, headers=headers) as resp:
+            data = await resp.json()
+            changes = []
+            if isinstance(data, list):
+                for msg in data:
+                    # Assistant messages are the ones that "change" things
+                    if msg.get("info", {}).get("role") == "assistant":
+                        msg_info = msg.get("info", {})
+                        changes.append({
+                            "id": msg_info.get("id"),
+                            "title": msg_info.get("title") or f"Change {msg_info.get('id')[:8]}",
+                            "timestamp": msg_info.get("time", {}).get("updated") or msg_info.get("time", {}).get("created")
+                        })
+            return {"changes": changes}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error fetching changes: {e}")
+        return {"changes": []}
+
+@app.get("/ai/code/diff")
+async def proxy_opencode_diff(request: Request, change_id: str = Query(...), session_id: str = Query(...)):
+    """
+    OnMyDisk expects: { "diff": "unified diff string" }
+    OpenCode returns: [ { file, diff, ... }, ... ]
+    """
+    target_url = f"http://localhost:4096/session/{session_id}/diff?messageID={change_id}"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        async with session.get(target_url, headers=headers) as resp:
+            data = await resp.json()
+            full_diff = ""
+            if isinstance(data, list):
+                for file_diff in data:
+                    full_diff += f"File: {file_diff.get('file')}\n"
+                    full_diff += file_diff.get('diff', '') + "\n\n"
+            return {"diff": full_diff}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error fetching diff: {e}")
+        return {"diff": "Error loading diff"}
+
+@app.post("/ai/code/apply")
+async def proxy_opencode_apply(request: Request):
+    # OpenCode applies changes immediately. 
+    # We can just return success or trigger a compaction/summary if needed.
+    return {"status": "success"}
+
+# ----------------------------
+
+
+@app.get("/ai/code/sessions/{session_id}/messages")
+async def proxy_opencode_messages(request: Request, session_id: str):
+    """
+    Returns all messages for a session.
+    """
+    target_url = f"http://localhost:4096/session/{session_id}/message"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        async with session.get(target_url, headers=headers) as resp:
+            data = await resp.json()
+            # Map MessageV2 to history format
+            history = []
+            if isinstance(data, list):
+                for msg in data:
+                    msg_info = msg.get("info", {})
+                    history.append({
+                        "role": msg_info.get("role"),
+                        "content": msg_info.get("content") or msg_info.get("title") or "",
+                        "timestamp": msg_info.get("time", {}).get("created"),
+                        "id": msg_info.get("id")
+                    })
+            return {"messages": history}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
+        return {"messages": []}
 
 @app.post("/api/chat")
 async def ollama_chat(request: Request):
