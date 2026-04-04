@@ -1337,15 +1337,16 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     if query:
         target_ws_url += f"?{query}"
     
-    # Propagate important headers (auth, etc)
+    # FORCE Origin to localhost to prevent backend security rejection
     headers = {
         "Host": "localhost:4096",
+        "Origin": "http://localhost:4096"
     }
     for k, v in websocket.headers.items():
         lk = k.lower()
-        if lk.startswith("sec-websocket-") or lk in ["connection", "upgrade", "host"]:
+        if lk.startswith("sec-websocket-") or lk in ["connection", "upgrade", "host", "origin"]:
             continue
-        if lk in ["authorization", "cookie", "user-agent", "origin"]:
+        if lk in ["authorization", "cookie", "user-agent"]:
             headers[k] = v
 
     subprotocols = websocket.scope.get("subprotocols", [])
@@ -1369,10 +1370,10 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                             elif "bytes" in message:
                                 await target_ws.send_bytes(message["bytes"])
                             elif message.get("type") == "websocket.disconnect":
-                                logging.info(f"[Proxy] WS Client disconnected: {path}")
+                                logging.info(f"[Proxy] WS Client disconnected: {path} (Code: {message.get('code')})")
                                 break
                     except Exception as e:
-                        logging.debug(f"[Proxy] WS Client to Target error: {e}")
+                        logging.error(f"[Proxy] WS Client to Target error: {e}")
 
                 async def target_to_client():
                     try:
