@@ -1408,6 +1408,22 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
         except:
             pass
 
+@app.websocket("/code/pty/{path:path}")
+async def opencode_pty_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Dedicated WebSocket proxy for OpenCode PTY.
+    """
+    return await opencode_ws_proxy(websocket, f"pty/{path}")
+
+@app.websocket("/code/{path:path}")
+async def opencode_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Generalized WebSocket proxy for OpenCode.
+    Tunnels all WebSocket traffic to the local OpenCode service.
+    """
+    # ... logic stays same ...
+    # (Rest of the function follows)
+
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
     """
@@ -1415,6 +1431,12 @@ async def opencode_proxy(request: Request, path: str):
     Intelligently routes v1/ and api/ to the AI backend, 
     and everything else to the OpenCode frontend at port 4096.
     """
+    # WEBSOCKET HANDSHAKE GUARD:
+    # If a WebSocket upgrade request hits this HTTP handler, it's a routing failure.
+    if request.headers.get("upgrade", "").lower() == "websocket":
+        logging.warning(f"[Proxy] WebSocket handshake for {path} caught by HTTP handler. Rejecting with 426.")
+        return Response(status_code=426, content="Upgrade Required")
+
     # Only route specific Ollama paths to the Ollama backend
     is_ollama = (
         path.startswith("v1/chat/completions") or
