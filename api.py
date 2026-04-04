@@ -1331,10 +1331,6 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     Generalized WebSocket proxy for OpenCode.
     Tunnels all WebSocket traffic to the local OpenCode service.
     """
-    # Accept with the subprotocols requested by the client
-    subprotocols = websocket.scope.get("subprotocols")
-    await websocket.accept(subprotocol=subprotocols[0] if subprotocols else None)
-    
     # Construct target WS URL using the RAW query string from the client
     query = websocket.url.query
     target_ws_url = f"ws://localhost:4096/{path}"
@@ -1347,17 +1343,22 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     }
     for k, v in websocket.headers.items():
         lk = k.lower()
-        # EXCLUDE headers that aiohttp manages itself for the handshake
         if lk.startswith("sec-websocket-") or lk in ["connection", "upgrade", "host"]:
             continue
         if lk in ["authorization", "cookie", "user-agent", "origin"]:
             headers[k] = v
 
+    subprotocols = websocket.scope.get("subprotocols", [])
+
     try:
         # Use a new session for WebSocket to manage its own lifecycle
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols or []) as target_ws:
-                logging.info(f"[Proxy] WS Connected to backend: {target_ws_url}")
+            # CONNECT to target FIRST before accepting client
+            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols) as target_ws:
+                logging.info(f"[Proxy] WS Target connected: {target_ws_url} (Protocol: {target_ws.protocol})")
+                
+                # NOW accept client with the protocol agreed by target
+                await websocket.accept(subprotocol=target_ws.protocol)
                 
                 async def client_to_target():
                     try:
