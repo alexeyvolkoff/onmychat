@@ -1331,7 +1331,9 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     Generalized WebSocket proxy for OpenCode.
     Tunnels all WebSocket traffic to the local OpenCode service.
     """
-    await websocket.accept()
+    # Accept with the subprotocols requested by the client
+    subprotocols = websocket.scope.get("subprotocols")
+    await websocket.accept(subprotocol=subprotocols[0] if subprotocols else None)
     
     # Construct target WS URL
     target_ws_url = f"ws://127.0.0.1:4096/{path}"
@@ -1340,15 +1342,18 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
         target_ws_url += f"?{query}"
     
     # Propagate important headers (auth, etc)
-    headers = {}
+    headers = {
+        "Host": "127.0.0.1:4096",
+    }
     for k, v in websocket.headers.items():
-        if k.lower() in ["authorization", "cookie", "user-agent"]:
+        lk = k.lower()
+        if lk in ["authorization", "cookie", "user-agent", "origin", "sec-websocket-protocol", "sec-websocket-extensions"]:
             headers[k] = v
 
     try:
         # Use a new session for WebSocket to manage its own lifecycle
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers) as target_ws:
+            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers, protocols=subprotocols or []) as target_ws:
                 
                 async def client_to_target():
                     try:
@@ -1371,8 +1376,10 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                             elif msg.type == aiohttp.WSMsgType.BINARY:
                                 await websocket.send_bytes(msg.data)
                             elif msg.type == aiohttp.WSMsgType.PING:
-                                await websocket.send_bytes(msg.data)
+                                await target_ws.pong(msg.data)
+                                # await websocket.send_bytes(msg.data) # Optional: pass ping to client
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                logging.info(f"[Proxy] Target WS closed: {msg.type} {msg.data}")
                                 break
                     except Exception:
                         pass
@@ -1398,11 +1405,20 @@ async def opencode_proxy(request: Request, path: str):
     Intelligently routes v1/ and api/ to the AI backend, 
     and everything else to the OpenCode frontend at port 4096.
     """
-    # Reroute AI API calls to Ollama (the actual backend)
-    if path.startswith("v1/") or path.startswith("api/"):
+    # Only route specific Ollama paths to the Ollama backend
+    is_ollama = (
+        path.startswith("v1/chat/completions") or
+        path.startswith("v1/models") or
+        path.startswith("api/chat") or
+        path.startswith("api/generate") or
+        path.startswith("api/tags") or
+        path.startswith("api/show")
+    )
+    
+    if is_ollama:
         target_url = f"{core_service.OLLAMA_URL}/{path}"
     else:
-        # Static assets and local OpenCode endpoints
+        # Static assets and local OpenCode endpoints (including their own /api/ routes)
         target_url = f"http://127.0.0.1:4096/{path}"
     
     return await proxy_request(target_url, request, method=request.method)
