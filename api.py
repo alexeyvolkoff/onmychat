@@ -1330,7 +1330,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
 # ---- OpenCode Integration ----
 
-@app.get("/ai/code/sessions")
+@app.get("/code/sessions")
 async def proxy_opencode_sessions_list(request: Request):
     target_url = "http://localhost:4096/session"
     session = await get_proxy_session()
@@ -1344,7 +1344,7 @@ async def proxy_opencode_sessions_list(request: Request):
         logging.error(f"[OpenCode Proxy] Error listing sessions: {e}")
         return {"sessions": []}
 
-@app.post("/ai/code/sessions")
+@app.post("/code/sessions")
 async def proxy_opencode_sessions_create(request: Request):
     target_url = "http://localhost:4096/session"
     session = await get_proxy_session()
@@ -1359,12 +1359,12 @@ async def proxy_opencode_sessions_create(request: Request):
         logging.error(f"[OpenCode Proxy] Error creating session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.api_route("/ai/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
+@app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
 async def proxy_opencode_session_item(request: Request, session_id: str):
     target_url = f"http://localhost:4096/session/{session_id}"
     return await proxy_request(target_url, request, method=request.method)
 
-@app.api_route("/ai/code/sessions/{session_id}/message", methods=["POST"])
+@app.api_route("/code/sessions/{session_id}/message", methods=["POST"])
 async def proxy_opencode_prompt(request: Request, session_id: str):
     target_url = f"http://localhost:4096/session/{session_id}/message"
     
@@ -1410,7 +1410,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         logging.error(f"[OpenCode Proxy] Error in prompt proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/ai/code/changes")
+@app.get("/code/changes")
 async def proxy_opencode_changes(request: Request, session_id: str = Query(...)):
     """
     OnMyDisk expects: { "changes": [ { "id": "msg_id", "title": "...", "timestamp": ... } ] }
@@ -1444,7 +1444,7 @@ async def proxy_opencode_changes(request: Request, session_id: str = Query(...))
         logging.error(f"[OpenCode Proxy] Error fetching changes: {e}")
         return {"changes": []}
 
-@app.get("/ai/code/diff")
+@app.get("/code/diff")
 async def proxy_opencode_diff(request: Request, change_id: str = Query(...), session_id: str = Query(...)):
     """
     OnMyDisk expects: { "diff": "unified diff string" }
@@ -1468,7 +1468,7 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
         logging.error(f"[OpenCode Proxy] Error fetching diff: {e}")
         return {"diff": "Error loading diff"}
 
-@app.post("/ai/code/apply")
+@app.post("/code/apply")
 async def proxy_opencode_apply(request: Request):
     # OpenCode applies changes immediately. 
     # We can just return success or trigger a compaction/summary if needed.
@@ -1477,7 +1477,7 @@ async def proxy_opencode_apply(request: Request):
 # ----------------------------
 
 
-@app.get("/ai/code/sessions/{session_id}/messages")
+@app.get("/code/sessions/{session_id}/messages")
 async def proxy_opencode_messages(request: Request, session_id: str):
     """
     Returns all messages for a session.
