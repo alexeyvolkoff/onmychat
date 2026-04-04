@@ -1327,102 +1327,6 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
         raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
 
-@app.websocket("/code/pty/{path:path}")
-async def opencode_pty_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Dedicated WebSocket proxy for OpenCode PTY.
-    """
-    return await opencode_ws_proxy(websocket, f"pty/{path}")
-
-@app.websocket("/code/{path:path}")
-async def opencode_ws_proxy(websocket: WebSocket, path: str):
-    """
-    Generalized WebSocket proxy for OpenCode.
-    Tunnels all WebSocket traffic to the local OpenCode service.
-    """
-    # ... logic stays same ...
-    # (Rest of the function follows)
-
-@app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-async def opencode_proxy(request: Request, path: str):
-    """
-    Proxies all /code requests.
-    Intelligently routes v1/ and api/ to the AI backend, 
-    and everything else to the OpenCode frontend at port 4096.
-    """
-
-    # Only route specific Ollama paths to the Ollama backend
-    is_ollama = (
-        path.startswith("v1/chat/completions") or
-        path.startswith("v1/models") or
-        path.startswith("api/chat") or
-        path.startswith("api/generate") or
-        path.startswith("api/tags") or
-        path.startswith("api/show")
-    )
-    
-    if is_ollama:
-        target_url = f"{core_service.OLLAMA_URL}/{path}"
-    else:
-        # Static assets and local OpenCode endpoints (including their own /api/ routes)
-        target_url = f"http://127.0.0.1:4096/{path}"
-    
-    return await proxy_request(target_url, request, method=request.method)
-
-
-# --- OpenAI Compatible Endpoints ---
-
-@app.post("/v1/chat/completions")
-async def openai_chat_completions(request: Request):
-    """
-    Proxies OpenAI-style chat completions to Ollama.
-    """
-    target_url = f"{core_service.OLLAMA_URL}/v1/chat/completions"
-    return await proxy_request(target_url, request, method="POST")
-
-@app.get("/v1/models")
-async def openai_models(request: Request):
-    """
-    Proxies OpenAI-style models listing to Ollama.
-    """
-    target_url = f"{core_service.OLLAMA_URL}/v1/models"
-    return await proxy_request(target_url, request, method="GET")
-
-# --- Ollama Native Endpoints ---
-
-@app.post("/v1/extract")
-async def extract_knowledge(request: Request):
-    """
-    Extracts cleaned text from a URL or OMD path without saving/vectorizing on backend.
-    """
-    try:
-        data = await request.json()
-        url_or_path = data.get("url_or_path")
-        if not url_or_path:
-            raise HTTPException(status_code=400, detail="Missing url_or_path")
-            
-        token = request.headers.get("X-OMD-Key") or request.query_params.get("omd_key")
-        ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history={}, omd_key=token)
-        
-        # We use a specialized branch of import logic that only returns text
-        logging.info(f"[extract] Extracting text from: {url_or_path}")
-        
-        # Reuse core_service logic but skip any storage
-        # We'll call a modified version or just ensure import_doc for "user" is safe
-        card = await core_service.import_doc(ctx, url_or_path, collection="user")
-        
-        if card and card.get("error"):
-             raise HTTPException(status_code=500, detail=card.get("text"))
-             
-        return {
-            "text": card.get("full_text") or "",
-            "card": card.get("text") or ""
-        }
-        
-    except Exception as e:
-        logging.error(f"[extract] Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 # ---- OpenCode Integration ----
 
@@ -1598,6 +1502,103 @@ async def proxy_opencode_messages(request: Request, session_id: str):
                         "id": msg_info.get("id")
                     })
             return {"messages": history}
+@app.websocket("/code/pty/{path:path}")
+async def opencode_pty_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Dedicated WebSocket proxy for OpenCode PTY.
+    """
+    return await opencode_ws_proxy(websocket, f"pty/{path}")
+
+@app.websocket("/code/{path:path}")
+async def opencode_ws_proxy(websocket: WebSocket, path: str):
+    """
+    Generalized WebSocket proxy for OpenCode.
+    Tunnels all WebSocket traffic to the local OpenCode service.
+    """
+    # ... logic stays same ...
+    # (Rest of the function follows)
+
+@app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def opencode_proxy(request: Request, path: str):
+    """
+    Proxies all /code requests.
+    Intelligently routes v1/ and api/ to the AI backend, 
+    and everything else to the OpenCode frontend at port 4096.
+    """
+
+    # Only route specific Ollama paths to the Ollama backend
+    is_ollama = (
+        path.startswith("v1/chat/completions") or
+        path.startswith("v1/models") or
+        path.startswith("api/chat") or
+        path.startswith("api/generate") or
+        path.startswith("api/tags") or
+        path.startswith("api/show")
+    )
+    
+    if is_ollama:
+        target_url = f"{core_service.OLLAMA_URL}/{path}"
+    else:
+        # Static assets and local OpenCode endpoints (including their own /api/ routes)
+        target_url = f"http://127.0.0.1:4096/{path}"
+    
+    return await proxy_request(target_url, request, method=request.method)
+
+
+# --- OpenAI Compatible Endpoints ---
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request):
+    """
+    Proxies OpenAI-style chat completions to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/v1/chat/completions"
+    return await proxy_request(target_url, request, method="POST")
+
+@app.get("/v1/models")
+async def openai_models(request: Request):
+    """
+    Proxies OpenAI-style models listing to Ollama.
+    """
+    target_url = f"{core_service.OLLAMA_URL}/v1/models"
+    return await proxy_request(target_url, request, method="GET")
+
+# --- Ollama Native Endpoints ---
+
+@app.post("/v1/extract")
+async def extract_knowledge(request: Request):
+    """
+    Extracts cleaned text from a URL or OMD path without saving/vectorizing on backend.
+    """
+    try:
+        data = await request.json()
+        url_or_path = data.get("url_or_path")
+        if not url_or_path:
+            raise HTTPException(status_code=400, detail="Missing url_or_path")
+            
+        token = request.headers.get("X-OMD-Key") or request.query_params.get("omd_key")
+        ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history={}, omd_key=token)
+        
+        # We use a specialized branch of import logic that only returns text
+        logging.info(f"[extract] Extracting text from: {url_or_path}")
+        
+        # Reuse core_service logic but skip any storage
+        # We'll call a modified version or just ensure import_doc for "user" is safe
+        card = await core_service.import_doc(ctx, url_or_path, collection="user")
+        
+        if card and card.get("error"):
+             raise HTTPException(status_code=500, detail=card.get("text"))
+             
+        return {
+            "text": card.get("full_text") or "",
+            "card": card.get("text") or ""
+        }
+        
+    except Exception as e:
+        logging.error(f"[extract] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
         return {"messages": []}
