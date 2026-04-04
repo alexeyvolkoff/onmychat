@@ -14,6 +14,7 @@ import datetime
 import requests
 import aiohttp
 import asyncio
+import json
 
 import core_service
 import user_context
@@ -1459,15 +1460,51 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
     target_url = f"http://localhost:4096/session/{session_id}"
     return await proxy_request(target_url, request, method=request.method)
 
-@app.api_route("/ai/code/sessions/{session_id}/message/chat/stream", methods=["POST"])
-async def proxy_opencode_prompt_stream(request: Request, session_id: str):
-    target_url = f"http://localhost:4096/session/{session_id}/message"
-    return await proxy_request(target_url, request, method="POST")
-
 @app.api_route("/ai/code/sessions/{session_id}/message", methods=["POST"])
 async def proxy_opencode_prompt(request: Request, session_id: str):
     target_url = f"http://localhost:4096/session/{session_id}/message"
-    return await proxy_request(target_url, request, method="POST")
+    
+    # We need to translate the OnMyDisk payload to OpenCode format
+    # OnMyDisk: { "prompt": "...", ... }
+    # OpenCode: { "parts": [ { "type": "text", "text": "..." } ] }
+    try:
+        omd_payload = await request.json()
+        prompt_text = omd_payload.get("prompt", "")
+        
+        opencode_payload = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": prompt_text
+                }
+            ]
+        }
+        
+        session = await get_proxy_session()
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers["Content-Type"] = "application/json"
+        
+        async def stream_generator():
+            try:
+                async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
+                        yield f"data: {json.dumps({'error': f'Backend error: {resp.status}'})}\n\n".encode('utf-8')
+                        return
+                        
+                    async for line in resp.content:
+                        yield line
+            except Exception as e:
+                logging.error(f"[OpenCode Proxy] Stream error: {e}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
+
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in prompt proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ai/code/changes")
 async def proxy_opencode_changes(request: Request, session_id: str = Query(...)):
