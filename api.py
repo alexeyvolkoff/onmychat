@@ -1339,16 +1339,27 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
     if query:
         target_ws_url += f"?{query}"
     
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.ws_connect(target_ws_url, timeout=None) as target_ws:
-                # Bidirectional proxying tasks
+    # Propagate important headers (auth, etc)
+    headers = {}
+    for k, v in websocket.headers.items():
+        if k.lower() in ["authorization", "cookie", "user-agent"]:
+            headers[k] = v
+
+    try:
+        # Use a new session for WebSocket to manage its own lifecycle
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(target_ws_url, timeout=30.0, headers=headers) as target_ws:
+                
                 async def client_to_target():
                     try:
-                        async for message in websocket.iter_text():
-                            await target_ws.send_str(message)
-                        async for message in websocket.iter_bytes():
-                            await target_ws.send_bytes(message)
+                        while True:
+                            message = await websocket.receive()
+                            if "text" in message:
+                                await target_ws.send_str(message["text"])
+                            elif "bytes" in message:
+                                await target_ws.send_bytes(message["bytes"])
+                            elif message.get("type") == "websocket.disconnect":
+                                break
                     except Exception:
                         pass
 
@@ -1359,19 +1370,26 @@ async def opencode_ws_proxy(websocket: WebSocket, path: str):
                                 await websocket.send_text(msg.data)
                             elif msg.type == aiohttp.WSMsgType.BINARY:
                                 await websocket.send_bytes(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.PING:
+                                await websocket.send_bytes(msg.data)
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                 break
                     except Exception:
                         pass
 
-                await asyncio.gather(client_to_target(), target_to_client())
-        except Exception as e:
-            logging.error(f"[Proxy] WebSocket error for {path}: {e}")
-        finally:
-            try:
-                await websocket.close()
-            except:
-                pass
+                # Run both loops until one of them finishes
+                await asyncio.wait(
+                    [asyncio.create_task(client_to_target()), 
+                     asyncio.create_task(target_to_client())],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+    except Exception as e:
+        logging.error(f"[Proxy] WebSocket error for {path}: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
