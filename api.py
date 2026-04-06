@@ -1400,7 +1400,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                                 f.write(f"Failed to connect to event stream: {event_resp.status}\n")
                             # Fallback: Just fire and return
-                            async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
+                            async with session.post(target_url, json=opencode_payload) as resp:
                                 result = await resp.json()
                                 yield f"data: {json.dumps(result)}\n\n".encode('utf-8')
                                 yield b"data: {\"done\": true}\n\n"
@@ -1408,7 +1408,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
     
                         # 2. Start the POST request in the background NOW
                         async def do_post():
-                            async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
+                            async with session.post(target_url, json=opencode_payload) as resp:
                                 if resp.status != 200:
                                     error_text = await resp.text()
                                     logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
