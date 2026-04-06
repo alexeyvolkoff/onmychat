@@ -1435,12 +1435,21 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                         # 2. Start the POST request in the background NOW
                         async def do_post():
-                            async with session.post(target_url, json=opencode_payload) as resp:
-                                if resp.status != 200:
-                                    error_text = await resp.text()
-                                    logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
-                                    return {"error": f"Backend error: {resp.status}"}
-                                return await resp.json()
+                            try:
+                                # Set infinity timeout for agentic tasks
+                                timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=None)
+                                async with session.post(target_url, json=opencode_payload, timeout=timeout) as resp:
+                                    if resp.status != 200:
+                                        error_text = await resp.text()
+                                        logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
+                                        return {"error": f"Backend error: {resp.status}"}
+                                    return await resp.json()
+                            except asyncio.TimeoutError:
+                                logging.error(f"[OpenCode Proxy] POST Task timed out for {session_id}")
+                                return {"error": "Request timed out"}
+                            except Exception as e:
+                                logging.error(f"[OpenCode Proxy] POST Task failed: {e}")
+                                return {"error": f"Task failed: {str(e)}"}
                                 
                         post_task = asyncio.create_task(do_post())
                         last_emitted_states = {}
@@ -1460,6 +1469,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith("data: "):
+                                    logging.info(f"[OpenCode Proxy] SSE RAW: {line_str}")
                                     try:
                                         event_data = json.loads(line_str[6:])
                                         ev_type = event_data.get("type", "")
@@ -1478,13 +1488,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         elif props.get("sessionID") == session_id:
                                             if ev_type == "message.part.delta":
                                                 chunk = {
-                                                    "id": props.get("partID"),
+                                                    "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta")
                                                 }
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                            elif ev_type == "message.part.updated":
-                                                part = props.get("part", {})
-                                                part_id = part.get("id")
+                                            elif ev_type in ["message.part.updated", "message.part.created"]:
+                                                part = props.get("part") or props or {}
+                                                part_id = part.get("id") or props.get("partID")
                                                 state_obj = part.get("state")
                                                 
                                                 if isinstance(state_obj, dict):
@@ -1500,7 +1510,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 chunk = {
                                                     "id": part_id,
                                                     "type": part.get("type"),
-                                                    "state": state_obj
+                                                    "state": state_obj,
+                                                    "action": "part_update"
                                                 }
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                     except Exception as parse_e:
