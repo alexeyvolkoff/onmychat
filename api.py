@@ -1582,13 +1582,28 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
     headers = dict(request.headers)
     headers.pop("host", None)
     
+    import difflib
+    
+    def inject_diffs(diff_list):
+        if not isinstance(diff_list, list): return []
+        for item in diff_list:
+            file_name = item.get("file", "unknown")
+            before_lines = (item.get("before", "") or "").splitlines(keepends=True)
+            after_lines = (item.get("after", "") or "").splitlines(keepends=True)
+            diff_gen = difflib.unified_diff(
+                before_lines, after_lines,
+                fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=3
+            )
+            item["diff"] = "".join(diff_gen)
+        return diff_list
+
     try:
         # If no message_id is provided, safely fetch the overall cumulative session diff
         if not message_id:
             target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff"
             async with session.get(target_url, headers=headers) as resp:
                 data = await resp.json()
-                return {"diffs": data if isinstance(data, list) else []}
+                return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
         
         # If message_id is provided (Assistant's reply), we must fetch the session messages
         # and pull the cached modifications array from its parent USER message natively.
@@ -1614,7 +1629,7 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                 
             # 4. Extract diffs from the user message's summary map
             msg_diffs = user_msg.get("info", {}).get("summary", {}).get("diffs", [])
-            return {"diffs": msg_diffs if isinstance(msg_diffs, list) else []}
+            return {"diffs": inject_diffs(msg_diffs if isinstance(msg_diffs, list) else [])}
 
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching session diffs: {e}")
