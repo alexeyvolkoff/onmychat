@@ -1665,13 +1665,29 @@ async def proxy_opencode_revert(request: Request, session_id: str):
     headers.pop("host", None)
     
     try:
-        body = await request.json()
-        async with session.post(target_url, headers=headers, json=body) as resp:
-            data = await resp.json()
-            return data
+        req_data = await request.json()
+    except:
+        req_data = {}
+        
+    try:
+        async with session.post(target_url, headers=headers, json=req_data) as resp:
+            # Handle non-success responses gracefully
+            if resp.status not in (200, 201):
+                error_text = await resp.text()
+                logging.error(f"[OpenCode Proxy] Backend revert error {resp.status}: {error_text}")
+                return {"error": f"Backend error: {resp.status}", "detail": error_text}
+
+            # Check if JSON is expected and present
+            content_type = resp.headers.get("Content-Type", "")
+            if "application/json" in content_type:
+                return await resp.json()
+            else:
+                # If it's not JSON (like octet-stream mentioned in error logs), return text or status
+                text = await resp.text()
+                return {"status": "success", "message": text}
     except Exception as e:
-        logging.error(f"[OpenCode Proxy] Error reverting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"[OpenCode Proxy] Exception during session revert: {e}")
+        return {"error": str(e)}
 
 @app.get("/code/sessions/{session_id}/messages")
 async def proxy_opencode_messages(request: Request, session_id: str):
