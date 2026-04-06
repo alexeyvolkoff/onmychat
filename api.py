@@ -1391,15 +1391,71 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         
         async def stream_generator():
             try:
-                async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
-                        yield f"data: {json.dumps({'error': f'Backend error: {resp.status}'})}\n\n".encode('utf-8')
-                        return
+                # 1. Start the POST request in the background
+                async def do_post():
+                    async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
+                            return {"error": f"Backend error: {resp.status}"}
+                        return await resp.json()
                         
-                    async for line in resp.content:
-                        yield line
+                post_task = asyncio.create_task(do_post())
+                
+                # 2. Connect to OpenCode's Event Stream
+                event_url = "http://localhost:4096/event"
+                async with session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
+                    if event_resp.status != 200:
+                        logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
+                        # Fallback to waiting for POST to finish
+                        result = await post_task
+                        yield f"data: {json.dumps(result)}\n\n".encode('utf-8')
+                        yield b"data: {\"done\": true}\n\n"
+                        return
+
+                    # 3. Read events as long as post_task is not done
+                    while not post_task.done():
+                        try:
+                            # Read one line from SSE with timeout
+                            line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.5)
+                            if not line:
+                                break
+                                
+                            line_str = line.decode('utf-8').strip()
+                            if line_str.startswith("data: "):
+                                try:
+                                    event_data = json.loads(line_str[6:])
+                                    ev_type = event_data.get("type", "")
+                                    props = event_data.get("properties", {})
+                                    
+                                    # Filter by session_id
+                                    if props.get("sessionID") == session_id:
+                                        if ev_type == "message.part.delta":
+                                            chunk = {
+                                                "id": props.get("partID"),
+                                                "delta": props.get("delta")
+                                            }
+                                            yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                        elif ev_type == "message.part.updated":
+                                            part = props.get("part", {})
+                                            chunk = {
+                                                "id": part.get("id"),
+                                                "type": part.get("type"),
+                                                "state": part.get("state")
+                                            }
+                                            yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                except Exception as parse_e:
+                                    pass # Ignore non-JSON or malformed data stream
+                        except asyncio.TimeoutError:
+                            continue # Check if task is done and wait for more lines
+                            
+                # 4. Wait for post to finish completely if stream broke
+                if not post_task.done():
+                    await post_task
+                
+                # Signal done to frontend
+                yield b"data: {\"done\": true}\n\n"
+                
             except Exception as e:
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
