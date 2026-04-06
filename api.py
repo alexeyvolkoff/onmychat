@@ -1445,12 +1445,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 
                         post_task = asyncio.create_task(do_post())
                         last_emitted_states = {}
+                        yield_counter = 0
     
                         # 3. Read events as long as post_task is not done
                         while not post_task.done():
+                            yield_counter += 1
+                            if yield_counter % 10 == 0:
+                                await asyncio.sleep(0) # Yield control to event loop
+
                             try:
                                 # Read one line from SSE with timeout
-                                line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.5)
+                                line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.1)
                                 if not line:
                                     break
                                     
@@ -1484,8 +1489,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 state_obj = part.get("state")
                                                 
                                                 if isinstance(state_obj, dict):
+                                                    # Deduplicate based on logical state (ignoring high-freq 'time' ticker)
                                                     state_copy = dict(state_obj)
                                                     state_copy.pop("time", None)
+                                                    # Efficient stringification for cache comparison
                                                     state_str = json.dumps(state_copy, sort_keys=True)
                                                     if last_emitted_states.get(part_id) == state_str:
                                                         continue
@@ -1500,7 +1507,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     except Exception as parse_e:
                                         pass # Ignore non-JSON or malformed data stream
                             except asyncio.TimeoutError:
-                                continue # Check if task is done and wait for more lines
+                                await asyncio.sleep(0.01) # Yield on idle timeout
+                                continue 
                             
                 # 4. Wait for post to finish completely if stream broke
                 if not post_task.done():
