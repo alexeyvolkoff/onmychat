@@ -1332,7 +1332,7 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
 @app.get("/code/sessions")
 async def proxy_opencode_sessions_list(request: Request):
-    target_url = "http://localhost:4096/session"
+    target_url = f"{core_service.CODE_BASE_URL}/session"
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -1346,7 +1346,7 @@ async def proxy_opencode_sessions_list(request: Request):
 
 @app.post("/code/sessions")
 async def proxy_opencode_sessions_create(request: Request):
-    target_url = "http://localhost:4096/session"
+    target_url = f"{core_service.CODE_BASE_URL}/session"
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -1361,12 +1361,12 @@ async def proxy_opencode_sessions_create(request: Request):
 
 @app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
 async def proxy_opencode_session_item(request: Request, session_id: str):
-    target_url = f"http://localhost:4096/session/{session_id}"
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
     return await proxy_request(target_url, request, method=request.method)
 
 @app.api_route("/code/sessions/{session_id}/message", methods=["POST"])
 async def proxy_opencode_prompt(request: Request, session_id: str):
-    target_url = f"http://localhost:4096/session/{session_id}/message"
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
     
     # We need to translate the OnMyDisk payload to OpenCode format
     # OnMyDisk: { "prompt": "...", ... }
@@ -1404,6 +1404,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 
             if system_instructions:
                 opencode_payload["system"] = "\n\n".join(system_instructions)
+                
+        # Bind the global LLM model to ensure it avoids defaulting to external APIs
+        opencode_payload["model"] = core_service.DEFAULT_MODEL
         
         session = await get_proxy_session()
         headers = dict(request.headers)
@@ -1413,13 +1416,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         async def stream_generator():
             try:
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
-                event_url = "http://localhost:4096/event"
+                event_url = f"{core_service.CODE_BASE_URL}/event"
                 async with aiohttp.ClientSession(read_bufsize=10*1024*1024) as sse_session:
                     async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
                         if event_resp.status != 200:
                             logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
-                            with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
-                                f.write(f"Failed to connect to event stream: {event_resp.status}\n")
                             # Fallback: Just fire and return
                             async with session.post(target_url, json=opencode_payload) as resp:
                                 result = await resp.json()
@@ -1509,7 +1510,7 @@ async def proxy_opencode_changes(request: Request, session_id: str = Query(...))
     OnMyDisk expects: { "changes": [ { "id": "msg_id", "title": "...", "timestamp": ... } ] }
     OpenCode returns: [ MessageV2, ... ]
     """
-    target_url = f"http://localhost:4096/session/{session_id}/message"
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
     
     # Use proxy_request but we need to intercept the response for transformation
     # Optimization: if we don't want to re-implement proxy_request here, 
@@ -1543,7 +1544,7 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
     OnMyDisk expects: { "diff": "unified diff string" }
     OpenCode returns: [ { file, diff, ... }, ... ]
     """
-    target_url = f"http://localhost:4096/session/{session_id}/diff?messageID={change_id}"
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={change_id}"
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -1575,7 +1576,7 @@ async def proxy_opencode_messages(request: Request, session_id: str):
     """
     Returns all messages for a session.
     """
-    target_url = f"http://localhost:4096/session/{session_id}/message"
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -1610,7 +1611,7 @@ async def opencode_proxy(request: Request, path: str):
         target_url = f"{core_service.OLLAMA_URL}/{path}"
     else:
         # Static assets and local OpenCode endpoints (including their own /api/ routes)
-        target_url = f"http://127.0.0.1:4096/{path}"
+        target_url = f"{core_service.CODE_BASE_URL}/{path}"
     
     return await proxy_request(target_url, request, method=request.method)
 
