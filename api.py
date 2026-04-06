@@ -1431,6 +1431,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 yield b"data: {\"done\": true}\n\n"
                             return
     
+                        logging.info(f"[OpenCode Proxy] STREAM STARTED for Session: {session_id}")
+    
                         # (Removed redundant PRE-STREAM STATUS)
                         
                         # 2. Start the POST request in the background NOW
@@ -1489,8 +1491,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             if ev_type == "message.part.delta":
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
-                                                    "delta": props.get("delta")
+                                                    "delta": props.get("delta"),
+                                                    "field": props.get("field", "text"),
+                                                    "type": props.get("field") if props.get("field") in ["text", "thought"] else "text"
                                                 }
+                                                logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id}: {chunk['delta']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                             elif ev_type in ["message.part.updated", "message.part.created"]:
                                                 part = props.get("part") or props or {}
@@ -1513,6 +1518,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     "state": state_obj,
                                                     "action": "part_update"
                                                 }
+                                                logging.info(f"[OpenCode Proxy] YIELDING UPDATE for {session_id}: {chunk['id']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                     except Exception as parse_e:
                                         pass # Ignore non-JSON or malformed data stream
