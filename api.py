@@ -1431,8 +1431,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 yield b"data: {\"done\": true}\n\n"
                             return
     
-                        # PRE-STREAM STATUS
-                        yield f"data: {json.dumps({'status': 'performing'})}\n\n".encode('utf-8')
+                        # (Removed redundant PRE-STREAM STATUS)
                         
                         # 2. Start the POST request in the background NOW
                         async def do_post():
