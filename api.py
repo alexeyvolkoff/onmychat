@@ -1425,35 +1425,31 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 if not line:
                                     break
                                     
-                                    line_str = line.decode('utf-8').strip()
-                                    if line_str.startswith("data: "):
-                                        try:
-                                            event_data = json.loads(line_str[6:])
-                                            ev_type = event_data.get("type", "")
-                                            props = event_data.get("properties", {})
-                                            
-                                            # Filter by session_id
-                                            if props.get("sessionID") == session_id:
-                                                if ev_type == "message.part.delta":
-                                                    chunk = {
-                                                        "id": props.get("partID"),
-                                                        "delta": props.get("delta")
-                                                    }
-                                                    with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
-                                                        f.write(f"Yielding delta: {chunk}\n")
-                                                    yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                                elif ev_type == "message.part.updated":
-                                                    part = props.get("part", {})
-                                                    chunk = {
-                                                        "id": part.get("id"),
-                                                        "type": part.get("type"),
-                                                        "state": part.get("state")
-                                                    }
-                                                    with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
-                                                        f.write(f"Yielding updated: {chunk}\n")
-                                                    yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                        except Exception as parse_e:
-                                            pass # Ignore non-JSON or malformed data stream
+                                line_str = line.decode('utf-8').strip()
+                                if line_str.startswith("data: "):
+                                    try:
+                                        event_data = json.loads(line_str[6:])
+                                        ev_type = event_data.get("type", "")
+                                        props = event_data.get("properties", {})
+                                        
+                                        # Filter by session_id
+                                        if props.get("sessionID") == session_id:
+                                            if ev_type == "message.part.delta":
+                                                chunk = {
+                                                    "id": props.get("partID"),
+                                                    "delta": props.get("delta")
+                                                }
+                                                yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                            elif ev_type == "message.part.updated":
+                                                part = props.get("part", {})
+                                                chunk = {
+                                                    "id": part.get("id"),
+                                                    "type": part.get("type"),
+                                                    "state": part.get("state")
+                                                }
+                                                yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                    except Exception as parse_e:
+                                        pass # Ignore non-JSON or malformed data stream
                             except asyncio.TimeoutError:
                                 continue # Check if task is done and wait for more lines
                             
@@ -1461,14 +1457,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 if not post_task.done():
                     await post_task
                 
-                with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
-                    f.write("Yielding done\n")
                 # Signal done to frontend
                 yield b"data: {\"done\": true}\n\n"
                 
             except Exception as e:
-                with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
-                    f.write(f"Exception: {e}\n")
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
 
