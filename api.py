@@ -1444,6 +1444,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 return await resp.json()
                                 
                         post_task = asyncio.create_task(do_post())
+                        last_emitted_states = {}
     
                         # 3. Read events as long as post_task is not done
                         while not post_task.done():
@@ -1479,10 +1480,21 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                             elif ev_type == "message.part.updated":
                                                 part = props.get("part", {})
+                                                part_id = part.get("id")
+                                                state_obj = part.get("state")
+                                                
+                                                if isinstance(state_obj, dict):
+                                                    state_copy = dict(state_obj)
+                                                    state_copy.pop("time", None)
+                                                    state_str = json.dumps(state_copy, sort_keys=True)
+                                                    if last_emitted_states.get(part_id) == state_str:
+                                                        continue
+                                                    last_emitted_states[part_id] = state_str
+                                                    
                                                 chunk = {
-                                                    "id": part.get("id"),
+                                                    "id": part_id,
                                                     "type": part.get("type"),
-                                                    "state": part.get("state")
+                                                    "state": state_obj
                                                 }
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                     except Exception as parse_e:
