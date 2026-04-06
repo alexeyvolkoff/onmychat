@@ -1384,6 +1384,27 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             ]
         }
         
+        # Inject custom assistant personality & settings directly into OpenCode's system parameters
+        settings = omd_payload.get("settings", {})
+        if settings:
+            system_instructions = []
+            
+            # Map standard OMD settings into OpenCode context guidelines
+            assistant_name = settings.get("assistant_name", "").strip()
+            if assistant_name:
+                system_instructions.append(f"Your name is {assistant_name}.")
+                
+            user_name = settings.get("name", "").strip()
+            if user_name:
+                system_instructions.append(f"The user's name is {user_name}.")
+                
+            personality = settings.get("system_prompt", "").strip()
+            if personality:
+                system_instructions.append(f"Personality & Instructions:\n{personality}")
+                
+            if system_instructions:
+                opencode_payload["system"] = "\n\n".join(system_instructions)
+        
         session = await get_proxy_session()
         headers = dict(request.headers)
         headers.pop("host", None)
