@@ -1427,6 +1427,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 yield b"data: {\"done\": true}\n\n"
                             return
     
+                        # PRE-STREAM STATUS
+                        yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
+                        
                         # 2. Start the POST request in the background NOW
                         async def do_post():
                             async with session.post(target_url, json=opencode_payload) as resp:
@@ -1454,7 +1457,16 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         props = event_data.get("properties", {})
                                         
                                         # Filter by session_id
-                                        if props.get("sessionID") == session_id:
+                                        if ev_type == "session.updated" and props.get("sessionID") == session_id:
+                                            info = props.get("info", {})
+                                            if "title" in info:
+                                                rename_chunk = {
+                                                    "action": "rename",
+                                                    "title": info["title"]
+                                                }
+                                                yield f"data: {json.dumps(rename_chunk)}\n\n".encode('utf-8')
+                                                
+                                        elif props.get("sessionID") == session_id:
                                             if ev_type == "message.part.delta":
                                                 chunk = {
                                                     "id": props.get("partID"),
