@@ -1573,6 +1573,71 @@ async def proxy_opencode_apply(request: Request):
 
 # ----------------------------
 
+@app.get("/code/sessions/{session_id}/diffs")
+async def proxy_opencode_session_diffs(request: Request, session_id: str, message_id: str = Query(None)):
+    """
+    Returns an array of file modifications with added/deleted line stats for the entire session or specific message.
+    """
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        # If no message_id is provided, safely fetch the overall cumulative session diff
+        if not message_id:
+            target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff"
+            async with session.get(target_url, headers=headers) as resp:
+                data = await resp.json()
+                return {"diffs": data if isinstance(data, list) else []}
+        
+        # If message_id is provided (Assistant's reply), we must fetch the session messages
+        # and pull the cached modifications array from its parent USER message natively.
+        session_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+        async with session.get(session_url, headers=headers) as resp:
+            data = await resp.json()
+            messages = data.get("messages", []) if isinstance(data, dict) else []
+            
+            # 1. Locate the specific Assistant message
+            assistant_msg = next((m for m in messages if m.get("info", {}).get("id") == message_id), None)
+            if not assistant_msg:
+                return {"diffs": []}
+                
+            # 2. Extract its parentID (the user message that originated the generations)
+            parent_id = assistant_msg.get("info", {}).get("parentID")
+            if not parent_id:
+                return {"diffs": []}
+                
+            # 3. Locate the parent user message
+            user_msg = next((m for m in messages if m.get("info", {}).get("id") == parent_id), None)
+            if not user_msg:
+                return {"diffs": []}
+                
+            # 4. Extract diffs from the user message's summary map
+            msg_diffs = user_msg.get("info", {}).get("summary", {}).get("diffs", [])
+            return {"diffs": msg_diffs if isinstance(msg_diffs, list) else []}
+
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error fetching session diffs: {e}")
+        return {"diffs": []}
+
+@app.post("/code/sessions/{session_id}/revert")
+async def proxy_opencode_revert(request: Request, session_id: str):
+    """
+    Triggers OpenCode backend to revert file snapshots effectively undoing code generations since the specified messageID.
+    """
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/revert"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        body = await request.json()
+        async with session.post(target_url, headers=headers, json=body) as resp:
+            data = await resp.json()
+            return data
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error reverting session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/code/sessions/{session_id}/messages")
 async def proxy_opencode_messages(request: Request, session_id: str):
