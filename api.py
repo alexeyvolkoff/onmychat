@@ -1397,7 +1397,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
                         if event_resp.status != 200:
                             logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
-                            with open("/tmp/omd_proxy.log", "a") as f:
+                            with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                                 f.write(f"Failed to connect to event stream: {event_resp.status}\n")
                             # Fallback: Just fire and return
                             async with session.post(target_url, json=opencode_payload, headers=headers) as resp:
@@ -1439,7 +1439,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         "id": props.get("partID"),
                                                         "delta": props.get("delta")
                                                     }
-                                                    with open("/tmp/omd_proxy.log", "a") as f:
+                                                    with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                                                         f.write(f"Yielding delta: {chunk}\n")
                                                     yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 elif ev_type == "message.part.updated":
@@ -1449,7 +1449,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         "type": part.get("type"),
                                                         "state": part.get("state")
                                                     }
-                                                    with open("/tmp/omd_proxy.log", "a") as f:
+                                                    with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                                                         f.write(f"Yielding updated: {chunk}\n")
                                                     yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                         except Exception as parse_e:
@@ -1461,13 +1461,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 if not post_task.done():
                     await post_task
                 
-                with open("/tmp/omd_proxy.log", "a") as f:
+                with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                     f.write("Yielding done\n")
                 # Signal done to frontend
                 yield b"data: {\"done\": true}\n\n"
                 
             except Exception as e:
-                with open("/tmp/omd_proxy.log", "a") as f:
+                with open("/home/alexey/projects/omd/onmychat/omd_proxy.log", "a") as f:
                     f.write(f"Exception: {e}\n")
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
