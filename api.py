@@ -1592,10 +1592,10 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
         
         # If message_id is provided (Assistant's reply), we must fetch the session messages
         # and pull the cached modifications array from its parent USER message natively.
-        session_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+        session_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
         async with session.get(session_url, headers=headers) as resp:
             data = await resp.json()
-            messages = data.get("messages", []) if isinstance(data, dict) else []
+            messages = data if isinstance(data, list) else []
             
             # 1. Locate the specific Assistant message
             assistant_msg = next((m for m in messages if m.get("info", {}).get("id") == message_id), None)
