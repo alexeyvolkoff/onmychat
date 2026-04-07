@@ -1454,74 +1454,73 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 return {"error": f"Task failed: {str(e)}"}
                                 
                         post_task = asyncio.create_task(do_post())
+                        
+                        # 3. Read events persistently (outliving post_task for autonomous agents)
+                        # We track the primary session and any subagent (child) sessions spawned from it
+                        authorized_sids = {str(session_id)}
+                        last_event_time = asyncio.get_event_loop().time()
                         last_emitted_states = {}
                         yield_counter = 0
-    
-                        # 3. Read events persistently (outliving post_task for autonomous agents)
-                        last_event_time = asyncio.get_event_loop().time()
+                        
                         while True:
                             # Break conditions:
-                            # 1. post_task failed with error (immediate stop)
                             if post_task.done() and post_task.exception():
                                 logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
                                 break
                                 
-                            # 2. Idle timeout: post_task is done AND no events for 60 seconds
                             now = asyncio.get_event_loop().time()
                             if post_task.done() and (now - last_event_time > 60):
                                 logging.info(f"[OpenCode Proxy] Stream idle for 60s after post_task done, closing.")
                                 break
 
                             try:
-                                # Read one line from SSE with timeout
-                                # We use a shorter timeout for better responsiveness to break conditions
                                 try:
                                     line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.2)
                                 except asyncio.TimeoutError:
-                                    await asyncio.sleep(0.05) # Mandatory sleep on timeout to prevent busy-wait
+                                    await asyncio.sleep(0.05)
                                     continue
 
                                 if not line:
                                     logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF).")
                                     break
                                     
-                                last_event_time = asyncio.get_event_loop().time()
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith("data: "):
                                     try:
                                         event_data = json.loads(line_str[6:])
                                         event_type = event_data.get("type", "")
                                         props = event_data.get("properties", {})
+                                        info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
                                         
-                                        yield_counter += 1
-                                        if str(event_sid) == str(session_id):
-                                            if yield_counter % 250 == 0:
-                                                logging.info(f"[OpenCode Proxy] Debug SID Match: Event={event_sid}, Target={session_id}, Match=True")
-                                        else:
-                                            # DEBUG: Log full payload on mismatch to find correlation fields
-                                            logging.info(f"[OpenCode Proxy] Mismatch Trace: Target={session_id}, Payload={line_str}")
+                                        # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
+                                        parent_sid = props.get("parentID") or info.get("parentID")
+                                        if parent_sid and str(parent_sid) in authorized_sids:
+                                            if str(event_sid) not in authorized_sids:
+                                                logging.info(f"[OpenCode Proxy] AUTHORIZING SUBAGENT session: {event_sid} (Parent: {parent_sid})")
+                                                authorized_sids.add(str(event_sid))
 
-                                        if event_type == "session.updated" and str(event_sid) == str(session_id):
-                                            info = props.get("info", {})
-                                            if "title" in info:
-                                                rename_chunk = { "action": "rename", "title": info["title"] }
-                                                yield f"data: {json.dumps(rename_chunk)}\n\n".encode('utf-8')
-                                                
-                                        elif str(event_sid) == str(session_id):
-                                            if event_type == "message.part.delta":
+                                        # Only process events for authorized sessions (Primary + Subagents)
+                                        if str(event_sid) in authorized_sids:
+                                            last_event_time = asyncio.get_event_loop().time()
+                                            yield_counter += 1
+                                            
+                                            if event_type == "session.updated":
+                                                if "title" in info:
+                                                    yield f"data: {json.dumps({'action': 'rename', 'title': info['title']})}\n\n".encode('utf-8')
+                                                    
+                                            elif event_type == "message.part.delta":
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta"),
                                                     "field": props.get("field", "text"),
                                                     "type": "thought" if props.get("field") == "thought" else "text"
                                                 }
-                                                logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id} (Part: {chunk['id']}): {chunk['delta']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                
                                             elif event_type in ["message.part.updated", "part.update", "message.part.created"]:
                                                 part = props.get("part") or props or {}
                                                 part_id = part.get("id") or props.get("partID")
-                                                # Efficient state-based deduplication
                                                 state_obj = part.get("state")
                                                 if isinstance(state_obj, dict):
                                                     state_copy = dict(state_obj); state_copy.pop("time", None)
@@ -1530,18 +1529,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     last_emitted_states[part_id] = state_str
                                                     
                                                 chunk = { "id": part_id, "type": part.get("type"), "state": state_obj, "action": "part_update" }
-                                                logging.info(f"[OpenCode Proxy] YIELDING UPDATE for {session_id}: {chunk['id']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                
                                             elif event_type in ["message.completed", "task.finished", "task.error", "session.completed"]:
-                                                logging.info(f"[OpenCode Proxy] TERMINAL EVENT detected ({event_type}), closing stream.")
-                                                break
+                                                # We only close if the PRIMARY session is completed
+                                                if str(event_sid) == str(session_id):
+                                                    logging.info(f"[OpenCode Proxy] PRIMARY session completed, closing stream.")
+                                                    break
                                     except json.JSONDecodeError:
                                         pass 
                             except Exception as loop_e:
                                 logging.error(f"[OpenCode Proxy] Error in event loop: {loop_e}")
-                                break # Exit loop on connection/stream errors to prevent spinning
+                                break
 
-                            # Final safeguard yield
                             await asyncio.sleep(0.01) 
                             
                 # 4. Final check on post_task
