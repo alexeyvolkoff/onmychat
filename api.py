@@ -1493,16 +1493,20 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         props = event_data.get("properties", {})
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
+                                        event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
                                         parent_sid = props.get("parentID") or info.get("parentID")
                                         if parent_sid and str(parent_sid) in authorized_sids:
-                                            if str(event_sid) not in authorized_sids:
+                                            if event_sid not in authorized_sids:
                                                 logging.info(f"[OpenCode Proxy] AUTHORIZING SUBAGENT session: {event_sid} (Parent: {parent_sid})")
-                                                authorized_sids.add(str(event_sid))
+                                                authorized_sids.add(event_sid)
 
                                         # Only process events for authorized sessions (Primary + Subagents)
-                                        if str(event_sid) in authorized_sids:
+                                        if event_sid in authorized_sids:
+                                            # DEBUG: Trace EVERY event for authorized sessions
+                                            logging.info(f"[OpenCode Proxy] EVENT: {event_type} | SID: {event_sid} | Primary: {event_sid == str(session_id)}")
+
                                             last_event_time = asyncio.get_event_loop().time()
                                             yield_counter += 1
                                             
@@ -1511,7 +1515,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     yield f"data: {json.dumps({'action': 'rename', 'title': info['title']})}\n\n".encode('utf-8')
                                             
                                             elif event_type == "message.created":
-                                                if str(event_sid) == str(session_id) and info.get("role") == "assistant":
+                                                if event_sid == str(session_id) and info.get("role") == "assistant":
                                                     msg_id = info.get("id")
                                                     if msg_id:
                                                         primary_message_ids.add(msg_id)
@@ -1539,17 +1543,22 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 chunk = { "id": part_id, "type": part.get("type"), "state": state_obj, "action": "part_update" }
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
-                                            elif event_type in ["message.completed", "task.finished", "task.error", "session.completed"]:
-                                                if str(event_sid) == str(session_id):
-                                                    logging.info(f"[OpenCode Proxy] PRIMARY session completed, closing stream.")
+                                            elif event_type in ["message.completed", "task.finished", "task.error", "session.completed", "task.closed"]:
+                                                if event_sid == str(session_id):
+                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}, closing.")
                                                     break
                                             
                                             elif event_type == "message.updated":
                                                 msg_id = info.get("id")
                                                 if msg_id in primary_message_ids:
                                                     if info.get("time", {}).get("completed"):
-                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED, closing stream.")
+                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag, closing.")
                                                         break
+                                                # FALLBACK: If a message is updated for the primary session and it's an assistant, 
+                                                # and it has no content, it might be the completion marker
+                                                if event_sid == str(session_id) and info.get("role") == "assistant" and info.get("time", {}).get("completed"):
+                                                      logging.info(f"[OpenCode Proxy] FALLBACK: Primary message completed, closing.")
+                                                      break
                                     except json.JSONDecodeError:
                                         pass 
                             except Exception as loop_e:
