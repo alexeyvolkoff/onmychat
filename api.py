@@ -1469,16 +1469,20 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             now = asyncio.get_event_loop().time()
                             idle_time = now - last_event_time
                             
-                            # If we've seen a terminal event, we wait 3 seconds FOR SILENCE to capture trailing events.
-                            if terminal_event_received:
-                                if idle_time > 3.0:
-                                    logging.info(f"[OpenCode Proxy] Stream idle for 3s (terminal: True), closing.")
+                            # CRITICAL: We trust the background POST task as the definitive signal for termination.
+                            if post_task.done():
+                                if post_task.exception():
+                                    logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
                                     break
-                            # Otherwise, if the task is already done, we wait 60 seconds of silence to avoid hanging forever.
-                            # We DO NOT time out on silence while the task is still executing.
-                            elif post_task.done():
-                                if idle_time > 60.0:
-                                    logging.info(f"[OpenCode Proxy] Stream idle for 60s after post_task done, closing.")
+                                
+                                # Grace period: Wait 2.0s for trailing SSE events after task completion.
+                                if idle_time > 2.0:
+                                    logging.info(f"[OpenCode Proxy] Post task completed and stream drained (2s silence). Closing.")
+                                    break
+                            else:
+                                # Failsafe: If the task is still running but silent for 120s, force close.
+                                if idle_time > 120.0:
+                                    logging.warning(f"[OpenCode Proxy] Stream idle for 120s while generating! Force closing.")
                                     break
 
                             try:
@@ -1523,14 +1527,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
                                             
                                             elif event_type == "session.idle":
-                                                logging.info(f"[OpenCode Proxy] SESSION IDLE. Switching to grace period.")
-                                                terminal_event_received = True
-
+                                                logging.info(f"[OpenCode Proxy] SESSION IDLE (Agent waiting/thinking).")
+                                            
                                             elif event_type == "session.status":
                                                 status_info = props.get("status", {})
                                                 if isinstance(status_info, dict) and status_info.get("type") == "idle":
-                                                    logging.info(f"[OpenCode Proxy] SESSION STATUS IDLE. Switching to grace period.")
-                                                    terminal_event_received = True
+                                                    logging.info(f"[OpenCode Proxy] SESSION STATUS IDLE (Agent waiting/thinking).")
                                             
                                             elif event_type in ["message.created", "message.updated"]:
                                                 if info.get("role") == "assistant":
@@ -1580,8 +1582,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 
                                             elif event_type in ["task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
-                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}. Switching to grace period.")
-                                                    terminal_event_received = True
+                                                    logging.info(f"[OpenCode Proxy] TERMINAL SSE EVENT: {event_type} (waiting for post_task to finalize)")
                                                     
                                     except json.JSONDecodeError:
                                         pass 
