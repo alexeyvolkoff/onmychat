@@ -498,7 +498,7 @@ async def cancel_session_task(session_id: str):
         del active_tasks[session_id]
     return {"status": "no_active_task"}
 
-@app.get("/code/sessions/{session_id}/diffs")
+@app.get("/assistant/loras")
 async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     return core_service.get_available_loras(ctx, nsfw=nsfw)
