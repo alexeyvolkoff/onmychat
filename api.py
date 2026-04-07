@@ -1470,11 +1470,16 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             idle_time = now - last_event_time
                             
                             # If we've seen a terminal event, we wait 3 seconds FOR SILENCE to capture trailing events.
-                            # Otherwise, we wait 60 seconds of silence to avoid hanging forever.
-                            timeout = 3.0 if terminal_event_received else 60.0
-                            if idle_time > timeout:
-                                logging.info(f"[OpenCode Proxy] Stream idle for {timeout}s (terminal: {terminal_event_received}), closing.")
-                                break
+                            if terminal_event_received:
+                                if idle_time > 3.0:
+                                    logging.info(f"[OpenCode Proxy] Stream idle for 3s (terminal: True), closing.")
+                                    break
+                            # Otherwise, if the task is already done, we wait 60 seconds of silence to avoid hanging forever.
+                            # We DO NOT time out on silence while the task is still executing.
+                            elif post_task.done():
+                                if idle_time > 60.0:
+                                    logging.info(f"[OpenCode Proxy] Stream idle for 60s after post_task done, closing.")
+                                    break
 
                             try:
                                 try:
