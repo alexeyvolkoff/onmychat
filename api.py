@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse, JSONResponse
 from fastapi import Header, Depends
 from PIL import Image
 import io
@@ -1724,6 +1724,7 @@ async def proxy_opencode_revert(request: Request, session_id: str):
     
     try:
         req_data = await request.json()
+        logging.info(f"[OpenCode Proxy] Revert payload: {req_data}")
     except:
         req_data = {}
         
@@ -1777,6 +1778,24 @@ async def proxy_delete_message(request: Request, session_id: str, message_id: st
         async with session.delete(target_url, headers=headers) as resp:
             data = await resp.json()
             return JSONResponse(status_code=resp.status, content=data)
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.delete("/code/sessions/{session_id}/messages/{message_id}")
+async def proxy_opencode_delete_message(session_id: str, message_id: str):
+    """
+    Surgically deletes a message from the OpenCode backend.
+    """
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
+    headers = {
+        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(target_url, headers=headers) as resp:
+                return JSONResponse(status_code=resp.status, content=await resp.json())
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
