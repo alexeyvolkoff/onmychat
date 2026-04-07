@@ -1461,6 +1461,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         last_event_time = asyncio.get_event_loop().time()
                         last_emitted_states = {}
                         yield_counter = 0
+                        primary_message_ids = set()
                         
                         while True:
                             # Break conditions:
@@ -1508,6 +1509,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             if event_type == "session.updated":
                                                 if "title" in info:
                                                     yield f"data: {json.dumps({'action': 'rename', 'title': info['title']})}\n\n".encode('utf-8')
+                                            
+                                            elif event_type == "message.created":
+                                                if str(event_sid) == str(session_id) and info.get("role") == "assistant":
+                                                    msg_id = info.get("id")
+                                                    if msg_id:
+                                                        primary_message_ids.add(msg_id)
+                                                        logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                     
                                             elif event_type == "message.part.delta":
                                                 chunk = {
@@ -1532,10 +1540,16 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
                                             elif event_type in ["message.completed", "task.finished", "task.error", "session.completed"]:
-                                                # We only close if the PRIMARY session is completed
                                                 if str(event_sid) == str(session_id):
                                                     logging.info(f"[OpenCode Proxy] PRIMARY session completed, closing stream.")
                                                     break
+                                            
+                                            elif event_type == "message.updated":
+                                                msg_id = info.get("id")
+                                                if msg_id in primary_message_ids:
+                                                    if info.get("time", {}).get("completed"):
+                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED, closing stream.")
+                                                        break
                                     except json.JSONDecodeError:
                                         pass 
                             except Exception as loop_e:
