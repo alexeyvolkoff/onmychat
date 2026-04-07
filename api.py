@@ -1433,8 +1433,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
     
                         logging.info(f"[OpenCode Proxy] STREAM STARTED for Session: {session_id}")
     
-                        # (Removed redundant PRE-STREAM STATUS)
-                        
                         # 2. Start the POST request in the background NOW
                         async def do_post():
                             try:
@@ -1452,7 +1450,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             except Exception as e:
                                 logging.error(f"[OpenCode Proxy] POST Task failed: {e}")
                                 return {"error": f"Task failed: {str(e)}"}
-                                
                         post_task = asyncio.create_task(do_post())
                         
                         # 3. Read events persistently (outliving post_task for autonomous agents)
@@ -1460,7 +1457,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         authorized_sids = {str(session_id)}
                         last_event_time = asyncio.get_event_loop().time()
                         last_emitted_states = {}
-                        yield_counter = 0
                         primary_message_ids = set()
                         terminal_event_received = False
                         
@@ -1473,13 +1469,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             now = asyncio.get_event_loop().time()
                             idle_time = now - last_event_time
                             
-                            if post_task.done():
-                                # If we've seen a terminal event, we only wait 3 seconds for trailing events.
-                                # Otherwise, we wait the full 60 seconds.
-                                timeout = 3 if terminal_event_received else 60
-                                if idle_time > timeout:
-                                    logging.info(f"[OpenCode Proxy] Stream idle for {timeout}s (terminal: {terminal_event_received}), closing.")
-                                    break
+                            # If we've seen a terminal event, we wait 3 seconds FOR SILENCE to capture trailing events.
+                            # Otherwise, we wait 60 seconds of silence to avoid hanging forever.
+                            timeout = 3.0 if terminal_event_received else 60.0
+                            if idle_time > timeout:
+                                logging.info(f"[OpenCode Proxy] Stream idle for {timeout}s (terminal: {terminal_event_received}), closing.")
+                                break
 
                             try:
                                 try:
@@ -1499,7 +1494,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         event_type = event_data.get("type", "")
                                         props = event_data.get("properties", {})
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
-                                        event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
@@ -1515,7 +1509,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             logging.info(f"[OpenCode Proxy] EVENT: {event_type} | SID: {event_sid} | Primary: {event_sid == str(session_id)}")
 
                                             last_event_time = asyncio.get_event_loop().time()
-                                            yield_counter += 1
                                             
                                             if event_type == "session.updated":
                                                 if "title" in info:
@@ -1528,18 +1521,35 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 logging.info(f"[OpenCode Proxy] SESSION IDLE. Switching to grace period.")
                                                 terminal_event_received = True
 
-                                            elif event_type == "message.created":
+                                            elif event_type == "session.status":
+                                                status_info = props.get("status", {})
+                                                if isinstance(status_info, dict) and status_info.get("type") == "idle":
+                                                    logging.info(f"[OpenCode Proxy] SESSION STATUS IDLE. Switching to grace period.")
+                                                    terminal_event_received = True
+                                            
+                                            elif event_type in ["message.created", "message.updated"]:
                                                 if info.get("role") == "assistant":
                                                     msg_id = info.get("id")
                                                     if msg_id:
+                                                        is_new = (msg_id not in primary_message_ids)
                                                         is_first_msg = (len(primary_message_ids) == 0)
-                                                        primary_message_ids.add(msg_id)
-                                                        # Start a new bubble if this isn't the very first assistant message
-                                                        if not is_first_msg:
-                                                           logging.info(f"[OpenCode Proxy] NEW assistant message: {msg_id}. Switching bubbles.")
-                                                           yield f"data: {json.dumps({'action': 'new_message', 'role': 'assistant'})}\n\n".encode('utf-8')
+                                                        
+                                                        if is_new:
+                                                            primary_message_ids.add(msg_id)
+                                                            # Start a new bubble if this isn't the very first assistant message of the stream
+                                                            if not is_first_msg:
+                                                               logging.info(f"[OpenCode Proxy] NEW assistant message: {msg_id}. Switching bubbles.")
+                                                               yield f"data: {json.dumps({'action': 'new_message', 'role': 'assistant', 'message_id': msg_id})}\n\n".encode('utf-8')
+                                                            else:
+                                                               logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                         else:
                                                            logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
+                                                        
+                                                        # Special check: If this message is UPDATED and has a completion time, it's also terminal
+                                                        if event_type == "message.updated" and info.get("time", {}).get("completed"):
+                                                            if msg_id in primary_message_ids:
+                                                                logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag. Switching to grace period.")
+                                                                terminal_event_received = True
                                                     
                                             elif event_type == "message.part.delta":
                                                 chunk = {
@@ -1567,15 +1577,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 if event_sid == str(session_id):
                                                     logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}. Switching to grace period.")
                                                     terminal_event_received = True
-                                                    # We don't break immediately! We wait for EOF or short idle.
-                                            
-                                            elif event_type == "message.updated":
-                                                msg_id = info.get("id")
-                                                if msg_id in primary_message_ids:
-                                                    if info.get("time", {}).get("completed"):
-                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag. Switching to grace period.")
-                                                        terminal_event_received = True
-                                                # FALLBACK: Completion marker check removed for stream completeness.
+                                                    
                                     except json.JSONDecodeError:
                                         pass 
                             except Exception as loop_e:
@@ -1583,18 +1585,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 break
 
                             await asyncio.sleep(0.01) 
-                            
-                # 4. Final check on post_task
-                if not post_task.done():
-                    await post_task
-                
-                # Signal done to frontend
-                yield b"data: {\"done\": true}\n\n"
-                
+                        
+                        # 4. Final cleanup
+                        if not post_task.done():
+                            await post_task
+                        
+                        yield b"data: {\"done\": true}\n\n"
+                        
             except Exception as e:
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
-
+        
         return StreamingResponse(stream_generator(), media_type="text/event-stream")
         
     except Exception as e:
