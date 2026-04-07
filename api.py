@@ -1462,6 +1462,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         last_emitted_states = {}
                         yield_counter = 0
                         primary_message_ids = set()
+                        terminal_event_received = False
                         
                         while True:
                             # Break conditions:
@@ -1470,9 +1471,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 break
                                 
                             now = asyncio.get_event_loop().time()
-                            if post_task.done() and (now - last_event_time > 60):
-                                logging.info(f"[OpenCode Proxy] Stream idle for 60s after post_task done, closing.")
-                                break
+                            idle_time = now - last_event_time
+                            
+                            if post_task.done():
+                                # If we've seen a terminal event, we only wait 3 seconds for trailing events.
+                                # Otherwise, we wait the full 60 seconds.
+                                timeout = 3 if terminal_event_received else 60
+                                if idle_time > timeout:
+                                    logging.info(f"[OpenCode Proxy] Stream idle for {timeout}s (terminal: {terminal_event_received}), closing.")
+                                    break
 
                             try:
                                 try:
@@ -1517,12 +1524,22 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             elif event_type == "session.diff":
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
                                             
+                                            elif event_type == "session.idle":
+                                                logging.info(f"[OpenCode Proxy] SESSION IDLE. Switching to grace period.")
+                                                terminal_event_received = True
+
                                             elif event_type == "message.created":
-                                                if event_sid == str(session_id) and info.get("role") == "assistant":
+                                                if info.get("role") == "assistant":
                                                     msg_id = info.get("id")
                                                     if msg_id:
+                                                        is_first_msg = (len(primary_message_ids) == 0)
                                                         primary_message_ids.add(msg_id)
-                                                        logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
+                                                        # Start a new bubble if this isn't the very first assistant message
+                                                        if not is_first_msg:
+                                                           logging.info(f"[OpenCode Proxy] NEW assistant message: {msg_id}. Switching bubbles.")
+                                                           yield f"data: {json.dumps({'action': 'new_message', 'role': 'assistant'})}\n\n".encode('utf-8')
+                                                        else:
+                                                           logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                     
                                             elif event_type == "message.part.delta":
                                                 chunk = {
@@ -1548,14 +1565,16 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 
                                             elif event_type in ["message.completed", "task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
-                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type} (ignored for completeness).")
-                                                    # We don't break here! We wait for SSE EOF.
+                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}. Switching to grace period.")
+                                                    terminal_event_received = True
+                                                    # We don't break immediately! We wait for EOF or short idle.
                                             
                                             elif event_type == "message.updated":
                                                 msg_id = info.get("id")
                                                 if msg_id in primary_message_ids:
                                                     if info.get("time", {}).get("completed"):
-                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag (ignored for completeness).")
+                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag. Switching to grace period.")
+                                                        terminal_event_received = True
                                                 # FALLBACK: Completion marker check removed for stream completeness.
                                     except json.JSONDecodeError:
                                         pass 
