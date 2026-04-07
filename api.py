@@ -1475,6 +1475,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
                                     break
                                 
+                                # Check if the task returned an error dict instead of raising an exception.
+                                task_result = post_task.result()
+                                if isinstance(task_result, dict) and "error" in task_result:
+                                    logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
+                                    yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
+                                    break
+
                                 # Grace period: Wait 2.0s for trailing SSE events after task completion.
                                 if idle_time > 2.0:
                                     logging.info(f"[OpenCode Proxy] Post task completed and stream drained (2s silence). Closing.")
