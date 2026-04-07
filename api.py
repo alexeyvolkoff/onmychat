@@ -1729,20 +1729,15 @@ async def proxy_opencode_revert(request: Request, session_id: str):
         
     try:
         async with session.post(target_url, headers=headers, json=req_data) as resp:
-            # Handle non-success responses gracefully
-            if resp.status not in (200, 201):
-                error_text = await resp.text()
-                logging.error(f"[OpenCode Proxy] Backend revert error {resp.status}: {error_text}")
-                return {"error": f"Backend error: {resp.status}", "detail": error_text}
-
             # Check if JSON is expected and present
             content_type = resp.headers.get("Content-Type", "")
             if "application/json" in content_type:
-                return await resp.json()
+                data = await resp.json()
+                return JSONResponse(status_code=resp.status, content=data)
             else:
-                # If it's not JSON (like octet-stream mentioned in error logs), return text or status
+                # If it's not JSON, return text with actual status code
                 text = await resp.text()
-                return {"status": "success", "message": text}
+                return JSONResponse(status_code=resp.status, content={"status": "error" if resp.status >= 400 else "success", "message": text})
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Exception during session revert: {e}")
         return {"error": str(e)}
