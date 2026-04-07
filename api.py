@@ -1743,6 +1743,8 @@ async def proxy_opencode_revert(request: Request, session_id: str):
         return {"error": str(e)}
 
 @app.get("/code/sessions/{session_id}/messages")
+@app.get("/code/session/{session_id}/messages")
+@app.get("/code/session/{session_id}/message")
 async def proxy_opencode_messages(request: Request, session_id: str):
     """
     Returns all messages for a session.
@@ -1759,6 +1761,25 @@ async def proxy_opencode_messages(request: Request, session_id: str):
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching messages: {e}")
         return {"messages": []}
+
+@app.delete("/code/sessions/{session_id}/message/{message_id}")
+@app.delete("/code/session/{session_id}/message/{message_id}")
+async def proxy_delete_message(request: Request, session_id: str, message_id: str):
+    """
+    Surgically deletes a message from a session.
+    """
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    try:
+        async with session.delete(target_url, headers=headers) as resp:
+            data = await resp.json()
+            return JSONResponse(status_code=resp.status, content=data)
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def opencode_proxy(request: Request, path: str):
