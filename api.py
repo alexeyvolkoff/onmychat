@@ -1782,20 +1782,22 @@ async def proxy_delete_message(request: Request, session_id: str, message_id: st
 
 @app.delete("/code/sessions/{session_id}/messages/{message_id}")
 @app.delete("/code/session/{session_id}/message/{message_id}")
-async def proxy_opencode_delete_message(session_id: str, message_id: str):
+async def proxy_opencode_delete_message(request: Request, session_id: str, message_id: str):
     """
     Surgically deletes a message from the OpenCode backend.
-    Matches both plural and singular paths used by different parts of the frontend.
     """
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
+    
+    # Use headers from the request (token/omdkey)
     headers = {
-        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}"
+        "Authorization": request.headers.get("Authorization", ""),
+        "X-OMD-Key": request.headers.get("X-OMD-Key", "")
     }
     
     try:
         async with aiohttp.ClientSession() as session:
             async with session.delete(target_url, headers=headers) as resp:
-                data = await resp.json() if resp.status == 200 else {"status": "ok"} # fallback for empty success
+                data = await resp.json() if resp.status == 200 else {"status": "ok"}
                 return JSONResponse(status_code=resp.status, content=data)
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
@@ -1806,11 +1808,13 @@ async def proxy_opencode_delete_message(session_id: str, message_id: str):
 async def proxy_opencode_revert(request: Request, session_id: str):
     """
     Triggers OpenCode backend to revert file snapshots.
-    Matches both plural and singular paths.
     """
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/revert"
+    
+    # Use headers from the request
     headers = {
-        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}",
+        "Authorization": request.headers.get("Authorization", ""),
+        "X-OMD-Key": request.headers.get("X-OMD-Key", ""),
         "Content-Type": "application/json"
     }
     
@@ -1828,13 +1832,15 @@ async def proxy_opencode_revert(request: Request, session_id: str):
 
 @app.delete("/code/sessions/{session_id}")
 @app.delete("/code/session/{session_id}")
-async def proxy_opencode_delete_session(session_id: str):
+async def proxy_opencode_delete_session(request: Request, session_id: str):
     """
     Deletes an entire coding session.
     """
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+    
     headers = {
-        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}"
+        "Authorization": request.headers.get("Authorization", ""),
+        "X-OMD-Key": request.headers.get("X-OMD-Key", "")
     }
     
     try:
