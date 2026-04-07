@@ -1419,7 +1419,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         async def stream_generator():
             try:
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
-                event_url = f"{core_service.CODE_BASE_URL}/event"
+                event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
                 async with aiohttp.ClientSession(read_bufsize=10*1024*1024) as sse_session:
                     async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
                         if event_resp.status != 200:
@@ -1461,8 +1461,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         last_event_time = asyncio.get_event_loop().time()
                         while True:
                             yield_counter += 1
-                            if yield_counter % 20 == 0:
-                                await asyncio.sleep(0) # Yield control to event loop
                             
                             # Break conditions:
                             # 1. post_task failed with error (immediate stop)
@@ -1493,7 +1491,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         props = event_data.get("properties", {})
                                         event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
                                         
-                                        if yield_counter % 100 == 0:
+                                        if yield_counter % 250 == 0:
                                             logging.info(f"[OpenCode Proxy] Debug SID Match: Event={event_sid}, Target={session_id}, Match={str(event_sid) == str(session_id)}")
 
                                         if event_type == "session.updated" and str(event_sid) == str(session_id):
@@ -1543,7 +1541,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     except Exception as parse_e:
                                         pass # Ignore non-JSON or malformed data stream
                             except asyncio.TimeoutError:
-                                continue 
+                                pass
+                            
+                            # MANDATORY YIELD to prevent 100% CPU on event floods or tight matches
+                            await asyncio.sleep(0) 
                             
                 # 4. Final check on post_task
                 if not post_task.done():
