@@ -1457,28 +1457,46 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         last_emitted_states = {}
                         yield_counter = 0
     
-                        # 3. Read events as long as post_task is not done
-                        while not post_task.done():
+                        # 3. Read events persistently (outliving post_task for autonomous agents)
+                        last_event_time = asyncio.get_event_loop().time()
+                        while True:
                             yield_counter += 1
-                            if yield_counter % 10 == 0:
+                            if yield_counter % 20 == 0:
                                 await asyncio.sleep(0) # Yield control to event loop
+                            
+                            # Break conditions:
+                            # 1. post_task failed with error (immediate stop)
+                            if post_task.done() and post_task.exception():
+                                logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
+                                break
+                                
+                            # 2. Idle timeout: post_task is done AND no events for 60 seconds
+                            now = asyncio.get_event_loop().time()
+                            if post_task.done() and (now - last_event_time > 60):
+                                logging.info(f"[OpenCode Proxy] Stream idle for 60s after post_task done, closing.")
+                                break
 
                             try:
                                 # Read one line from SSE with timeout
                                 line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.1)
                                 if not line:
+                                    logging.info(f"[OpenCode Proxy] SSE Connection closed by backend.")
                                     break
                                     
+                                last_event_time = asyncio.get_event_loop().time()
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith("data: "):
-                                    logging.info(f"[OpenCode Proxy] SSE RAW: {line_str}")
                                     try:
                                         event_data = json.loads(line_str[6:])
-                                        ev_type = event_data.get("type", "")
+                                        # Extract event type and session ID gracefully
+                                        event_type = event_data.get("type", "")
                                         props = event_data.get("properties", {})
+                                        event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
                                         
-                                        # Filter by session_id
-                                        if ev_type == "session.updated" and props.get("sessionID") == session_id:
+                                        if yield_counter % 100 == 0:
+                                            logging.info(f"[OpenCode Proxy] Debug SID Match: Event={event_sid}, Target={session_id}, Match={str(event_sid) == str(session_id)}")
+
+                                        if event_type == "session.updated" and str(event_sid) == str(session_id):
                                             info = props.get("info", {})
                                             if "title" in info:
                                                 rename_chunk = {
@@ -1487,8 +1505,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 }
                                                 yield f"data: {json.dumps(rename_chunk)}\n\n".encode('utf-8')
                                                 
-                                        elif props.get("sessionID") == session_id:
-                                            if ev_type == "message.part.delta":
+                                        elif str(event_sid) == str(session_id):
+                                            if event_type == "message.part.delta":
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta"),
@@ -1499,7 +1517,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 
                                                 logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id} (Part: {chunk['id']}): {chunk['delta']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                            elif ev_type in ["message.part.updated", "message.part.created"]:
+                                            elif event_type in ["message.part.updated", "message.part.created"]:
                                                 part = props.get("part") or props or {}
                                                 part_id = part.get("id") or props.get("partID")
                                                 state_obj = part.get("state")
@@ -1525,10 +1543,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     except Exception as parse_e:
                                         pass # Ignore non-JSON or malformed data stream
                             except asyncio.TimeoutError:
-                                await asyncio.sleep(0.01) # Yield on idle timeout
                                 continue 
                             
-                # 4. Wait for post to finish completely if stream broke
+                # 4. Final check on post_task
                 if not post_task.done():
                     await post_task
                 
