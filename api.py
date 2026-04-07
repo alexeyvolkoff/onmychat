@@ -487,7 +487,18 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/assistant/loras")
+@app.post("/code/sessions/{session_id}/cancel")
+async def cancel_session_task(session_id: str):
+    if session_id in active_tasks:
+        task = active_tasks[session_id]
+        if not task.done():
+            task.cancel()
+            logging.info(f"[OpenCode Proxy] Task for session {session_id} CANCELLED by user.")
+            return {"status": "cancelled"}
+        del active_tasks[session_id]
+    return {"status": "no_active_task"}
+
+@app.get("/code/sessions/{session_id}/diffs")
 async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     return core_service.get_available_loras(ctx, nsfw=nsfw)
@@ -1330,6 +1341,8 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
 # ---- OpenCode Integration ----
 
+active_tasks = {}
+
 @app.get("/code/sessions")
 async def proxy_opencode_sessions_list(request: Request):
     target_url = f"{core_service.CODE_BASE_URL}/session"
@@ -1450,7 +1463,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             except Exception as e:
                                 logging.error(f"[OpenCode Proxy] POST Task failed: {e}")
                                 return {"error": f"Task failed: {str(e)}"}
+                        
                         post_task = asyncio.create_task(do_post())
+                        active_tasks[str(session_id)] = post_task
                         
                         # 3. Read events persistently (outliving post_task for autonomous agents)
                         # We track the primary session and any subagent (child) sessions spawned from it
@@ -1486,11 +1501,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 if idle_time > 2.0:
                                     logging.info(f"[OpenCode Proxy] Post task completed and stream drained (2s silence). Closing.")
                                     break
-                            else:
-                                # Failsafe: If the task is still running but silent for 120s, force close.
-                                if idle_time > 120.0:
-                                    logging.warning(f"[OpenCode Proxy] Stream idle for 120s while generating! Force closing.")
                                     break
+                            else:
+                                # We no longer time out on silence while generating.
+                                pass
 
                             try:
                                 try:
@@ -1600,6 +1614,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             await asyncio.sleep(0.01) 
                         
                         # 4. Final cleanup
+                        if str(session_id) in active_tasks:
+                            del active_tasks[str(session_id)]
+                            
                         if not post_task.done():
                             await post_task
                         
