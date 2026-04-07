@@ -1460,8 +1460,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         # 3. Read events persistently (outliving post_task for autonomous agents)
                         last_event_time = asyncio.get_event_loop().time()
                         while True:
-                            yield_counter += 1
-                            
                             # Break conditions:
                             # 1. post_task failed with error (immediate stop)
                             if post_task.done() and post_task.exception():
@@ -1476,9 +1474,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
 
                             try:
                                 # Read one line from SSE with timeout
-                                line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.1)
+                                # We use a shorter timeout for better responsiveness to break conditions
+                                try:
+                                    line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.2)
+                                except asyncio.TimeoutError:
+                                    await asyncio.sleep(0.05) # Mandatory sleep on timeout to prevent busy-wait
+                                    continue
+
                                 if not line:
-                                    logging.info(f"[OpenCode Proxy] SSE Connection closed by backend.")
+                                    logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF).")
                                     break
                                     
                                 last_event_time = asyncio.get_event_loop().time()
@@ -1486,21 +1490,22 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 if line_str.startswith("data: "):
                                     try:
                                         event_data = json.loads(line_str[6:])
-                                        # Extract event type and session ID gracefully
                                         event_type = event_data.get("type", "")
                                         props = event_data.get("properties", {})
                                         event_sid = props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId")
                                         
-                                        if yield_counter % 250 == 0:
-                                            logging.info(f"[OpenCode Proxy] Debug SID Match: Event={event_sid}, Target={session_id}, Match={str(event_sid) == str(session_id)}")
+                                        yield_counter += 1
+                                        if str(event_sid) == str(session_id):
+                                            if yield_counter % 250 == 0:
+                                                logging.info(f"[OpenCode Proxy] Debug SID Match: Event={event_sid}, Target={session_id}, Match=True")
+                                        else:
+                                            # DEBUG: Log full payload on mismatch to find correlation fields
+                                            logging.info(f"[OpenCode Proxy] Mismatch Trace: Target={session_id}, Payload={line_str}")
 
                                         if event_type == "session.updated" and str(event_sid) == str(session_id):
                                             info = props.get("info", {})
                                             if "title" in info:
-                                                rename_chunk = {
-                                                    "action": "rename",
-                                                    "title": info["title"]
-                                                }
+                                                rename_chunk = { "action": "rename", "title": info["title"] }
                                                 yield f"data: {json.dumps(rename_chunk)}\n\n".encode('utf-8')
                                                 
                                         elif str(event_sid) == str(session_id):
@@ -1508,43 +1513,36 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta"),
-                                                    "field": props.get("field", "text")
+                                                    "field": props.get("field", "text"),
+                                                    "type": "thought" if props.get("field") == "thought" else "text"
                                                 }
-                                                # Map field to type explicitly for the frontend
-                                                chunk["type"] = "thought" if chunk["field"] == "thought" else "text"
-                                                
                                                 logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id} (Part: {chunk['id']}): {chunk['delta']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                            elif event_type in ["message.part.updated", "message.part.created"]:
+                                            elif event_type in ["message.part.updated", "part.update", "message.part.created"]:
                                                 part = props.get("part") or props or {}
                                                 part_id = part.get("id") or props.get("partID")
+                                                # Efficient state-based deduplication
                                                 state_obj = part.get("state")
-                                                
                                                 if isinstance(state_obj, dict):
-                                                    # Deduplicate based on logical state (ignoring high-freq 'time' ticker)
-                                                    state_copy = dict(state_obj)
-                                                    state_copy.pop("time", None)
-                                                    # Efficient stringification for cache comparison
+                                                    state_copy = dict(state_obj); state_copy.pop("time", None)
                                                     state_str = json.dumps(state_copy, sort_keys=True)
-                                                    if last_emitted_states.get(part_id) == state_str:
-                                                        continue
+                                                    if last_emitted_states.get(part_id) == state_str: continue
                                                     last_emitted_states[part_id] = state_str
                                                     
-                                                chunk = {
-                                                    "id": part_id,
-                                                    "type": part.get("type"),
-                                                    "state": state_obj,
-                                                    "action": "part_update"
-                                                }
+                                                chunk = { "id": part_id, "type": part.get("type"), "state": state_obj, "action": "part_update" }
                                                 logging.info(f"[OpenCode Proxy] YIELDING UPDATE for {session_id}: {chunk['id']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
-                                    except Exception as parse_e:
-                                        pass # Ignore non-JSON or malformed data stream
-                            except asyncio.TimeoutError:
-                                pass
-                            
-                            # MANDATORY YIELD to prevent 100% CPU on event floods or tight matches
-                            await asyncio.sleep(0) 
+                                            elif event_type in ["message.completed", "task.finished", "task.error", "session.completed"]:
+                                                logging.info(f"[OpenCode Proxy] TERMINAL EVENT detected ({event_type}), closing stream.")
+                                                break
+                                    except json.JSONDecodeError:
+                                        pass 
+                            except Exception as loop_e:
+                                logging.error(f"[OpenCode Proxy] Error in event loop: {loop_e}")
+                                break # Exit loop on connection/stream errors to prevent spinning
+
+                            # Final safeguard yield
+                            await asyncio.sleep(0.01) 
                             
                 # 4. Final check on post_task
                 if not post_task.done():
