@@ -1545,20 +1545,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 
                                             elif event_type in ["message.completed", "task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
-                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}, closing.")
-                                                    break
+                                                    logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type} (ignored for completeness).")
+                                                    # We don't break here! We wait for SSE EOF.
                                             
                                             elif event_type == "message.updated":
                                                 msg_id = info.get("id")
                                                 if msg_id in primary_message_ids:
                                                     if info.get("time", {}).get("completed"):
-                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag, closing.")
-                                                        break
-                                                # FALLBACK: If a message is updated for the primary session and it's an assistant, 
-                                                # and it has no content, it might be the completion marker
-                                                if event_sid == str(session_id) and info.get("role") == "assistant" and info.get("time", {}).get("completed"):
-                                                      logging.info(f"[OpenCode Proxy] FALLBACK: Primary message completed, closing.")
-                                                      break
+                                                        logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag (ignored for completeness).")
+                                                # FALLBACK: Completion marker check removed for stream completeness.
                                     except json.JSONDecodeError:
                                         pass 
                             except Exception as loop_e:
