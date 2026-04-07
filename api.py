@@ -1506,7 +1506,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         # Only process events for authorized sessions (Primary + Subagents)
                                         if event_sid in authorized_sids:
                                             # DEBUG: Trace EVERY event for authorized sessions
-                                            logging.info(f"[OpenCode Proxy] EVENT: {event_type} | SID: {event_sid} | Primary: {event_sid == str(session_id)}")
+                                            logging.debug(f"[OpenCode Proxy] EVENT: {event_type} | SID: {event_sid} | Primary: {event_sid == str(session_id)}")
 
                                             last_event_time = asyncio.get_event_loop().time()
                                             
@@ -1541,9 +1541,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                                logging.info(f"[OpenCode Proxy] NEW assistant message: {msg_id}. Switching bubbles.")
                                                                yield f"data: {json.dumps({'action': 'new_message', 'role': 'assistant', 'message_id': msg_id})}\n\n".encode('utf-8')
                                                             else:
-                                                               logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
+                                                               logging.debug(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                         else:
-                                                           logging.info(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
+                                                           logging.debug(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                         
                                                         # Special check: If this message is UPDATED and has a completion time, it's also terminal
                                                         if event_type == "message.updated" and info.get("time", {}).get("completed"):
