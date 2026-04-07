@@ -1550,11 +1550,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         else:
                                                            logging.debug(f"[OpenCode Proxy] Tracking primary response message: {msg_id}")
                                                         
-                                                        # Special check: If this message is UPDATED and has a completion time, it's also terminal
+                                                        # Special check: If this message is UPDATED and has a completion time, it's NOT a terminal event for the stream anymore, 
+                                                        # as there might be more messages in the same turn. we only rely on session.status: idle.
                                                         if event_type == "message.updated" and info.get("time", {}).get("completed"):
                                                             if msg_id in primary_message_ids:
-                                                                logging.info(f"[OpenCode Proxy] Message {msg_id} COMPLETED flag. Switching to grace period.")
-                                                                terminal_event_received = True
+                                                                logging.debug(f"[OpenCode Proxy] Message {msg_id} marked as completed in metadata.")
                                                     
                                             elif event_type == "message.part.delta":
                                                 chunk = {
@@ -1578,7 +1578,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 chunk = { "id": part_id, "type": part.get("type"), "state": state_obj, "action": "part_update" }
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
-                                            elif event_type in ["message.completed", "task.finished", "task.error", "session.completed", "task.closed"]:
+                                            elif event_type in ["task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
                                                     logging.info(f"[OpenCode Proxy] PRIMARY TERMINAL EVENT: {event_type}. Switching to grace period.")
                                                     terminal_event_received = True
