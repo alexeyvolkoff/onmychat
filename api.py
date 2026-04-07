@@ -1514,6 +1514,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 if "title" in info:
                                                     yield f"data: {json.dumps({'action': 'rename', 'title': info['title']})}\n\n".encode('utf-8')
                                             
+                                            elif event_type == "session.diff":
+                                                yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
+                                            
                                             elif event_type == "message.created":
                                                 if event_sid == str(session_id) and info.get("role") == "assistant":
                                                     msg_id = info.get("id")
@@ -1778,9 +1781,11 @@ async def proxy_delete_message(request: Request, session_id: str, message_id: st
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/code/sessions/{session_id}/messages/{message_id}")
+@app.delete("/code/session/{session_id}/message/{message_id}")
 async def proxy_opencode_delete_message(session_id: str, message_id: str):
     """
     Surgically deletes a message from the OpenCode backend.
+    Matches both plural and singular paths used by different parts of the frontend.
     """
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
     headers = {
@@ -1790,9 +1795,54 @@ async def proxy_opencode_delete_message(session_id: str, message_id: str):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.delete(target_url, headers=headers) as resp:
-                return JSONResponse(status_code=resp.status, content=await resp.json())
+                data = await resp.json() if resp.status == 200 else {"status": "ok"} # fallback for empty success
+                return JSONResponse(status_code=resp.status, content=data)
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/code/sessions/{session_id}/revert")
+@app.post("/code/session/{session_id}/revert")
+async def proxy_opencode_revert(request: Request, session_id: str):
+    """
+    Triggers OpenCode backend to revert file snapshots.
+    Matches both plural and singular paths.
+    """
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/revert"
+    headers = {
+        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        req_data = await request.json()
+        logging.info(f"[OpenCode Proxy] Revert payload: {req_data}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(target_url, headers=headers, json=req_data) as resp:
+                data = await resp.json()
+                return JSONResponse(status_code=resp.status, content=data)
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Exception during session revert: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.delete("/code/sessions/{session_id}")
+@app.delete("/code/session/{session_id}")
+async def proxy_opencode_delete_session(session_id: str):
+    """
+    Deletes an entire coding session.
+    """
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+    headers = {
+        "Authorization": f"Bearer {core_service.OPENCODE_API_KEY}"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(target_url, headers=headers) as resp:
+                return JSONResponse(status_code=resp.status, content={"status": "ok"})
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error deleting session {session_id}: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.api_route("/code/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
