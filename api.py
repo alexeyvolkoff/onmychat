@@ -1492,10 +1492,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta"),
-                                                    "field": props.get("field", "text"),
-                                                    "type": props.get("field") if props.get("field") in ["text", "thought"] else "text"
+                                                    "field": props.get("field", "text")
                                                 }
-                                                logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id}: {chunk['delta']}")
+                                                # Map field to type explicitly for the frontend
+                                                chunk["type"] = "thought" if chunk["field"] == "thought" else "text"
+                                                
+                                                logging.info(f"[OpenCode Proxy] YIELDING DELTA for {session_id} (Part: {chunk['id']}): {chunk['delta']}")
                                                 yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                             elif ev_type in ["message.part.updated", "message.part.created"]:
                                                 part = props.get("part") or props or {}
