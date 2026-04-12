@@ -1431,6 +1431,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         
         async def stream_generator():
             try:
+                # 0. Yield initial status to inform UI immediately
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
+                await asyncio.sleep(0.05) # Force flush
+
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
                 async with aiohttp.ClientSession(read_bufsize=10*1024*1024) as sse_session:
