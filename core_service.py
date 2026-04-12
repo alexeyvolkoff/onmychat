@@ -1612,19 +1612,46 @@ async def _perform_prompt_gen(ctx: UserContext,
                 elif data.get("message"):   
                     if data["message"].get("thinking"):
                         delta = data["message"]["thinking"]
-                        thinking = True
                         accumulated_thinking += delta
-                    else:        
-                        delta = data["message"]["content"]
+                        yield {"thought_delta": delta, "done": False}
+                        continue
+
+                    delta = data["message"].get("content", "")
+                    if not delta:
+                        continue
+
+                    # Gemma 4 Tag detection
+                    OPEN_TAG = "<|channel>thought\n"
+                    CLOSE_TAG = "<channel|>"
+
+                    if OPEN_TAG in delta:
+                        parts = delta.split(OPEN_TAG, 1)
+                        if parts[0]:
+                            yield {"delta": parts[0], "done": False}
+                            accumulated_response += parts[0]
+                        thinking = True
+                        delta = parts[1]
+
+                    if thinking and CLOSE_TAG in delta:
+                        parts = delta.split(CLOSE_TAG, 1)
+                        if parts[0]:
+                            yield {"thought_delta": parts[0], "done": False}
+                            accumulated_thinking += parts[0]
                         thinking = False
-                        accumulated_response += delta
+                        delta = parts[1]
+
+                    if delta:
+                        if thinking:
+                            yield {"thought_delta": delta, "done": False}
+                            accumulated_thinking += delta
+                        else:
+                            yield {"delta": delta, "done": False}
+                            accumulated_response += delta
                         
-                        # Only yield the delta if it doesn't cross into a hallucinated block
-                        if re.search(r'(?i)\*?System Tool Output', accumulated_response):
+                        # Only check hallucination if NOT in thinking mode
+                        if not thinking and re.search(r'(?i)\*?System Tool Output', accumulated_response):
                              logging.warning("Hallucinated Tool block encountered in stream, suppressing remainder.")
                              break
-                        
-                    yield {"delta": delta, "done": False, "thinking": thinking}
                 elif data.get("error"):    
                     logging.warning(f"{data['error']}")
                     yield {"error": data["error"], "done": True, "event": event}
