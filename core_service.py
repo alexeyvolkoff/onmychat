@@ -1465,6 +1465,16 @@ async def _perform_prompt_gen(ctx: UserContext,
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
 
 
+    # === Gemma 4 Thinking Mode ===
+    is_simple_chat = not chat.startswith("/code/")
+    thinking_intents = ["search", "explain", "think"]
+    is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
+
+    if is_gemma4 and is_simple_chat and intent in thinking_intents:
+        logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
+        system_prompt = f"<|think|>\n{system_prompt}"
+
+
     # === ОСНОВНОЙ ЗАПРОС ===
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
