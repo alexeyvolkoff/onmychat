@@ -1473,10 +1473,9 @@ async def _perform_prompt_gen(ctx: UserContext,
     if is_gemma4:
         if is_simple_chat and intent in thinking_intents:
             logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
-            system_prompt = f"<|think|>\n{system_prompt}"
+            # Ollama API handles the reasoning start logic automatically when 'think': True
         else:
             logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent}")
-            system_prompt = f"<|nothink|>\n{system_prompt}"
 
 
     # === ОСНОВНОЙ ЗАПРОС ===
@@ -1527,6 +1526,12 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     if think and REASONONG_SUPPORTED:
         main_payload["think"] = True
+
+    if is_gemma4:
+        if is_simple_chat and intent in thinking_intents:
+            main_payload["think"] = True
+        else:
+            main_payload["think"] = False
 
     #post-processing of response
     async def process_response(data) -> dict: 
