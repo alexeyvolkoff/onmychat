@@ -1470,9 +1470,13 @@ async def _perform_prompt_gen(ctx: UserContext,
     thinking_intents = ["search", "explain", "think"]
     is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
 
-    if is_gemma4 and is_simple_chat and intent in thinking_intents:
-        logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
-        system_prompt = f"<|think|>\n{system_prompt}"
+    if is_gemma4:
+        if is_simple_chat and intent in thinking_intents:
+            logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
+            system_prompt = f"<|think|>\n{system_prompt}"
+        else:
+            logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent}")
+            system_prompt = f"<|nothink|>\n{system_prompt}"
 
 
     # === ОСНОВНОЙ ЗАПРОС ===
