@@ -1351,13 +1351,12 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_knowledge: list = None) -> AsyncGenerator:
 
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    model = get_llm_model(ctx)
-    #model = DEFAULT_MODEL
+    #model = get_llm_model(ctx)
+    model = DEFAULT_MODEL
     b64_image = None
     
     # Internal flags
     is_rag = intent in ["explain", "think"]
-    think = intent == "think"
 
     # History is derived from provided_history or managed via frontend OrbitDB sync.
     if chat == "default":
@@ -1457,13 +1456,8 @@ async def _perform_prompt_gen(ctx: UserContext,
     # [HALLUCINATION SHIELD]
     instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output:\n*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content. Do NOT pretend to run actions like saving files by inventing system logs."
 
-    # Reminder
-    if think:
-        instruction_prompt += "\n\n*Important:\n*For this request, think through the problem step-by-step (internally), then return only a concise final answer."    
-   
     if nsfw_enabled:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
-
 
     # === Gemma 4 Thinking Mode ===
     is_simple_chat = not chat.startswith("/code/")
@@ -1523,9 +1517,6 @@ async def _perform_prompt_gen(ctx: UserContext,
             "presence_penalty": 0.5,      # штраф за повторение идей/тем
         }
     }
-
-    if think and REASONONG_SUPPORTED:
-        main_payload["think"] = True
 
     if is_gemma4:
         if is_simple_chat and intent in thinking_intents:
