@@ -1074,8 +1074,8 @@ async def get_generated_avatars(ctx: UserContext) -> list:
             base_url = GATEWAY_URL.rstrip("/")
             clean_storage_id = storage_id.strip("/")
             
-            # List generated folder
-            url = f"{base_url}/{clean_storage_id}/generated?list&token={storage_key}"
+            # List generated/avatars folder
+            url = f"{base_url}/{clean_storage_id}/generated/avatars?list&token={storage_key}"
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=5) as resp:
@@ -1132,7 +1132,7 @@ async def get_generated_avatars(ctx: UserContext) -> list:
              # Logic for local mounts is complex, assume standard structure for now
              user_storage_path = os.path.join(STORAGE_ROOT, ctx.storage.strip("/"))
         
-        generated_dir = os.path.join(user_storage_path, "generated")
+        generated_dir = os.path.join(user_storage_path, "generated", "avatars")
         
         if os.path.exists(generated_dir):
             for filename in os.listdir(generated_dir):
@@ -2664,7 +2664,7 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
             
             if ctx.storage and ctx.omd_key:
                 try:
-                    dest_path = f"{ctx.storage}/generated"
+                    dest_path = f"{ctx.storage}/generated/avatars"
                     # upload_data_to_storage(omd_key, dest, filename, data, mime)
                     upload_data_to_storage(ctx.omd_key, dest_path, filename, image_data, "image/png")
                     logging.info(f"Avatar uploaded to {dest_path}/{filename}")
