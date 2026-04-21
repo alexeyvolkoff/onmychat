@@ -658,7 +658,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
                       provided_knowledge: list|None = None):
-    logging.info(f"Chat stream request: omd_key={omd_key[:10]}... storage={storage}")
+    logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}... storage={storage}")
     chat = chat or "default"
     ctx = get_ctx(omd_key, storage=storage)
 

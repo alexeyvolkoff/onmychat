@@ -184,7 +184,7 @@ def get_context(telegram_id: int) -> UserContext:
 
 
 def get_context_by_account(account_id: str, storage: str = "", force_reload: bool = False) -> UserContext:
-    logging.info(f"get_context_by_account: account_id={account_id[:10]}... storage={storage}")
+    logging.info(f"get_context_by_account: account_id={account_id[:10] if account_id else 'None'}... storage={storage}")
     """Вернуть контекст пользователя по account_id (omd_key).
        Если нет в bindings, пробуем спросить у OMD.
     """
