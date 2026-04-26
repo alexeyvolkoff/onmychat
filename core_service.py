@@ -2206,24 +2206,6 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if not img_data:
         raise Exception("Image generation failed")
 
-    # Inject prompt_id into image metadata
-    if prompt_id:
-        try:
-            img = Image.open(io.BytesIO(img_data))
-            meta = PngImagePlugin.PngInfo()
-            if img.info:
-                for k, v in img.info.items():
-                    meta.add_text(k, str(v))
-            
-            # Existing client reads 'UserComment' or 'comment'
-            meta.add_text("UserComment", f"prompt_id:{prompt_id}")
-            
-            output = io.BytesIO()
-            img.save(output, format="PNG", pnginfo=meta)
-            img_data = output.getvalue()
-            logging.info(f"Injected prompt_id:{prompt_id} into image metadata")
-        except Exception as e:
-            logging.error(f"Failed to inject metadata: {e}")
 
     # Report usage to console
 
