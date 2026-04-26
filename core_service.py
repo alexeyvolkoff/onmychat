@@ -3,6 +3,8 @@ import re
 import random
 import json
 import logging
+from PIL import Image, PngImagePlugin
+import io
 
 import aiohttp
 import time
@@ -2204,6 +2206,25 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if not img_data:
         raise Exception("Image generation failed")
 
+    # Inject prompt_id into image metadata
+    if prompt_id:
+        try:
+            img = Image.open(io.BytesIO(img_data))
+            meta = PngImagePlugin.PngInfo()
+            if img.info:
+                for k, v in img.info.items():
+                    meta.add_text(k, str(v))
+            
+            # Existing client reads 'UserComment' or 'comment'
+            meta.add_text("UserComment", f"prompt_id:{prompt_id}")
+            
+            output = io.BytesIO()
+            img.save(output, format="PNG", pnginfo=meta)
+            img_data = output.getvalue()
+            logging.info(f"Injected prompt_id:{prompt_id} into image metadata")
+        except Exception as e:
+            logging.error(f"Failed to inject metadata: {e}")
+
     # Report usage to console
 
 
@@ -2218,10 +2239,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     
     # Generate neutral description for public Readme and history
     neutral_description = await generate_neutral_description(ctx, img_prompt)
-    if prompt_id:
-        formatted_readme = f"prompt_id:{prompt_id}\n#{img_title}\n\n{neutral_description}"
-    else:
-        formatted_readme = f"#{img_title}\n\n{neutral_description}"
+    formatted_readme = f"#{img_title}\n\n{neutral_description}"
     
     # Create unique filename by appending timestamp to index
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
