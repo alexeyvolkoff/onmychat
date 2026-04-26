@@ -2075,7 +2075,7 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
 
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True) -> tuple[str, str, str]:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True, prompt_id: str | None = None) -> tuple[str, str, str]:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
@@ -2218,7 +2218,10 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     
     # Generate neutral description for public Readme and history
     neutral_description = await generate_neutral_description(ctx, img_prompt)
-    formatted_readme = f"#{img_title}\n\n{neutral_description}"
+    if prompt_id:
+        formatted_readme = f"prompt_id:{prompt_id}\n#{img_title}\n\n{neutral_description}"
+    else:
+        formatted_readme = f"#{img_title}\n\n{neutral_description}"
     
     # Create unique filename by appending timestamp to index
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2269,12 +2272,12 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             f.write(formatted_readme)
     return filename, img_title, neutral_description
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True) -> tuple[str, str, str]:
-    return await generate_image(ctx, prompt, chat, update_history=update_history)
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None) -> tuple[str, str, str]:
+    return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id)
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default') -> tuple[str, str, str]:
-    return await generate_image(ctx, prompt, chat)
+async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None) -> tuple[str, str, str]:
+    return await generate_image(ctx, prompt, chat, prompt_id=prompt_id)
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):

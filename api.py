@@ -159,6 +159,7 @@ class ChatInput(BaseModel):
     storage: str = ""
     settings: dict | None = None
     history: list | None = None
+    prompt_id: str | None = None
 
 class ChatStreamInput(BaseModel):
     omd_key: str
@@ -168,6 +169,7 @@ class ChatStreamInput(BaseModel):
     history: list | None = None
     settings: dict | None = None
     knowledge: list | None = None
+    prompt_id: str | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -208,6 +210,7 @@ class GenerateInput(BaseModel):
     storage: str = ""
     settings: dict | None = None
     history: list | None = None
+    prompt_id: str | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -649,7 +652,8 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         storage=data.storage,
         provided_history=data.history,
         provided_settings=data.settings,
-        provided_knowledge=data.knowledge
+        provided_knowledge=data.knowledge,
+        provided_prompt_id=data.prompt_id
     )
 
 @app.get("/chat/stream")
@@ -657,7 +661,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       storage: str = "",
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
-                      provided_knowledge: list|None = None):
+                      provided_knowledge: list|None = None,
+                      provided_prompt_id: str|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}... storage={storage}")
     chat = chat or "default"
     ctx = get_ctx(omd_key, storage=storage)
@@ -888,19 +893,21 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             if intent == "show":
                 # 2️⃣ картинка
                 # [LEGACY HISTORY] Load history removed
-                history = provided_history or []
-                
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
+                history = provided_history or []
                 img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
                 logging.info(f"Generating image for prompt {prompt}")
 
+                # Calculate prompt_id if not provided
+                prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
+
                 # Generate image using prompt, DO NOT save yet
-                path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False)
+                path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id)
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 
 
-                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
                 
 
                 #Set specific instructions
@@ -921,10 +928,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
                 logging.info(f"Generating image for prompt {prompt}")
 
+                # Calculate prompt_id if not provided
+                prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
+
                 # 3️⃣ Generate image
                 
-                path, title, description = await core_service.generate_image(ctx, img_prompt, chat)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                path, title, description = await core_service.generate_image(ctx, img_prompt, chat, prompt_id=prompt_id)
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
 
                 #Set specific instructions
                 instruction = (
@@ -1029,7 +1039,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
                 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False)
+                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=data.prompt_id)
                 yield f"data: {json.dumps({'prompt': prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
@@ -1138,7 +1148,7 @@ async def generate_character_image(data: GenerateInput):
     try:
         # generate_image returns (filename, title, description)
         is_new = data.message_nonce is None and data.message_index is None
-        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, is_new)
+        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id)
         
         # [LEGACY HISTORY] Load history removed
         history = []
@@ -1161,7 +1171,7 @@ async def generate_general_image(data: GenerateInput):
         ctx.settings.update(data.settings)
     try:
         # generate_image returns (filename, title, description)
-        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False)
+        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
         return {"image": filename, "description": description}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
