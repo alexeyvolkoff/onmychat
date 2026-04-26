@@ -1038,9 +1038,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Format prompt with title for generate_image to parse
                 formatted_prompt = f"Title: {img_title}\nImage: {img_prompt}"
                 
+                # Calculate prompt_id if not provided
+                prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
+
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=data.prompt_id)
-                yield f"data: {json.dumps({'prompt': prompt, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
+                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id)
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
