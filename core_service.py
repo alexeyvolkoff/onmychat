@@ -1,4 +1,5 @@
 import os
+import hashlib
 import re
 import random
 import json
@@ -59,6 +60,9 @@ APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 REASONONG_SUPPORTED = False
+
+def hash_string(s: str) -> str:
+    return hashlib.md5(s.encode()).hexdigest()
 
 
 # Prompt loading logic
