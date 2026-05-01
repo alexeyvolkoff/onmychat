@@ -113,7 +113,6 @@ INTENT_PROMPT = get_prompt("intent.txt")
 SAFETY_CHECK_PROMPT = get_prompt("safety_check.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
-NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
 DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
 IMAGE_NEUTRAL_DESC_PROMPT = get_prompt("image_neutral_desc.txt")
 
@@ -1887,12 +1886,17 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     nsfw_enabled = ctx.settings.get("nsfw", False)
     #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
+    # Clean prompt from slash commands
+    clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', prompt).strip()
+    if not clean_prompt:
+        clean_prompt = prompt
+
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=prompt, appearance=ctx.settings.get('assistant_appearance', ''))}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=ctx.settings.get('assistant_appearance', ''))}"
     else:  
         system_prompt =  user_prompt
-        image_instruction = instruction.format(prompt=prompt, appearance=ctx.settings.get('assistant_appearance', ''))
+        image_instruction = instruction.format(prompt=clean_prompt, appearance=ctx.settings.get('assistant_appearance', ''))
 
 
     history = history or []
@@ -1900,11 +1904,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Добавляем историю
-    messages.extend(history[-20:])
-
-        # Добавляем инструкцию
-    #messages.append({ "role": "system", "content": image_instruction})
+    # Добавляем историю с явным указанием контекста
+    if history:
+        messages.append({"role": "system", "content": "CONVERSATION CONTEXT (use this to determine current location, character's outfit, and situation):"})
+        messages.extend(history[-20:])
 
     # Добавляем запрос
     messages.append({ "role": "user", "content": image_instruction})

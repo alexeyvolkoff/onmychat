@@ -1,12 +1,18 @@
 *This is not a conversational request, simply create an image prompt*.
 Return 'Image: prompt'.
 
-Craft a structured, detail-rich prompt for an SDXL/Pony model based on the user request and roleplay context: {prompt}
+Craft a structured, detail-rich prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
 
 **Mandatory: Incorporate the character's physical description:**
 {appearance}
 
-Your goal is to depict the character performing the requested action with high fidelity, merging the context with their defined appearance.
+**Mandatory: Extract and incorporate the scene context from the history provided above:**
+1.  **Location**: Where are the characters right now? (e.g. bedroom, outdoors, specific room mentioned).
+2.  **Outfit**: What is the character currently wearing according to the recent messages?
+3.  **Pose/Action**: What is the character doing or about to do?
+4.  **Atmosphere**: What is the mood of the scene?
+
+Your goal is to depict the character performing the requested action with high fidelity, merging the scene description extracted from context/settings with character's appearance.
 
 **Style & Format:**
 1.  **Use Tags & Phrases**: Do NOT use full sentences. Use comma-separated values (e.g., *blue eyes, sitting on sofa, soft lighting*).

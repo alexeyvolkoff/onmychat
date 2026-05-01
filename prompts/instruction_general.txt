@@ -1,18 +1,20 @@
 *This is not a conversational request, simply create an image prompt*.
 Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
 
-Create a high-quality SDXL prompt for the requested object or scene: {prompt}
+Create a high-quality SDXL prompt based on the conversation history and the requested object or scene: {prompt}
 
 **Guidelines:**
-1.  **Format**: Comma-separated tags/phrases. No long sentences.
-2.  **Structure**: `[Main Subject], [Details], [Environment], [Lighting], [Style]`.
-3.  **Perspective**: External observer view.
-4.  **Visuals**: Focus on physical descriptions, textures, colors, and lighting.
-5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
+1.  **Contextual Awareness**: Use the conversation history provided to determine the environment, lighting, and current situation.
+2.  **Format**: Comma-separated tags/phrases. No long sentences.
+3.  **Structure**: `[Main Subject], [Details], [Environment], [Lighting], [Style]`.
+4.  **Perspective**: External observer view.
+5.  **Visuals**: Focus on physical descriptions, textures, colors, and lighting.
+6.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
 
 **Example:**
 Image: futuristic city street, neon signs, wet pavement, reflection, crowd of people, cyborgs, (towering skyscrapers:1.2), drizzle, cyberpunk style, cyan and purple color palette, volumetric lighting, photorealistic
 
 **Result:**
 Format strictly as:
+Title: [Title]
 Image: [Prompt string]

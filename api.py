@@ -895,8 +895,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] Load history removed
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
                 history = provided_history or []
+                logging.info(f"Generating refined image prompt for: {prompt}")
                 img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
-                logging.info(f"Generating image for prompt {prompt}")
 
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
@@ -925,8 +925,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # 1️⃣ статус
 
                 # 2️⃣ картинка
+                logging.info(f"Generating refined image prompt for: {prompt}")
                 img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
-                logging.info(f"Generating image for prompt {prompt}")
 
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
