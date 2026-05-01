@@ -193,6 +193,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
         user_id = "temp_anon"
         settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)
         ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
+        if not ctx.storage and ctx.settings.get("defaultStorage"):
+            ctx.storage = ctx.settings["defaultStorage"]
         return ctx
 
     if account_id in bindings["by_account"]:
@@ -201,6 +203,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
         settings = load_user_settings(binding["username"], omd_key=account_id, storage=storage, force_reload=force_reload)
         #logging.info(f"Loading settings for user: {binding["username"]}, NSFW: {settings.get("nsfw", False)}")
         ctx = UserContext(type="omd", user_id=binding["username"], settings=settings, history=[], omd_key=account_id, storage=storage)
+        if not ctx.storage and ctx.settings.get("defaultStorage"):
+            ctx.storage = ctx.settings["defaultStorage"]
         return ctx 
     
     # если не найден — пробуем запросить у OMD
@@ -227,6 +231,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
             if "language" in user_info:
                 settings["language"] = user_info["language"]
             ctx = UserContext(type="omd", user_id=username, settings=settings, history=[], omd_key=account_id, storage=storage)
+            if not ctx.storage and ctx.settings.get("defaultStorage"):
+                ctx.storage = ctx.settings["defaultStorage"]
             return ctx
     except Exception as e:
         logging.warning(f"Unbound OMD key: {account_id}")
@@ -240,6 +246,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
 
     settings = load_user_settings(user_id, storage=storage, omd_key=account_id, force_reload=force_reload)
     ctx = UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
+    if not ctx.storage and ctx.settings.get("defaultStorage"):
+        ctx.storage = ctx.settings["defaultStorage"]
     return ctx
 
 

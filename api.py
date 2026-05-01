@@ -223,6 +223,7 @@ class UpdateAssistantInput(BaseModel):
     assistant_appearance: str | None = None
     assistant_model: str | None = None
     name: str | None = None
+    defaultStorage: str | None = None
 
 class AvatarGenerateInput(BaseModel):
     omd_key: str
@@ -248,7 +249,8 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
             "style": ctx.settings.get("style", ""),
             "nsfw": ctx.settings.get("nsfw", False),
-            "model": ctx.settings.get("assistant_model", ""),
+            "assistant_model": ctx.settings.get("assistant_model", "Domi"),
+            "defaultStorage": ctx.settings.get("defaultStorage", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
             "omd_key": ctx.omd_key or omd_key
         }
@@ -289,6 +291,8 @@ async def update_assistant(request: Request):
             ctx.settings["assistant_model"] = data.assistant_model
         if data.name is not None:
             ctx.settings["name"] = data.name
+        if data.defaultStorage is not None:
+            ctx.settings["defaultStorage"] = data.defaultStorage
         
         user_context.save_user_settings(ctx)
         
