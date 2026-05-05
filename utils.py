@@ -168,7 +168,8 @@ def upload_to_storage(omd_key: str, dest: str, filename: str, local_path: str):
     mime, _ = mimetypes.guess_type(local_path)
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
+    clean_dest = dest.lstrip("/")
+    url = f"{GATEWAY_URL}/{clean_dest}/{filename}?jsonResponse=true"  
 
     with open(local_path, "rb") as f:
         resp = requests.put(url, headers=headers, data=f)
@@ -197,7 +198,8 @@ def upload_data_to_storage(omd_key: str, dest: str, filename: str, data, mime: s
 
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
+    clean_dest = dest.lstrip("/")
+    url = f"{GATEWAY_URL}/{clean_dest}/{filename}?jsonResponse=true"  
 
     resp = requests.put(url, headers=headers, data=body)
     try:
@@ -215,7 +217,8 @@ def fetch_json_from_storage(omd_key: str, dest: str, filename: str):
     headers = {
         "authorization": f"token:{omd_key}",
     }
-    url = f"{GATEWAY_URL}/{dest}/{filename}"
+    clean_dest = dest.lstrip("/")
+    url = f"{GATEWAY_URL}/{clean_dest}/{filename}"
     try:
         resp = requests.get(url, headers=headers, timeout=5)
         if resp.status_code == 200:
@@ -251,7 +254,8 @@ def upload_vec_to_storage(omd_key: str, dest: str, filename: str, data: list[dic
 
     headers["Content-Type"] = mime or "application/octet-stream"
 
-    url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"  
+    clean_dest = dest.lstrip("/")
+    url = f"{GATEWAY_URL}/{clean_dest}/{filename}?jsonResponse=true"  
 
     resp = requests.put(url, headers=headers, data=body)
     return resp.json()
