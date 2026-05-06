@@ -126,7 +126,6 @@ def not_authorized(request: Request):
 
 def get_omd_key(
     request: Request,
-    omd_key: str | None = Query(None),
     x_omd_key: str | None = Header(None, alias="X-OMD-Key"),
     authorization: str | None = Header(None)
 ):
@@ -142,7 +141,7 @@ def get_omd_key(
         if auth_val.startswith("token "):
             return auth_val[6:].strip()
         return auth_val
-    return omd_key
+    return None
 # CORS middleware already added at line 34
 
 @app.on_event("startup")
@@ -457,7 +456,7 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
              source_url = f"{base_url}/{clean_storage_id}/generated/{filename}"
              
              # Fetch the image
-             resp = requests.get(source_url, params={"token": ctx.omd_key})
+             resp = requests.get(source_url, headers={"Authorization": f"token:{ctx.omd_key}"})
              
              if resp.status_code != 200:
                   raise Exception(f"Failed to retrieve generated image: {resp.status_code}")
@@ -1980,7 +1979,7 @@ async def extract_knowledge(request: Request):
         if not url_or_path:
             raise HTTPException(status_code=400, detail="Missing url_or_path")
             
-        token = request.headers.get("X-OMD-Key") or request.query_params.get("omd_key")
+        token = request.headers.get("X-OMD-Key")
         ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history={}, omd_key=token)
         
         # We use a specialized branch of import logic that only returns text
