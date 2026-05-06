@@ -2592,7 +2592,7 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
         # 2. Determine Style Checkpoint
         style_map = {
             "realistic": "realistic",
-            "dream": "fantasy", 
+            "fantasy": "fantasy", 
             "perfect": "perfect",
             "tooned": "tooned"
         }
