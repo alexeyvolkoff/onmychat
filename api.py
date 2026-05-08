@@ -41,14 +41,13 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
-# CORS middleware is handled by the C++ gateway (omd-server)
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],
-#     allow_credentials=True,
-#     allow_methods=["*"], # Allows all methods
-#     allow_headers=["*"], # Allows all headers
-# )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8081", "http://localhost:8080", "http://localhost", "https://onmydisk.net"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Search Node Initialization
