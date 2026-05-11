@@ -380,7 +380,6 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
     """
     Поиск воспоминаний в ChromaDB.
     """
-    logging.info(f"[memory] Searching memories for: '{query}' in collection: '{collection}'")
     query_emb = embed_text(query)
     
     # 1. Permanent memories
@@ -436,7 +435,6 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
                     doc_id = meta.get("document_id")
                     # If it's already a chunk (has chunk_id), take it directly
                     if meta.get("chunk_id") is not None:
-                        logging.info(f"[memory] Entry {i} is a direct chunk, including it.")
                         contextual.append({
                             **meta,
                             "text": docs[i],
