@@ -59,11 +59,25 @@ CHROMA_DB_DIR = os.path.join(BASE_INDEX_DIR, "chroma_db")
 os.makedirs(CHROMA_DB_DIR, exist_ok=True)
 
 _chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-_collection = _chroma_client.get_or_create_collection(name="omd", metadata={"hnsw:space": "cosine"})
+
+def ensure_collection():
+    global _chroma_client
+    try:
+        # Test the existing client/collection
+        col = _chroma_client.get_or_create_collection(name="omd", metadata={"hnsw:space": "cosine"})
+        # Verify it actually works by calling a lightweight method
+        col.count()
+        return col
+    except Exception as e:
+        logging.warning(f"ChromaDB collection stale or missing, re-initializing: {e}")
+        _chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+        return _chroma_client.get_or_create_collection(name="omd", metadata={"hnsw:space": "cosine"})
+
+_collection = ensure_collection()
 
 def migrate_legacy_data():
     try:
-        if _collection.count() > 0:
+        if ensure_collection().count() > 0:
             return
         
         logging.info("Migrating legacy RAG data to ChromaDB...")
@@ -102,9 +116,27 @@ def migrate_legacy_data():
                                         meta = {k: v for k, v in m.items() if k not in ["embedding", "text", "user_id"]}
                                         meta["collection"] = collection_name
                                         meta.setdefault("relevance", "contextual")
+                                        
+                                        # Force owner=alexey for internal links and clean document_id
+                                        doc_id = meta.get("document_id", "")
+                                        if doc_id and doc_id.startswith("http") and "onmydisk.net" in doc_id:
+                                            try:
+                                                from urllib.parse import urlparse
+                                                parsed = urlparse(doc_id)
+                                                # Use full path as doc_id, but owner is always alexey
+                                                meta["owner"] = "alexey"
+                                                # Strip the owner part from path if it was there? 
+                                                # User said "сейчас без владельца", so maybe path IS the doc_id.
+                                                # Let's just take the whole path and let alexey own it.
+                                                meta["document_id"] = parsed.path.lstrip("/")
+                                            except:
+                                                meta["owner"] = "alexey"
+                                        else:
+                                            meta.setdefault("owner", "alexey")
+                                            
                                         metadatas.append(meta)
                                     
-                                    _collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+                                    ensure_collection().upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
                                     logging.info(f"Migrated {file} to collection {collection_name} ({len(memories)} items)")
                         except Exception as fe:
                             logging.error(f"Error migrating {path}: {fe}")
@@ -170,18 +202,34 @@ def add_memory_card(
         "relevance": relevance,
         "memory_id": mem_id,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "owner": "alexey"  # Default owner
     }
 
     if document_id:
+        # Extract owner if it's a full OMD URL
+        if document_id.startswith("http") and "onmydisk.net" in document_id:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(document_id)
+                parts = parsed.path.strip("/").split("/", 1)
+                if len(parts) == 2:
+                    metadata["owner"] = parts[0]
+                    document_id = parts[1]
+                else:
+                    metadata["owner"] = "alexey"
+                    document_id = parts[0]
+            except:
+                pass
+        
         metadata["document_id"] = document_id
         # Если это документ, удаляем старые записи этого документа в этой коллекции с ТЕМ ЖЕ типом важности (обычно сводка)
-        _collection.delete(where={"$and": [
+        ensure_collection().delete(where={"$and": [
             {"document_id": document_id}, 
             {"collection": collection},
             {"relevance": relevance}
         ]})
 
-    _collection.upsert(
+    ensure_collection().upsert(
         ids=[mem_id],
         embeddings=[vec],
         metadatas=[metadata],
@@ -234,11 +282,11 @@ def delete_memory_card(
 
         if document_id:
             where["document_id"] = document_id
-            _collection.delete(where=where)
+            ensure_collection().delete(where=where)
             return True
         elif mem_id:
             where["memory_id"] = mem_id
-            _collection.delete(where=where)
+            ensure_collection().delete(where=where)
             return True
         return False
     except Exception as e:
@@ -302,8 +350,9 @@ def search_document_chunks(
         # document_id was likely the source of vec_file
         pass # Better to use document_id if available
 
+    coll = ensure_collection()
     try:
-        results = _collection.query(
+        results = coll.query(
             query_embeddings=[query_emb],
             n_results=top_k,
             where=where
@@ -334,7 +383,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
     try:
         where = {"collection": collection}
             
-        results = _collection.get(where=where, include=['documents', 'metadatas', 'embeddings'])
+        results = ensure_collection().get(where=where, include=['documents', 'metadatas', 'embeddings'])
         if results['ids']:
             memories = []
             for i in range(len(results['ids'])):
@@ -382,11 +431,13 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
     """
     query_emb = embed_text(query)
     
+    coll = ensure_collection()
+    
     # 1. Permanent memories
     permanent_where = {"$and": [{"collection": collection}, {"relevance": "permanent"}]}
         
     try:
-        perm_results = _collection.get(where=permanent_where)
+        perm_results = coll.get(where=permanent_where)
         permanent = []
         if perm_results['ids']:
             for i in range(len(perm_results['ids'])):
@@ -404,7 +455,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
         # 2. Contextual memories
         if mem_id:
             # Прямая ссылка по ID
-            ctx_results = _collection.get(where={"memory_id": mem_id})
+            ctx_results = ensure_collection().get(where={"memory_id": mem_id})
         else:
             # Match contextual OR missing relevance
             contextual_where = {"$and": [
@@ -412,7 +463,8 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
                 {"relevance": {"$ne": "permanent"}}
             ]}
 
-            ctx_results = _collection.query(
+            coll = ensure_collection()
+            ctx_results = coll.query(
                 query_embeddings=[query_emb],
                 n_results=top_k,
                 where=contextual_where
@@ -545,13 +597,13 @@ def chunk_and_vectorize_to_file(
 
     try:
         # Сначала удаляем старые чанки ЭТОГО документа в этой коллекции
-        _collection.delete(where={"$and": [
+        ensure_collection().delete(where={"$and": [
             {"document_id": document_id}, 
             {"collection": collection},
             {"relevance": "document_chunk"}
         ]})
         
-        _collection.upsert(
+        ensure_collection().upsert(
             ids=ids,
             embeddings=embeddings,
             metadatas=metadatas,

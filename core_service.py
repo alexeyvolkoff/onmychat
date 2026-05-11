@@ -1269,7 +1269,80 @@ async def generate_image_workflow(workflow) -> bytes:
 
 
 
-async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[str]]:
+# === RAG ===
+def get_file_icon(filename: str) -> str:
+    ext = filename.split(".")[-1].lower() if "." in filename else ""
+    icon_map = {
+        "pdf": "file-pdf",
+        "doc": "file-word", "docx": "file-word", "odt": "file-word",
+        "xls": "file-excel", "xlsx": "file-excel", "ods": "file-excel",
+        "ppt": "file-powerpoint", "pptx": "file-powerpoint",
+        "jpg": "file-image", "jpeg": "file-image", "png": "file-image", "gif": "file-image", "svg": "file-image",
+        "mp4": "file-video", "mkv": "file-video", "avi": "file-video",
+        "mp3": "file-audio", "wav": "file-audio",
+        "zip": "file-archive", "rar": "file-archive", "7z": "file-archive", "tar": "file-archive", "gz": "file-archive",
+        "md": "file-markdown", "txt": "file-text",
+        "html": "file-code", "js": "file-code", "css": "file-code", "py": "file-code", "cpp": "file-code", "h": "file-code"
+    }
+    return icon_map.get(ext, "file")
+
+async def get_ref_metadata(owner: str, path: str) -> dict:
+    """Запрашивает метаданные и временную ссылку у шлюза On My Disk."""
+    import aiohttp
+    gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
+    # ВАЖНО: Для надежной работы (особенно с коннекторами) POST запрос 
+    # должен идти прямо на URL файла.
+    item_path = path.lstrip("/")
+    target_url = f"{gateway_url}/{owner}/{item_path}"
+    
+    # Новый рабочий токен краулера
+    CRAWLER_TOKEN = "mypears-4204"
+    
+    headers = {
+        "Authorization": f"token:{CRAWLER_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    metadata = {
+        "url": None,
+        "mimetype": None
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        # 1. Получаем ссылку getReference
+        ref_payload = {
+            "action": "getReference",
+            "item": item_path
+        }
+        try:
+            logging.info(f"Requesting getReference for {item_path} at {target_url}")
+            async with session.post(target_url, json=ref_payload, headers=headers, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    res = data.get("result", {})
+                    if res.get("success") and res.get("refKey"):
+                        metadata["url"] = f"{gateway_url}/ref/{res['refKey']}"
+        except Exception as e:
+            logging.error(f"Error getting getReference for {path}: {e}")
+
+        # 2. Получаем MIME-тип через getAttributes
+        attr_payload = {
+            "action": "getAttributes",
+            "item": item_path
+        }
+        try:
+            logging.info(f"Requesting getAttributes for {item_path} at {target_url}")
+            async with session.post(target_url, json=attr_payload, headers=headers, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if data.get("success") or "mimetype" in data:
+                        metadata["mimetype"] = data.get("mimetype")
+        except Exception as e:
+            logging.error(f"Error getting getAttributes for {path}: {e}")
+            
+    return metadata
+
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[dict]]:
     facts = []
     document_ids = []
 
@@ -1285,15 +1358,37 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     document_ids.append(doc_id)
 
     # Общие знания — если есть collection
+    sources_map = {} # To avoid duplicates
     if collection:
         shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=10)
         for m in shared:
             facts.append(f"• {m['text']}")
             doc_id = m.get("document_id")
+            owner = m.get("owner", "alexey")
             if doc_id:
-                document_ids.append(doc_id)
+                key = f"{owner}:{doc_id}"
+                if key not in sources_map:
+                    filename = doc_id.split("/")[-1]
+                    source = {
+                        "title": filename,
+                        "owner": owner,
+                        "path": doc_id,
+                        "mimetype": None,
+                        "url": None,
+                        "clickable": False
+                    }
+                    
+                    # Try to get metadata and secure link
+                    meta = await get_ref_metadata(owner, doc_id)
+                    if meta.get("url"):
+                        source["url"] = meta["url"]
+                        source["clickable"] = True
+                    if meta.get("mimetype"):
+                        source["mimetype"] = meta["mimetype"]
+                    
+                    sources_map[key] = source
 
-    return facts, document_ids
+    return facts, list(sources_map.values())
 
 # === Ollama запрос ===
 async def llm_request_stream(payload: dict, headers: dict = None):
@@ -1371,12 +1466,15 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === ВСПОМНИМ ФАКТЫ ===
     strict_fact = ""
     facts_text = ""
-    doc_ids = []
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     logging.info(f"Loading facts: {collection} {is_rag}")
-
     # === Facts injection ===
-    facts, doc_ids = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
+    facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
+    
+    # Yield sources immediately for the frontend widget
+    if sources:
+        yield {"sources": sources, "done": False}
+
     if facts:
         facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
     if is_rag:
@@ -1536,22 +1634,11 @@ async def _perform_prompt_gen(ctx: UserContext,
         if data["message"].get("thinking"):
             llm_think_response = data["message"]["thinking"]
 
-        # Добавляем блок с источниками — только в отображаемый ответ
-        links = []
-        if doc_ids:
-            seen = set()
-            for doc in doc_ids:
-                if doc in seen:
-                    continue  # пропускаем дубликаты
-                seen.add(doc)
-                # Формируем ссылку без экранирования, она будет безопасно обработана позже
-                links.append(doc)
-    
         # result object
         response = {}
         response["content"] = llm_response.strip()
-        if links:  # добавляем блок только если есть ссылки
-            response["sources"] = links
+        if sources:  # добавляем блок только если есть источники
+            response["sources"] = sources
         if strict_fact:    
             response["facts"] = strict_fact
         if llm_think_response:    
@@ -1575,8 +1662,8 @@ async def _perform_prompt_gen(ctx: UserContext,
             }     
             if strict_fact:    
                 history_entry["facts"] = strict_fact
-            if links:
-                history_entry["sources"] = links
+            if sources:
+                history_entry["sources"] = sources
             if llm_think_response:    
                 history_entry["thinking"] = llm_think_response
 

@@ -14,10 +14,22 @@ logger = logging.getLogger(__name__)
 
 class SearchNode:
     def __init__(self, storage_path: str, model: SentenceTransformer = None, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
+        self.storage_path = storage_path
         self.chroma_client = chromadb.PersistentClient(path=os.path.join(storage_path, "search_index"))
-        self.collection = self.chroma_client.get_or_create_collection(name="omd_search")
+        self._collection = self.chroma_client.get_or_create_collection(name="omd_search")
         self.model = model or SentenceTransformer(model_name)
         self.token = token
+        
+    def get_collection(self):
+        try:
+            # Test if collection is still valid
+            self._collection.count()
+            return self._collection
+        except Exception:
+            logger.warning("SearchNode collection stale, re-initializing")
+            self.chroma_client = chromadb.PersistentClient(path=os.path.join(self.storage_path, "search_index"))
+            self._collection = self.chroma_client.get_or_create_collection(name="omd_search")
+            return self._collection
         
     def _fetch_content(self, url: str) -> str:
         headers = {}
@@ -162,7 +174,7 @@ class SearchNode:
             embeddings = self.model.encode(documents).tolist()
             
             # Upsert into Chroma
-            self.collection.upsert(
+            self.get_collection().upsert(
                 ids=ids,
                 embeddings=embeddings,
                 metadatas=metadatas,
@@ -191,7 +203,7 @@ class SearchNode:
             # For now, let's implement exact match deletion which covers files. 
             # For folders, this might be incomplete without 'startswith'.
             
-            self.collection.delete(where={"itemPath": path})
+            self.get_collection().delete(where={"itemPath": path})
             
             # Hack for recursive: fetching all might be too heavy? 
             # Ideally we'd store a 'parentPath' or look into substring matching if supported.
@@ -207,14 +219,14 @@ class SearchNode:
         """
         # Retrieve all items with src path, update them to target path
         try:
-            results = self.collection.get(where={"itemPath": src})
+            results = self.get_collection().get(where={"itemPath": src})
             if results and results['ids']:
                 updates = []
                 for meta in results['metadatas']:
                     meta['itemPath'] = target
                     updates.append(meta)
                 
-                self.collection.update(
+                self.get_collection().update(
                     ids=results['ids'],
                     metadatas=updates
                 )
@@ -230,7 +242,7 @@ class SearchNode:
         """
         try:
             query_embedding = self.model.encode([query]).tolist()
-            results = self.collection.query(
+            results = self.get_collection().query(
                 query_embeddings=query_embedding,
                 n_results=limit
             )
