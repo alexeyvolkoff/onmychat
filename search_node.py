@@ -13,10 +13,10 @@ from urllib.parse import urljoin, urlparse
 logger = logging.getLogger(__name__)
 
 class SearchNode:
-    def __init__(self, storage_path: str, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
+    def __init__(self, storage_path: str, model: SentenceTransformer = None, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
         self.chroma_client = chromadb.PersistentClient(path=os.path.join(storage_path, "search_index"))
         self.collection = self.chroma_client.get_or_create_collection(name="omd_search")
-        self.model = SentenceTransformer(model_name)
+        self.model = model or SentenceTransformer(model_name)
         self.token = token
         
     def _fetch_content(self, url: str) -> str:

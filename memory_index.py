@@ -40,12 +40,20 @@ SUPPORTED_CONVERT_EXTS = {"docx", "odt", "pdf", "epub", "fb2", "csv"}
 SUPPORTED_PLAIN_EXTS = {"txt", "htm", "html", "xml", "md", "markdown"}
 
 
-import torch
+_model = None
 
-warnings.filterwarnings("ignore", category=FutureWarning)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-logging.info(f"Loading SentenceTransformer on {device}")
-_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+def get_model():
+    global _model
+    if _model is None:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Check if CPU is forced in settings or environment
+        if SETTINGS.get("FORCE_CPU_EMBEDDINGS", "false").lower() == "true" or os.environ.get("OMD_FORCE_CPU") == "true":
+            device = "cpu"
+            
+        logging.info(f"Loading SentenceTransformer on {device}...")
+        _model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+    return _model
 
 CHROMA_DB_DIR = os.path.join(BASE_INDEX_DIR, "chroma_db")
 os.makedirs(CHROMA_DB_DIR, exist_ok=True)
@@ -103,11 +111,11 @@ def migrate_legacy_data():
     except Exception as e:
         logging.error(f"Migration error: {e}")
 
-migrate_legacy_data()
+# migrate_legacy_data() # Moved to explicit call in api.py
 
 
 def embed_text(text: str) -> list:
-    return _model.encode(text, show_progress_bar=False).tolist()
+    return get_model().encode(text, show_progress_bar=False).tolist()
 
 def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
     return f"{BASE_INDEX_DIR}/{collection}.jsonl"

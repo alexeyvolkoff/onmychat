@@ -55,8 +55,11 @@ app.add_middleware(
 try:
     from search_node import SearchNode
     SEARCH_TOKEN = SETTINGS.get("SEARCH_TOKEN", "") # Ensure this key exists in config or is empty
-    search_node = SearchNode(storage_path=BASE_INDEX_DIR, token=SEARCH_TOKEN)
+    search_node = SearchNode(storage_path=BASE_INDEX_DIR, model=memory_index.get_model(), token=SEARCH_TOKEN)
     logging.info("[api] SearchNode initialized in BASE_INDEX_DIR")
+    
+    # Run legacy migration on the server side
+    memory_index.migrate_legacy_data()
 except ImportError as e:
     logging.error(f"[api] SearchNode initialization failed: Missing dependency - {e}. Please run 'pip install chromadb' in the venv.")
     search_node = None
