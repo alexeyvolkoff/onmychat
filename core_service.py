@@ -1315,7 +1315,7 @@ async def get_ref_metadata(owner: str, path: str) -> dict:
             "item": item_path
         }
         try:
-            logging.info(f"Requesting getReference for {item_path} at {target_url}")
+            logging.debug(f"Requesting getReference for {item_path} at {target_url}")
             async with session.post(target_url, json=ref_payload, headers=headers, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
@@ -1331,7 +1331,7 @@ async def get_ref_metadata(owner: str, path: str) -> dict:
             "item": item_path
         }
         try:
-            logging.info(f"Requesting getAttributes for {item_path} at {target_url}")
+            logging.debug(f"Requesting getAttributes for {item_path} at {target_url}")
             async with session.post(target_url, json=attr_payload, headers=headers, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
@@ -1467,7 +1467,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     strict_fact = ""
     facts_text = ""
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-    logging.info(f"Loading facts: {collection} {is_rag}")
+    logging.debug(f"Loading facts: {collection} {is_rag}")
     # === Facts injection ===
     facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
     

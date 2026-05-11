@@ -505,7 +505,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
                             "source": "memory"
                         })
         
-        logging.info(f"[memory] Search finished. Found {len(permanent + contextual)} total items.")
+        logging.debug(f"[memory] Search finished. Found {len(permanent + contextual)} total items.")
         return permanent + contextual
     except Exception as e:
         logging.error(f"[memory] Search error: {e}")
