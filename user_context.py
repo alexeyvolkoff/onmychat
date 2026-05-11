@@ -76,7 +76,7 @@ def save_bindings():
     except Exception as e:
         logging.error(f"Save bindings error: {e}")
 
-def get_context_by_account(account_id: str, storage: str = "", **kwargs) -> UserContext:
+def get_context_by_account(account_id: str, storage: str = "", force_reload: bool = False, **kwargs) -> UserContext:
     """Создает контекст на лету. Минимум логики, максимум скорости."""
     if not account_id:
         return UserContext(type="temp", user_id="anon", settings=load_user_settings(), history=[], storage=storage)
