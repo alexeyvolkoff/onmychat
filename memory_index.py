@@ -286,7 +286,7 @@ def search_document_chunks(
     vec_file: str,
     collection: str,
     top_k: int = 6,
-    distance_threshold: float = 0.6,
+    distance_threshold: float = 0.8,
     document_id: str | None = None
 ) -> list[dict]:
     """
@@ -376,10 +376,11 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
         print(f"[memory] Legacy load error: {e}")
         return []
 
-def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
+def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 5, distance_threshold: float = 0.8) -> list[dict]:
     """
     Поиск воспоминаний в ChromaDB.
     """
+    logging.info(f"[memory] Searching memories for: '{query}' in collection: '{collection}'")
     query_emb = embed_text(query)
     
     # 1. Permanent memories
@@ -429,22 +430,35 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
 
             for i in range(len(ids)):
                 dist = distances[i]
+                meta = metas[i]
+                
                 if dist <= distance_threshold or mem_id:
-                    doc_id = metas[i].get("document_id")
-                    if doc_id:
+                    doc_id = meta.get("document_id")
+                    # If it's already a chunk (has chunk_id), take it directly
+                    if meta.get("chunk_id") is not None:
+                        logging.info(f"[memory] Entry {i} is a direct chunk, including it.")
+                        contextual.append({
+                            **meta,
+                            "text": docs[i],
+                            "distance": dist,
+                            "source": "memory"
+                        })
+                    # If it's a document link (summary), search for its chunks
+                    elif doc_id:
                         chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=0.8)
                         contextual.extend(chunks)
                     else:
                         contextual.append({
-                            **metas[i],
+                            **meta,
                             "text": docs[i],
                             "distance": dist,
                             "source": "memory"
                         })
         
+        logging.info(f"[memory] Search finished. Found {len(permanent + contextual)} total items.")
         return permanent + contextual
     except Exception as e:
-        print(f"[memory] Search error: {e}")
+        logging.error(f"[memory] Search error: {e}")
         return []
 
 async def fetch_document_text(url: str, token: str = None) -> str:

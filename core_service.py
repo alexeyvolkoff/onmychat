@@ -1266,11 +1266,9 @@ async def generate_image_workflow(workflow) -> bytes:
 
     except Exception as e:
         logging.error(f"Error in generate_image_workflow: {e}")
-        return None, None
 
 
 
-# === RAG ===
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[str]]:
     facts = []
     document_ids = []
@@ -1288,7 +1286,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
     # Общие знания — если есть collection
     if collection:
-        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=3)
+        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=10)
         for m in shared:
             facts.append(f"• {m['text']}")
             doc_id = m.get("document_id")
