@@ -101,6 +101,7 @@ def migrate_legacy_data():
                                         
                                         meta = {k: v for k, v in m.items() if k not in ["embedding", "text", "user_id"]}
                                         meta["collection"] = collection_name
+                                        meta.setdefault("relevance", "contextual")
                                         metadatas.append(meta)
                                     
                                     _collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
@@ -405,7 +406,11 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
             # Прямая ссылка по ID
             ctx_results = _collection.get(where={"memory_id": mem_id})
         else:
-            contextual_where = {"$and": [{"collection": collection}, {"relevance": "contextual"}]}
+            # Match contextual OR missing relevance
+            contextual_where = {"$and": [
+                {"collection": {"$eq": collection}},
+                {"relevance": {"$ne": "permanent"}}
+            ]}
 
             ctx_results = _collection.query(
                 query_embeddings=[query_emb],
