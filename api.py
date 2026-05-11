@@ -33,6 +33,7 @@ import logging
 import json
  
 from config import USER_DATA_DIR
+from config import BASE_INDEX_DIR
 from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
@@ -54,8 +55,8 @@ app.add_middleware(
 try:
     from search_node import SearchNode
     SEARCH_TOKEN = SETTINGS.get("SEARCH_TOKEN", "") # Ensure this key exists in config or is empty
-    search_node = SearchNode(storage_path=USER_DATA_DIR, token=SEARCH_TOKEN)
-    logging.info("[api] SearchNode initialized")
+    search_node = SearchNode(storage_path=BASE_INDEX_DIR, token=SEARCH_TOKEN)
+    logging.info("[api] SearchNode initialized in BASE_INDEX_DIR")
 except ImportError as e:
     logging.error(f"[api] SearchNode initialization failed: Missing dependency - {e}. Please run 'pip install chromadb' in the venv.")
     search_node = None

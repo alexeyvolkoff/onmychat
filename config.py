@@ -6,3 +6,4 @@ _config.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="ut
 
 SETTINGS = _config["settings"]
 USER_DATA_DIR = "user_data"
+BASE_INDEX_DIR = "memory_index"

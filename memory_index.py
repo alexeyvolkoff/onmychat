@@ -8,13 +8,15 @@ from sentence_transformers import SentenceTransformer
 import logging
 import warnings
 from config import SETTINGS
-from config import USER_DATA_DIR
+from config import BASE_INDEX_DIR
 from user_context import UserContext
 import requests
 from urllib.parse import urlparse
 import re
 from utils import   upload_vec_to_storage
 import time
+import chromadb
+from chromadb.config import Settings
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
@@ -45,31 +47,79 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 logging.info(f"Loading SentenceTransformer on {device}")
 _model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
 
-BASE_INDEX_DIR = "memory_index"
+CHROMA_DB_DIR = os.path.join(BASE_INDEX_DIR, "chroma_db")
+os.makedirs(CHROMA_DB_DIR, exist_ok=True)
 
+_chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+_collection = _chroma_client.get_or_create_collection(name="omd", metadata={"hnsw:space": "cosine"})
 
+def migrate_legacy_data():
+    try:
+        if _collection.count() > 0:
+            return
+        
+        logging.info("Migrating legacy RAG data to ChromaDB...")
+        # Migrate shared collections and document chunks
+        if os.path.exists(BASE_INDEX_DIR):
+            for root, dirs, files in os.walk(BASE_INDEX_DIR):
+                for file in files:
+                    if file.endswith((".jsonl", ".vec")):
+                        # Determine collection name from path
+                        rel_path = os.path.relpath(root, BASE_INDEX_DIR)
+                        if rel_path == ".":
+                             collection_name = file.replace(".jsonl", "").replace(".vec", "")
+                        else:
+                             collection_name = rel_path.replace(os.sep, "_")
+                        
+                        path = os.path.join(root, file)
+                        try:
+                            with open(path, "r", encoding="utf-8") as f:
+                                memories = [json.loads(line) for line in f if line.strip()]
+                                if memories:
+                                    ids = []
+                                    embeddings = []
+                                    documents = []
+                                    metadatas = []
+                                    for i, m in enumerate(memories):
+                                        mem_id = m.get("memory_id") or m.get("chunk_id")
+                                        doc_id = m.get("document_id")
+                                        if doc_id and mem_id:
+                                             ids.append(f"{doc_id}:{mem_id}")
+                                        else:
+                                             ids.append(mem_id or str(uuid.uuid4()))
+                                             
+                                        embeddings.append(m["embedding"])
+                                        documents.append(m["text"])
+                                        
+                                        meta = {k: v for k, v in m.items() if k not in ["embedding", "text", "user_id"]}
+                                        meta["collection"] = collection_name
+                                        metadatas.append(meta)
+                                    
+                                    _collection.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+                                    logging.info(f"Migrated {file} to collection {collection_name} ({len(memories)} items)")
+                        except Exception as fe:
+                            logging.error(f"Error migrating {path}: {fe}")
 
-def cosine_distance(a, b):
-    a = np.array(a)
-    b = np.array(b)
-    return 1 - np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    except Exception as e:
+        logging.error(f"Migration error: {e}")
+
+migrate_legacy_data()
+
 
 def embed_text(text: str) -> list:
     return _model.encode(text, show_progress_bar=False).tolist()
 
 def get_index_path(user_id: str | None = None, collection: str = "user") -> str:
-    index_path = ""
-    if collection == "user":
-        index_path = f"{USER_DATA_DIR}/{user_id}/memory.jsonl"
-    else:
-        index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
-    return index_path
+    return f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
 
 
 
 
 def save_memories(ctx: UserContext, memories: list[dict], collection: str = "user"):
+    """
+    Deprecated for local storage (now uses ChromaDB), but kept for OMD sync compatibility.
+    """
     try:
         if (
             ctx.storage
@@ -80,7 +130,7 @@ def save_memories(ctx: UserContext, memories: list[dict], collection: str = "use
             # upload_vec_to_storage(ctx.omd_key, dest, "memory.jsonl", memories, "application/jsonl")
             pass # redundant: handled by OrbitDB in frontend
         else:
-            # локальный fallback
+            # локальный fallback (JSONL) - keeping for backup/migration if needed
             path = get_index_path(ctx.user_id, collection)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -99,50 +149,43 @@ def add_memory_card(
     mem_id: str | None = None
 ):
     """
-    Добавляет или обновляет запись в указанном индексе памяти (локально или в OMD).
-    - Если передан mem_id → обновляем карточку с этим ID.
-    - Если передан document_id (и relevance == "document") → заменяем все записи документа.
-    - Если не указано — создаём новую карточку.
+    Добавляет или обновляет запись в ChromaDB.
     """
-
-    # Загружаем существующие карточки
-    memories = []
-    try:
-        memories = load_memories(ctx, collection)
-    except Exception as e:
-        print(f"[memory] Empty memory: {ctx.user_id} {collection} {e}")
-
-    # Если есть document_id и это документ — удаляем старые записи документа
-    if document_id:
-        memories = [m for m in memories if m.get("document_id") != document_id]
-
-    # Если есть mem_id — удаляем запись с этим ID
-    if mem_id:
-        memories = [m for m in memories if m.get("memory_id") != mem_id]
-    else:
-        mem_id = str(uuid.uuid4())  # UUID стабильнее, чем timestamp
+    if not mem_id:
+        mem_id = str(uuid.uuid4())
 
     vec = embed_text(text)
 
-    entry = {
-        "embedding": vec,
-        "text": text.strip(),
+    metadata = {
         "collection": collection,
         "relevance": relevance,
-        "user_id": ctx.user_id,
         "memory_id": mem_id,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
     if document_id:
-        entry["document_id"] = document_id
+        metadata["document_id"] = document_id
+        # Если это документ, удаляем старые записи этого документа в этой коллекции с ТЕМ ЖЕ типом важности (обычно сводка)
+        _collection.delete(where={"$and": [
+            {"document_id": document_id}, 
+            {"collection": collection},
+            {"relevance": relevance}
+        ]})
 
-    memories.append(entry)
+    _collection.upsert(
+        ids=[mem_id],
+        embeddings=[vec],
+        metadatas=[metadata],
+        documents=[text.strip()]
+    )
 
-    try:
-        save_memories(ctx, memories, collection)
-    except Exception as e:
-        print(f"[memory] Save error: {ctx.user_id} {collection} {e}")
+    # Legacy fallback: also save to JSONL if desired (optional, but good for migration period)
+    # try:
+    #     memories = load_memories(ctx, collection)
+    #     memories = [m for m in memories if m.get("memory_id") != mem_id]
+    #     memories.append({**metadata, "embedding": vec, "text": text.strip()})
+    #     save_memories(ctx, memories, collection)
+    # except: pass
 
     return mem_id
 
@@ -155,10 +198,7 @@ def update_memory_card(
     mem_id: str | None = None
 ):
     """
-    Обновить существующую карточку памяти.
-    Если указан document_id — перезаписывается карточка документа.
-    Если указан mem_id — перезаписывается конкретная карточка.
-    Если ни то, ни другое не указано — создаётся новая карточка.
+    Обновить существующую карточку памяти в ChromaDB.
     """
     return add_memory_card(
         ctx=ctx,
@@ -178,22 +218,18 @@ def delete_memory_card(
     collection: str = "user"
 ) -> bool:
     """
-    Удаляет карточку памяти по mem_id или document_id.
-    Если передан document_id — удаляется все карточки с этим document_id.
-    Если mem_id — удаляется только одна карточка.
-    Возвращает True, если что-то было удалено.
+    Удаляет карточку памяти из ChromaDB.
     """
     try:
-        memories = load_memories(ctx, collection)
-        before_count = len(memories)
+        where = {"collection": collection}
 
         if document_id:
-            memories = [m for m in memories if m.get("document_id") != document_id]
+            where["document_id"] = document_id
+            _collection.delete(where=where)
+            return True
         elif mem_id:
-            memories = [m for m in memories if m.get("memory_id") != mem_id]
-
-        if len(memories) < before_count:
-            save_memories(ctx, memories, collection)
+            where["memory_id"] = mem_id
+            _collection.delete(where=where)
             return True
         return False
     except Exception as e:
@@ -233,60 +269,7 @@ def extract_memory_from_response(response: str) -> str | None:
     return None
 
 
-def make_file_name_from_document_id(document_id: str) -> str:
-    """
-    Преобразует URL или путь в "безопасное" имя файла.
-    Примеры:
-      https://www.geeksforgeeks.org/python/introduction-to-python/
-        → www.geeksforgeeks.org_python_introduction-to-python
-      https://example.com/
-        → example.com
-      https://weird.site/q?x=1&y=2
-        → weird.site
-      file:///home/user/doc.txt
-        → home_user_doc.txt
-    """
-    parsed = urlparse(document_id)
-
-    if parsed.scheme in ("http", "https"):
-        # Берём домен
-        base = parsed.netloc
-        # Убираем query и fragment, заменяем / на _
-        path = re.sub(r"[?#].*", "", parsed.path).strip("/")
-        if path:
-            path = path.replace("/", "_")
-            return f"{base}_{path}"
-        else:
-            return base
-
-    elif parsed.scheme == "file":
-        # Для file:/// → берём путь, заменяем / и \
-        path = parsed.path.lstrip("/")
-        safe_path = path.replace("/", "_").replace("\\", "_")
-        return safe_path
-
-    else:
-        # Локальные document_id или fallback
-        return document_id.replace("/", "_").replace("\\", "_")
     
-def escape_text_field(line: str) -> dict:
-    """
-    Исправляет все кавычки, экранирует специальные символы и обрабатывает переносы строк в поле text.
-    """
-    # Проверяем, есть ли незакрытое поле text
-    partial_text_match = re.search(r'("text"\s*:\s*)"((?:\\.|[^"])*)$', line)
-    if partial_text_match:
-        print("Найден разорванный блок 'text':")
-        print(f"Содержимое: {partial_text_match.group(2)[:100]}...")
-    
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError as e:
-        print(f"JSON error: {e}")
-        print(f"Problematic line (first 100 chars): {line[:100]}...")
-        raise
-
-
 def search_document_chunks(
     ctx: UserContext,    
     query: str,
@@ -294,65 +277,70 @@ def search_document_chunks(
     vec_file: str,
     collection: str,
     top_k: int = 6,
-    distance_threshold: float = 0.6
+    distance_threshold: float = 0.6,
+    document_id: str | None = None
 ) -> list[dict]:
+    """
+    Поиск фрагментов документа в ChromaDB.
+    """
+    query_emb = embed_text(query)
     
-    chunks = []
-    logging.info(f"Loading document: {vec_file} with threshold {distance_threshold}")
+    where = {"collection": collection}
+    if document_id:
+        where["document_id"] = document_id
+    elif vec_file:
+        # Fallback if only vec_file is provided (strip .vec extension)
+        # document_id was likely the source of vec_file
+        pass # Better to use document_id if available
 
     try:
-        if collection == "user" and ctx.storage and ctx.omd_key:
-            # Подгружаем vec из OMD
-            url = f"{GATEWAY_URL}/{ctx.storage}/vecs/{vec_file}?nocache={int(time.time())}"
-            token = ctx.omd_key
-            headers = {"Authorization": f"token:{token}"}
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                lines = resp.text.splitlines()
-                #logging.info(f"Loaded document: {len(lines)}")
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        chunk_obj = json.loads(line)
-                        chunks.append(chunk_obj)
-                    except json.JSONDecodeError as e:
-                        print("JSON error:", e)
-        else:
-            if not os.path.exists(vec_path):
-                return []
-            vec_file_path = f"{vec_path}/{vec_file}"
-            with open(vec_file_path, "r", encoding="utf-8") as f:
-                chunks = [json.loads(line) for line in f if line.strip()]
+        results = _collection.query(
+            query_embeddings=[query_emb],
+            n_results=top_k,
+            where=where
+        )
+        
+        out = []
+        if results['ids'] and results['ids'][0]:
+            for i in range(len(results['ids'][0])):
+                dist = results['distances'][0][i]
+                if dist <= distance_threshold:
+                    out.append({
+                        "text": results['documents'][0][i],
+                        "distance": dist,
+                        "source": "document",
+                        "document_id": results['metadatas'][0][i].get("document_id", ""),
+                        "relevance": "contextual",
+                    })
+        return out
     except Exception as e:
-        print(f"⚠️ Ошибка чтения {vec_path}: {e}")
+        print(f"[memory] Search chunks error: {e}")
         return []
-
-    if not chunks:
-        return []
-
-
-    query_emb = np.array(_model.encode([query], show_progress_bar=False)[0])
-
-    results = []
-    for chunk in chunks:
-        distance = cosine_distance(query_emb, chunk["embedding"])
-        if distance <= distance_threshold:
-            logging.info(f"Relevant chunk: {distance}")
-            results.append({
-                "text": chunk.get("text", "").strip(),
-                "distance": distance,
-                "source": "document",
-                "document_id": chunk.get("document_id", "").strip(),
-                "relevance": "contextual",
-            })
-
-    results.sort(key=lambda x: x["distance"])
-    return results[:top_k]
 
 
 def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
+    """
+    Загружает воспоминания. Сначала пытается из ChromaDB, затем из legacy JSONL.
+    """
+    try:
+        where = {"collection": collection}
+            
+        results = _collection.get(where=where, include=['documents', 'metadatas', 'embeddings'])
+        if results['ids']:
+            memories = []
+            for i in range(len(results['ids'])):
+                mem = {
+                    **results['metadatas'][i],
+                    "text": results['documents'][i],
+                }
+                if results['embeddings']:
+                    mem["embedding"] = results['embeddings'][i]
+                memories.append(mem)
+            return memories
+    except Exception as e:
+        print(f"[memory] Chroma load error: {e}")
+
+    # Legacy fallback
     try:
         if (
             ctx.storage
@@ -362,96 +350,89 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
             logging.info(f"loading memories from OMD {ctx.storage}")
             url = f"{GATEWAY_URL}/{ctx.storage}/memory.jsonl?nocache={int(time.time())}"
             headers = {"authorization": f"token:{ctx.omd_key}"}
-            logging.info(f"loading memories from {url}")
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
                 text = resp.content.decode("utf-8")
-                try:
-                    return [json.loads(line) for line in text.splitlines() if line.strip()]
-                except json.JSONDecodeError as je:
-                    print(f"[memory] JSON Decode Error from storage: {je}")
-                    return []
+                return [json.loads(line) for line in text.splitlines() if line.strip()]
             return []
         else:
-            # локальный fallback
-            if collection == "user":
-                index_path = f"{USER_DATA_DIR}/{ctx.user_id}/memory.jsonl"
-            else:
-                index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
+            index_path = f"{BASE_INDEX_DIR}/{collection}.jsonl"
 
             if not os.path.exists(index_path):
                 return []
 
-            memories = []
-            logging.info(f"loading memories {index_path}")
             with open(index_path, "r", encoding="utf-8") as f:
-                try:
-                    memories = [json.loads(line) for line in f if line.strip()]
-                except json.JSONDecodeError as je:
-                    print(f"[memory] JSON Decode Error from local: {je}")
-                    return []
-            return   memories
-
-
+                return [json.loads(line) for line in f if line.strip()]
     except Exception as e:
-        print(f"[memory] No personal memories yet: {ctx.user_id} {collection} {e}")
+        print(f"[memory] Legacy load error: {e}")
         return []
 
 def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 3, distance_threshold: float = 0.6) -> list[dict]:
-    # Load memories
-    memories = load_memories(ctx, collection)
-    vec_path = ""
-
-    if not collection == "user":
-        vec_path = f"{BASE_INDEX_DIR}/{collection}"
+    """
+    Поиск воспоминаний в ChromaDB.
+    """
+    query_emb = embed_text(query)
     
-    if not memories:
-        return []
-
-    query_emb = np.array(_model.encode([query], show_progress_bar=False)[0])
-
-    permanent = []
-    contextual = []
-
-    for m in memories:
-        relevance = m.get("relevance", "contextual")
-
-        if relevance == "permanent":
-            doc_id = m.get("document_id")
-            if doc_id:
-                vec_file = make_file_name_from_document_id(doc_id) + ".vec"
-                # Adding relevant document chunks with lenient threshold
-                doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection, distance_threshold=0.8)
-                permanent.extend(doc_chunks)
-            else:
-                # Adding memory card
-                permanent.append(m)
-        elif relevance == "contextual":
-            memory_id = m.get("memory_id")
-            if mem_id and mem_id == memory_id:
-                #direct reference
-                distance = 0
-            else:
-                distance = cosine_distance(query_emb, m["embedding"])    
-            doc_id = m.get("document_id")
-            #logging.info(f"Checking memory: {collection} {memory_id} {distance} {doc_id}")
-            if distance <= distance_threshold:
-                logging.info(f"Relevant memory: {collection} {memory_id} {distance} {doc_id}")
-                m["distance"] = distance
-                doc_id = m.get("document_id")
+    # 1. Permanent memories
+    permanent_where = {"$and": [{"collection": collection}, {"relevance": "permanent"}]}
+        
+    try:
+        perm_results = _collection.get(where=permanent_where)
+        permanent = []
+        if perm_results['ids']:
+            for i in range(len(perm_results['ids'])):
+                doc_id = perm_results['metadatas'][i].get("document_id")
                 if doc_id:
-                    vec_file = make_file_name_from_document_id(doc_id) + ".vec"
-                    # Adding relevant document chunks with lenient threshold
-                    doc_chunks = search_document_chunks(ctx, query, vec_path, vec_file, collection, distance_threshold=0.8)
-                    contextual.extend(doc_chunks)
+                    chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=0.8)
+                    permanent.extend(chunks)
                 else:
-                  # Adding memory card
-                  contextual.append(m)
+                    permanent.append({
+                        **perm_results['metadatas'][i],
+                        "text": perm_results['documents'][i],
+                        "source": "memory"
+                    })
 
-    contextual.sort(key=lambda x: x["distance"])
-    contextual = contextual[:top_k]
+        # 2. Contextual memories
+        if mem_id:
+            # Прямая ссылка по ID
+            ctx_results = _collection.get(where={"memory_id": mem_id})
+        else:
+            contextual_where = {"$and": [{"collection": collection}, {"relevance": "contextual"}]}
 
-    return permanent + contextual
+            ctx_results = _collection.query(
+                query_embeddings=[query_emb],
+                n_results=top_k,
+                where=contextual_where
+            )
+
+        contextual = []
+        if ctx_results['ids']:
+            # results['ids'] - это список списков для query, но плоский для get
+            is_query = isinstance(ctx_results['ids'][0], list)
+            ids = ctx_results['ids'][0] if is_query else ctx_results['ids']
+            metas = ctx_results['metadatas'][0] if is_query else ctx_results['metadatas']
+            docs = ctx_results['documents'][0] if is_query else ctx_results['documents']
+            distances = ctx_results['distances'][0] if (is_query and 'distances' in ctx_results) else [0]*len(ids)
+
+            for i in range(len(ids)):
+                dist = distances[i]
+                if dist <= distance_threshold or mem_id:
+                    doc_id = metas[i].get("document_id")
+                    if doc_id:
+                        chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=0.8)
+                        contextual.extend(chunks)
+                    else:
+                        contextual.append({
+                            **metas[i],
+                            "text": docs[i],
+                            "distance": dist,
+                            "source": "memory"
+                        })
+        
+        return permanent + contextual
+    except Exception as e:
+        print(f"[memory] Search error: {e}")
+        return []
 
 async def fetch_document_text(url: str, token: str = None) -> str:
     # URL construction
@@ -498,20 +479,6 @@ async def fetch_document_text(url: str, token: str = None) -> str:
     return text
 
 
-def escape_chunk_text(text: str) -> str:
-    """
-    Экранирует кавычки, переносы строк и обратные слэши внутри текста,
-    чтобы JSONL можно было безопасно читать.
-    """
-    # заменяем нестандартные кавычки на стандартные
-    text = text.replace('“', '"').replace('”', '"').replace('„', '"')
-    # экранируем обратные слэши
-    text = text.replace('\\', '\\\\')
-    # экранируем двойные кавычки
-    text = text.replace('"', '\\"')
-    # экранируем переносы строк и табуляции
-    text = text.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-    return text
 
 def chunk_and_vectorize_to_file(
     ctx: UserContext,
@@ -521,11 +488,11 @@ def chunk_and_vectorize_to_file(
     chunk_size: int = 500,
     overlap: int = 50
 ):
-    """Чанкает текст и сохраняет эмбеддинги в .vec файл (локально или в OMD)"""
-
-    filename = make_file_name_from_document_id(document_id)
-    chunks = []
+    """
+    Чанкает текст и сохраняет эмбеддинги в ChromaDB.
+    """
     words = text.split()
+    chunks = []
     i = 0
     while i < len(words):
         chunk_words = words[i:i+chunk_size]
@@ -533,45 +500,40 @@ def chunk_and_vectorize_to_file(
         chunks.append(chunk_text)
         i += chunk_size - overlap
 
-    # --- Формируем записи ---
-    entries = []
+    ids = []
+    embeddings = []
+    metadatas = []
+    documents = []
+    
     for idx, chunk in enumerate(chunks):
         vec = embed_text(chunk)
-        entry = {
-            "embedding": vec,
-            "text": escape_chunk_text(chunk),
-            "chunk_id": str(idx),
+        ids.append(f"{document_id}:{idx}")
+        embeddings.append(vec)
+        metadatas.append({
+            "collection": collection,
             "document_id": document_id,
+            "chunk_id": str(idx),
+            "relevance": "document_chunk",
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-        }
-        entries.append(entry)
+        })
+        documents.append(chunk)
 
     try:
-        if (
-            ctx.storage
-            and ctx.omd_key
-            and collection == "user"
-        ):
-            # --- Хранение в OMD ---
-            # dest = f"{ctx.storage}/vecs"
-            # upload_vec_to_storage(ctx.omd_key, dest, f"{filename}.vec", entries, "application/jsonl")
-            pass # redundant: handled by OrbitDB in frontend
-        else:
-            # --- Локальное хранение ---
-            if collection == "user":
-                vec_dir = f"{USER_DATA_DIR}/{ctx.user_id}/vecs"
-            else:
-                vec_dir = f"{BASE_INDEX_DIR}/{collection}"
-
-            os.makedirs(vec_dir, exist_ok=True)
-            vec_path = os.path.join(vec_dir, f"{filename}.vec")
-
-            with open(vec_path, "w", encoding="utf-8") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
+        # Сначала удаляем старые чанки ЭТОГО документа в этой коллекции
+        _collection.delete(where={"$and": [
+            {"document_id": document_id}, 
+            {"collection": collection},
+            {"relevance": "document_chunk"}
+        ]})
+        
+        _collection.upsert(
+            ids=ids,
+            embeddings=embeddings,
+            metadatas=metadatas,
+            documents=documents
+        )
     except Exception as e:
-        print(f"[vec] Save error: {ctx.user_id} {collection} {e}")
+        print(f"[memory] Chunk upsert error: {e}")
 
     # Report usage to console
     from utils import report_usage
