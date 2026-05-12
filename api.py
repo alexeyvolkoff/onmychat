@@ -38,7 +38,7 @@ from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 app = FastAPI()
 
@@ -129,13 +129,27 @@ def not_authorized(request: Request):
 
 def get_omd_key(
     request: Request,
+    omd_key: str | None = Query(None),
+    token: str | None = Query(None),
     x_omd_key: str | None = Header(None, alias="X-OMD-Key"),
+    x_omd_token: str | None = Header(None, alias="X-OMD-Token"),
     authorization: str | None = Header(None)
 ):
+    if omd_key:
+        logging.info(f"omd_key found in query: {omd_key[:10]}...")
+        return omd_key
+    if token:
+        logging.info(f"omd_key (token) found in query: {token[:10]}...")
+        return token
     if x_omd_key:
+        logging.info(f"omd_key found in X-OMD-Key header: {x_omd_key[:10]}...")
         return x_omd_key
+    if x_omd_token:
+        logging.info(f"omd_key found in X-OMD-Token header: {x_omd_token[:10]}...")
+        return x_omd_token
     if authorization:
         # Handle "Bearer <token>", "token:<token>", "token <token>" or just "<token>"
+        logging.info(f"omd_key found in Authorization header: {authorization[:20]}...")
         auth_val = authorization.strip()
         if auth_val.startswith("Bearer "):
             return auth_val[7:].strip()
@@ -144,6 +158,14 @@ def get_omd_key(
         if auth_val.startswith("token "):
             return auth_val[6:].strip()
         return auth_val
+    
+    # Check cookies
+    cookie_token = request.cookies.get("omd_key")
+    if cookie_token:
+        logging.info(f"omd_key found in cookie: {cookie_token[:10]}...")
+        return cookie_token
+
+    logging.warning("No omd_key found in request")
     return None
 # CORS middleware already added at line 34
 

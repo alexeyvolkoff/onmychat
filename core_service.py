@@ -1291,7 +1291,8 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
     import aiohttp
     gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
     item_path = path.lstrip("/")
-    target_url = f"{gateway_url}/{owner}/{item_path}"
+    
+    logging.info(f"get_source_metadata for {owner}:{item_path}. User: {ctx.user_id}, Key: {ctx.omd_key[:8] if ctx.omd_key else 'None'}")
     
     # Токен краулера для доступа к расшаренным данным
     CRAWLER_TOKEN = "mypears-4204"
@@ -1300,46 +1301,58 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
         "mimetype": None,
         "url": None,
         "clickable": False,
-        "fullPath": None
+        "fullPath": f"/{owner}/{item_path}" # Default full path
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Пробуем получить атрибуты с ключом текущего пользователя
+        # 1. Пробуем получить атрибуты с ключом текущего пользователя (User Mode)
+        # В этом режиме {owner} не должен присутствовать в пути, т.к. юзер и есть owner
         if ctx.omd_key:
             user_headers = {
                 "Authorization": f"token:{ctx.omd_key}",
                 "Content-Type": "application/json"
             }
             try:
+                # В режиме юзера стучимся по пути БЕЗ owner
+                user_target_url = f"{gateway_url}/{item_path}"
                 attr_payload = {"action": "getAttributes", "item": item_path}
-                async with session.post(target_url, json=attr_payload, headers=user_headers, timeout=5) as resp:
+                logging.info(f"Checking USER access for /{item_path} with token {ctx.omd_key[:8]}...")
+                async with session.post(user_target_url, json=attr_payload, headers=user_headers, timeout=5) as resp:
+                    logging.info(f"User access check status: {resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         if data.get("success") or "mimetype" in data:
+                            logging.info(f"User access GRANTED for /{item_path}")
                             metadata["mimetype"] = data.get("mimetype")
                             metadata["clickable"] = True
-                            metadata["fullPath"] = f"/{owner}/{item_path}"
                             return metadata
+                    else:
+                        logging.info(f"User access denied or not found at /{item_path} (status {resp.status})")
             except Exception as e:
-                logging.debug(f"User access check failed for {path}: {e}")
-
-        # 2. Если доступа нет, пробуем через мастер-токен с префиксом владельца
+                logging.error(f"User access check failed for {path}: {e}")
+        
+        # 2. Если не удалось или нет ключа, СРАЗУ пробуем через мастер-токен (Master Mode)
+        # В этом режиме ОБЯЗАТЕЛЬНО указываем {owner} в пути
+        master_target_url = f"{gateway_url}/{owner}/{item_path}"
+        master_token = f"{CRAWLER_TOKEN}:{owner}"
         master_headers = {
-            "Authorization": f"token:{CRAWLER_TOKEN}:{owner}",
+            "Authorization": f"token:{master_token}",
             "Content-Type": "application/json"
         }
         try:
             attr_payload = {"action": "getAttributes", "item": item_path}
-            async with session.post(target_url, json=attr_payload, headers=master_headers, timeout=5) as resp:
+            logging.info(f"Checking MASTER access for {owner}/{item_path} with master token {master_token[:15]}...")
+            async with session.post(master_target_url, json=attr_payload, headers=master_headers, timeout=5) as resp:
+                logging.info(f"Master access check status: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
                     if data.get("success") or "mimetype" in data:
+                        logging.info(f"Master access GRANTED for {owner}/{item_path}")
                         metadata["mimetype"] = data.get("mimetype")
-                        link_data = data.get("linkData", {})
-                        if link_data and link_data.get("key"):
-                            metadata["url"] = f"{gateway_url}/ref/{link_data['key']}"
-                            metadata["clickable"] = True
-                            return metadata
+                        metadata["clickable"] = True
+                        return metadata
+                else:
+                    logging.warning(f"Master access DENIED for {owner}/{item_path} (Status {resp.status})")
         except Exception as e:
             logging.error(f"Master access check failed for {path}: {e}")
 
@@ -1370,6 +1383,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             owner = m.get("owner", "alexey")
             if doc_id:
                 key = f"{owner}:{doc_id}"
+                logging.info(f"Processing source: {key}")
                 if key not in sources_map:
                     filename = doc_id.split("/")[-1]
                     source = {
@@ -1382,6 +1396,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     }
                     
                     # Try to get metadata and secure link
+                    logging.info(f"Fetching metadata for source: {owner}/{doc_id}")
                     meta = await get_source_metadata(ctx, owner, doc_id)
                     source.update(meta)
                     

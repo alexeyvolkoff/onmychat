@@ -278,14 +278,12 @@ def delete_memory_card(
     Удаляет карточку памяти из ChromaDB.
     """
     try:
-        where = {"collection": collection}
-
         if document_id:
-            where["document_id"] = document_id
+            where = {"$and": [{"collection": collection}, {"document_id": document_id}]}
             ensure_collection().delete(where=where)
             return True
         elif mem_id:
-            where["memory_id"] = mem_id
+            where = {"$and": [{"collection": collection}, {"memory_id": mem_id}]}
             ensure_collection().delete(where=where)
             return True
         return False
@@ -344,7 +342,7 @@ def search_document_chunks(
     
     where = {"collection": collection}
     if document_id:
-        where["document_id"] = document_id
+        where = {"$and": [{"collection": collection}, {"document_id": document_id}]}
     elif vec_file:
         # Fallback if only vec_file is provided (strip .vec extension)
         # document_id was likely the source of vec_file
