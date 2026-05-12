@@ -1292,9 +1292,6 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
     gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
     item_path = path.lstrip("/")
     
-    logging.info(f"get_source_metadata for {owner}:{item_path}. User: {ctx.user_id}, Key: {ctx.omd_key[:8] if ctx.omd_key else 'None'}")
-    
-    # Токен краулера для доступа к расшаренным данным
     CRAWLER_TOKEN = "mypears-4204"
     
     metadata = {
@@ -1306,41 +1303,30 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
     
     async with aiohttp.ClientSession() as session:
         # 1. Пробуем получить атрибуты с ключом текущего пользователя (User Mode)
-        # В этом режиме {owner} не должен присутствовать в пути, т.к. юзер и есть owner
         if ctx.omd_key:
             user_headers = {
                 "Authorization": f"token:{ctx.omd_key}",
                 "Content-Type": "application/json"
             }
             try:
-                # В режиме юзера стучимся по пути БЕЗ owner
                 user_target_url = f"{gateway_url}/{item_path}"
-                # Добавляем лидирующий слэш, как это делает фронтенд в fullPath()
                 full_item_path = "/" + item_path
                 attr_payload = {"action": "getAttributes", "item": full_item_path}
-                logging.info(f"Checking USER access for {full_item_path} with token {ctx.omd_key[:8]}...")
                 async with session.post(user_target_url, json=attr_payload, headers=user_headers, timeout=5) as resp:
-                    logging.info(f"User access check status: {resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
-                        logging.info(f"User access check response: {data}")
                         result = data.get("result", {})
-                        # Проверяем успех и в корне, и в result
                         success = data.get("success") or result.get("success")
                         mimetype = result.get("mimetype") or data.get("mimetype")
                         
                         if success and mimetype:
-                            logging.info(f"User access GRANTED for {full_item_path}")
                             metadata["mimetype"] = mimetype
                             metadata["clickable"] = True
                             return metadata
-                    else:
-                        logging.info(f"User access denied or not found at {full_item_path} (status {resp.status})")
             except Exception as e:
                 logging.error(f"User access check failed for {path}: {e}")
         
-        # 2. Если не удалось или нет ключа, СРАЗУ пробуем через мастер-токен (Master Mode)
-        # В этом режиме ОБЯЗАТЕЛЬНО указываем {owner} в пути
+        # 2. Если не удалось или нет ключа, пробуем через мастер-токен (Master Mode)
         master_target_url = f"{gateway_url}/{owner}/{item_path}"
         master_token = f"{CRAWLER_TOKEN}:{owner}"
         master_headers = {
@@ -1348,27 +1334,19 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
             "Content-Type": "application/json"
         }
         try:
-            # Добавляем лидирующий слэш для поля item
             full_item_path = "/" + item_path
             attr_payload = {"action": "getAttributes", "item": full_item_path}
-            logging.info(f"Checking MASTER access for /{owner}{full_item_path} with master token {master_token[:15]}...")
             async with session.post(master_target_url, json=attr_payload, headers=master_headers, timeout=5) as resp:
-                logging.info(f"Master access check status: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
-                    logging.info(f"Master access check response: {data}")
                     result = data.get("result", {})
-                    # Проверяем успех и в корне, и в result
                     success = data.get("success") or result.get("success")
                     mimetype = result.get("mimetype") or data.get("mimetype")
                     
                     if success and mimetype:
-                        logging.info(f"Master access GRANTED for {owner}/{item_path}")
                         metadata["mimetype"] = mimetype
                         metadata["clickable"] = True
                         return metadata
-                else:
-                    logging.warning(f"Master access DENIED for {owner}/{item_path} (Status {resp.status})")
         except Exception as e:
             logging.error(f"Master access check failed for {path}: {e}")
 
