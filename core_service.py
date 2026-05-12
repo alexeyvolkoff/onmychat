@@ -1351,7 +1351,7 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
             # Добавляем лидирующий слэш для поля item
             full_item_path = "/" + item_path
             attr_payload = {"action": "getAttributes", "item": full_item_path}
-            logging.info(f"Checking MASTER access for /{owner}/{item_path} with master token {master_token[:15]}...")
+            logging.info(f"Checking MASTER access for /{owner}{full_item_path} with master token {master_token[:15]}...")
             async with session.post(master_target_url, json=attr_payload, headers=master_headers, timeout=5) as resp:
                 logging.info(f"Master access check status: {resp.status}")
                 if resp.status == 200:
