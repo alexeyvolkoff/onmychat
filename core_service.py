@@ -1286,60 +1286,63 @@ def get_file_icon(filename: str) -> str:
     }
     return icon_map.get(ext, "file")
 
-async def get_ref_metadata(owner: str, path: str) -> dict:
-    """Запрашивает метаданные и временную ссылку у шлюза On My Disk."""
+async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
+    """Запрашивает метаданные источника с учетом прав доступа."""
     import aiohttp
     gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
-    # ВАЖНО: Для надежной работы (особенно с коннекторами) POST запрос 
-    # должен идти прямо на URL файла.
     item_path = path.lstrip("/")
     target_url = f"{gateway_url}/{owner}/{item_path}"
     
-    # Новый рабочий токен краулера
+    # Токен краулера для доступа к расшаренным данным
     CRAWLER_TOKEN = "mypears-4204"
     
-    headers = {
-        "Authorization": f"token:{CRAWLER_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
     metadata = {
+        "mimetype": None,
         "url": None,
-        "mimetype": None
+        "clickable": False,
+        "fullPath": None
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем ссылку getReference
-        ref_payload = {
-            "action": "getReference",
-            "item": item_path
-        }
-        try:
-            logging.debug(f"Requesting getReference for {item_path} at {target_url}")
-            async with session.post(target_url, json=ref_payload, headers=headers, timeout=5) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    res = data.get("result", {})
-                    if res.get("success") and res.get("refKey"):
-                        metadata["url"] = f"{gateway_url}/ref/{res['refKey']}"
-        except Exception as e:
-            logging.error(f"Error getting getReference for {path}: {e}")
+        # 1. Пробуем получить атрибуты с ключом текущего пользователя
+        if ctx.omd_key:
+            user_headers = {
+                "Authorization": f"token:{ctx.omd_key}",
+                "Content-Type": "application/json"
+            }
+            try:
+                attr_payload = {"action": "getAttributes", "item": item_path}
+                async with session.post(target_url, json=attr_payload, headers=user_headers, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        if data.get("success") or "mimetype" in data:
+                            metadata["mimetype"] = data.get("mimetype")
+                            metadata["clickable"] = True
+                            metadata["fullPath"] = f"/{owner}/{item_path}"
+                            return metadata
+            except Exception as e:
+                logging.debug(f"User access check failed for {path}: {e}")
 
-        # 2. Получаем MIME-тип через getAttributes
-        attr_payload = {
-            "action": "getAttributes",
-            "item": item_path
+        # 2. Если доступа нет, пробуем через мастер-токен с префиксом владельца
+        master_headers = {
+            "Authorization": f"token:{CRAWLER_TOKEN}:{owner}",
+            "Content-Type": "application/json"
         }
         try:
-            logging.debug(f"Requesting getAttributes for {item_path} at {target_url}")
-            async with session.post(target_url, json=attr_payload, headers=headers, timeout=5) as resp:
+            attr_payload = {"action": "getAttributes", "item": item_path}
+            async with session.post(target_url, json=attr_payload, headers=master_headers, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
                     if data.get("success") or "mimetype" in data:
                         metadata["mimetype"] = data.get("mimetype")
+                        link_data = data.get("linkData", {})
+                        if link_data and link_data.get("key"):
+                            metadata["url"] = f"{gateway_url}/ref/{link_data['key']}"
+                            metadata["clickable"] = True
+                            return metadata
         except Exception as e:
-            logging.error(f"Error getting getAttributes for {path}: {e}")
-            
+            logging.error(f"Master access check failed for {path}: {e}")
+
     return metadata
 
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[dict]]:
@@ -1374,16 +1377,13 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                         "owner": owner,
                         "mimetype": None,
                         "url": None,
-                        "clickable": False
+                        "clickable": False,
+                        "fullPath": None
                     }
                     
                     # Try to get metadata and secure link
-                    meta = await get_ref_metadata(owner, doc_id)
-                    if meta.get("url"):
-                        source["url"] = meta["url"]
-                        source["clickable"] = True
-                    if meta.get("mimetype"):
-                        source["mimetype"] = meta["mimetype"]
+                    meta = await get_source_metadata(ctx, owner, doc_id)
+                    source.update(meta)
                     
                     sources_map[key] = source
 
