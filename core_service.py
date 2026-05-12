@@ -1372,7 +1372,6 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     source = {
                         "title": filename,
                         "owner": owner,
-                        "path": doc_id,
                         "mimetype": None,
                         "url": None,
                         "clickable": False
