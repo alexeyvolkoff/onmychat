@@ -1321,9 +1321,12 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                     logging.info(f"User access check status: {resp.status}")
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
-                        if data.get("success") or "mimetype" in data:
+                        logging.info(f"User access check response: {data}")
+                        result = data.get("result", {})
+                        mimetype = result.get("mimetype") or data.get("mimetype")
+                        if data.get("success") or mimetype:
                             logging.info(f"User access GRANTED for /{item_path}")
-                            metadata["mimetype"] = data.get("mimetype")
+                            metadata["mimetype"] = mimetype
                             metadata["clickable"] = True
                             return metadata
                     else:
@@ -1346,9 +1349,12 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                 logging.info(f"Master access check status: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
-                    if data.get("success") or "mimetype" in data:
+                    logging.info(f"Master access check response: {data}")
+                    result = data.get("result", {})
+                    mimetype = result.get("mimetype") or data.get("mimetype")
+                    if data.get("success") or mimetype:
                         logging.info(f"Master access GRANTED for {owner}/{item_path}")
-                        metadata["mimetype"] = data.get("mimetype")
+                        metadata["mimetype"] = mimetype
                         metadata["clickable"] = True
                         return metadata
                 else:
