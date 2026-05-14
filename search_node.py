@@ -31,51 +31,129 @@ class SearchNode:
             self._collection = self.chroma_client.get_or_create_collection(name="omd_search")
             return self._collection
         
-    def _fetch_content(self, url: str) -> str:
+    def _fetch_xml(self, url: str) -> str:
         headers = {}
         if self.token:
-            headers["Authorization"] = self.token
+            headers["Authorization"] = f"token:{self.token}" if ":" not in self.token else self.token
             
         try:
-            logger.info(f"Fetching {url}")
-            response = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"Fetching XML from {url}")
+            fetch_url = url if url.endswith('/') or '?' in url else url + '/'
+            response = requests.get(fetch_url, headers=headers, timeout=30)
             response.raise_for_status()
             return response.text
         except Exception as e:
             logger.error(f"Error fetching {url}: {e}")
             return ""
 
+    def _fetch_file_content(self, url: str, convertible: bool, content_type: str) -> str:
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"token:{self.token}" if ":" not in self.token else self.token
+            
+        try:
+            fetch_url = url
+            if convertible:
+                fetch_url += "?totext"
+            elif content_type in ["text/plain", "text/markdown", "application/json", "text/javascript", "text/css"]:
+                fetch_url += "?direct"
+            else:
+                return ""
+
+            logger.info(f"Fetching file content from {fetch_url}")
+            response = requests.get(fetch_url, headers=headers, timeout=60)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            logger.error(f"Error fetching file content {url}: {e}")
+            return ""
+
+    def index_url(self, start_url: str):
+        queue = [start_url]
+        visited = set()
+        total_indexed = 0
+        
+        while queue:
+            current_url = queue.pop(0)
+            if current_url in visited:
+                continue
+            visited.add(current_url)
+            
+            xml_content = self._fetch_xml(current_url)
+            if not xml_content or "<omd_index>" not in xml_content:
+                continue
+                
+            items = self._parse_omd_index(xml_content, current_url)
+            
+            ids = []
+            documents = []
+            metadatas = []
+            
+            for item in items:
+                item_name = item['url']
+                if not item_name or item_name.startswith('?'):
+                    continue
+                
+                item_url = urljoin(current_url.rstrip('/') + '/', item_name)
+                
+                if item['contentType'] == 'folder':
+                    queue.append(item_url)
+                    continue
+                
+                convertible = item.get('convertible') == 'True'
+                file_text = self._fetch_file_content(item_url, convertible, item['contentType'])
+                
+                if not file_text:
+                    continue
+                
+                doc_id = item_url
+                text_to_index = f"{item['title']}\n{item['description']}\n{file_text}"[:10000]
+                
+                ids.append(doc_id)
+                documents.append(text_to_index)
+                
+                parsed_url = urlparse(item_url)
+                item_path = parsed_url.path
+                
+                meta = {
+                    "url": item_url,
+                    "itemPath": item_path,
+                    "title": item['title'] or os.path.basename(item_path),
+                    "description": item['description'] or "",
+                    "owner": item['owner'] or "",
+                    "contentType": item['contentType'] or "",
+                    "last_modified": item['last_modified'] or ""
+                }
+                metadatas.append(meta)
+                total_indexed += 1
+                
+            if ids:
+                embeddings = self.model.encode(documents).tolist()
+                self.get_collection().upsert(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    documents=documents
+                )
+                logger.info(f"Batch indexed {len(ids)} items from {current_url}")
+
+        return {"status": "ok", "indexed": total_indexed}
+
     def _parse_omd_index(self, content: str, base_url: str):
-        """
-        Parses the <omd_index> XML response.
-        Expected format:
-        <omd_index>
-            <doc url='...' contentType='...' owner='...' last_modified='...'>
-                <title>...</title>
-                <description>...</description>
-            </doc>
-            ...
-        </omd_index>
-        """
         items = []
         try:
-            # Handle potential encoding issues or malformed XML
             parser = etree.XMLParser(recover=True)
             root = etree.fromstring(content.encode('utf-8'), parser=parser)
             
-            if root.tag != 'omd_index':
-                logger.warning("Root tag is not omd_index")
-                return items
-
-            for doc in root.findall('doc'):
+            for doc in root.findall('.//doc'):
                 item = {
                     'url': doc.get('url'),
                     'contentType': doc.get('contentType'),
                     'owner': doc.get('owner'),
                     'last_modified': doc.get('last_modified'),
+                    'convertible': doc.get('convertible'),
                     'title': '',
-                    'description': '',
-                    'snippet': ''
+                    'description': ''
                 }
                 
                 title_elem = doc.find('title')
@@ -86,160 +164,44 @@ class SearchNode:
                 if desc_elem is not None:
                     item['description'] = desc_elem.text or ''
                     
-                # Construct absolute URL/Item Path logic
-                # The 'url' attribute in XML might be relative or a query string (e.g., ?readme)
-                # We need to map this back to the OnMyDisk path structure if possible,
-                # or store it in a way that allows retrieval.
-                # However, for the PeARS drop-in, expected search results usually contain 'path' or 'itemPath'.
-                # Let's see what the crawler does.
-                # The crawler was called with ?url=<OMD_URL>/<PATH>
-                # The XML returned describes that PATH (and its children if it's a folder).
-                
-                # If the 'url' attr is like "?readme", it refers to the container path.
-                # If it's a child listing (not fully visible in the snippet I saw, but implied),
-                # we might need to handle recursion if the XML contained children. 
-                # But the snippet showed <doc> tags being appended to responseXml.
-                
-                # For now, let's treat the 'snippet' as a combination of title and description
-                item['snippet'] = f"{item['title']}\n{item['description']}"
-                
                 items.append(item)
-                
         except Exception as e:
             logger.error(f"Error parsing XML: {e}")
-            
         return items
 
-    def index_url(self, url: str):
-        """
-        Crawls the given URL and indexes the content.
-        This roughly mimics the PeARS /indexer/from_crawl behavior.
-        """
-        content = self._fetch_content(url)
-        if not content:
-            return {"status": "error", "message": "Failed to fetch content"}
-            
-        # Parse the XML index
-        parsed_items = self._parse_omd_index(content, url)
-        
-        # Prepare for ChromaDB
-        ids = []
-        documents = []
-        metadatas = []
-        embeddings = []
-        
-        # Extract the base path from the URL query param if possible, 
-        # but here 'url' is the direct link to the resource being crawled.
-        # The URL passed to from_crawl is usually "http://omd-server/path/to/resource"
-        
-        parsed_url = urlparse(url)
-        # simplistic path mapping
-        path = parsed_url.path
-        
-        for i, item in enumerate(parsed_items):
-            # Generate a unique ID. 
-            # If the XML 'url' is relative (e.g. "?readme"), we construct a unique ID based on the crawl URL.
-            # If it's a site sub-page, it might have a full URL.
-            
-            doc_id = f"{url}#{i}"
-            
-            # Simple text representation for embedding
-            text_to_embed = f"{item['title']} {item['description']}"
-            
-            ids.append(doc_id)
-            documents.append(text_to_embed)
-            
-            # Create metadata
-            # Ensure all values are strings/ints/floats for chroma
-            meta = {
-                "itemPath": path, # Store the crawl path as the item path for now. 
-                                  # Refinement: if parsing children, iterate their names?
-                                  # The XML analysis showed it returns information about the *requested resource*.
-                                  # Does it return children? 
-                                  # "if (! m_rootResource->isSharedRoot()) { Q_FOREACH(QString entryMame, localListing) ... }"
-                                  # Yes, it iterates children and adds them to responseXml (though some parts seemed Cut off in snippet).
-                                  # Assuming one <doc> per child or one <doc> for the folder + docs for children.
-                                  # Wait, the snippet showed "responseXml += ..." for the folder itself or its children.
-                                  # It seems to flatten them into a list of <doc> elements.
-                
-                "title": item['title'],
-                "description": item['description'],
-                "owner": item['owner'] or "",
-                "snippet": item['snippet'],
-                "contentType": item['contentType'] or ""
-            }
-            metadatas.append(meta)
-            
-        if documents:
-            embeddings = self.model.encode(documents).tolist()
-            
-            # Upsert into Chroma
-            self.get_collection().upsert(
-                ids=ids,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                documents=documents
-            )
-            logger.info(f"Indexed {len(documents)} items from {url}")
-            return {"status": "ok", "indexed": len(documents)}
-        else:
-            logger.warning(f"No items found to index for {url}")
-            return {"status": "ok", "indexed": 0}
-
     def delete_path(self, path: str):
-        """
-        Removes items related to the path.
-        PeARS usage: /api/urls/delete?path=...
-        """
-        # We need to find items where itemPath starts with path or equals path.
-        # ChromaDB delete supports 'where' filter.
         try:
-            # This deletes where itemPath == path exactly. 
-            # To delete children recursively, we might need a regex or simply delete exact match 
-            # if the crawler logic sends delete for every file.
-            # However, usually delete is for a folder. Chroma 'where' operator doesn't support 'startswith' natively yet in all versions?
-            # Actually, standard Chroma where clause is exact match.
-            # We might need to query first or iterate.
-            # For now, let's implement exact match deletion which covers files. 
-            # For folders, this might be incomplete without 'startswith'.
-            
             self.get_collection().delete(where={"itemPath": path})
-            
-            # Hack for recursive: fetching all might be too heavy? 
-            # Ideally we'd store a 'parentPath' or look into substring matching if supported.
-            
             return {"status": "ok"}
         except Exception as e:
             logger.error(f"Error deleting path {path}: {e}")
             return {"status": "error", "message": str(e)}
 
     def move_path(self, src: str, target: str):
-        """
-        PeARS usage: /api/urls/move?src=...&target=...
-        """
-        # Retrieve all items with src path, update them to target path
         try:
             results = self.get_collection().get(where={"itemPath": src})
             if results and results['ids']:
-                updates = []
-                for meta in results['metadatas']:
+                for i, doc_id in enumerate(results['ids']):
+                    meta = results['metadatas'][i]
+                    old_url = meta['url']
+                    new_url = old_url.replace(src, target, 1)
+                    meta['url'] = new_url
                     meta['itemPath'] = target
-                    updates.append(meta)
-                
-                self.get_collection().update(
-                    ids=results['ids'],
-                    metadatas=updates
-                )
+                    
+                    doc_content = results['documents'][i]
+                    self.get_collection().delete(ids=[doc_id])
+                    self.get_collection().add(
+                        ids=[new_url],
+                        documents=[doc_content],
+                        metadatas=[meta],
+                        embeddings=[results['embeddings'][i]] if results['embeddings'] else None
+                    )
             return {"status": "ok"}
         except Exception as e:
             logger.error(f"Error moving path {src} to {target}: {e}")
             return {"status": "error", "message": str(e)}
 
-    def search(self, query: str, limit: int = 10):
-        """
-        Semantic search.
-        Returns entries compatible with main.js expectations.
-        """
+    def search(self, query: str, limit: int = 20):
         try:
             query_embedding = self.model.encode([query]).tolist()
             results = self.get_collection().query(
@@ -247,25 +209,25 @@ class SearchNode:
                 n_results=limit
             )
             
-            # Map to expected JSON format
-            # main.js expects: { key: { itemPath:..., snippet:..., title:..., description:... } } 
-            # or array? code said "for (var searchItem in data)" -> object iteration or array iteration.
-            
-            out_results = []
-            
+            out_dict = {}
             if results['ids']:
                 for i in range(len(results['ids'][0])):
+                    doc_id = results['ids'][0][i]
                     meta = results['metadatas'][0][i]
-                    item = {
-                        "itemPath": meta.get("itemPath", ""),
-                        "snippet": meta.get("snippet", ""),
-                        "title": meta.get("title", ""),
-                        "description": meta.get("description", "")
-                    }
-                    out_results.append(item)
+                    doc_text = results['documents'][0][i]
+                    snippet = doc_text[:200] + "..." if len(doc_text) > 200 else doc_text
                     
-            return out_results
-            
+                    out_dict[doc_id] = {
+                        "itemPath": meta.get("itemPath", ""),
+                        "snippet": snippet,
+                        "title": meta.get("title", ""),
+                        "description": meta.get("description", ""),
+                        "owner": meta.get("owner", ""),
+                        "contentType": meta.get("contentType", ""),
+                        "last_modified": meta.get("last_modified", "")
+                    }
+            return out_dict
         except Exception as e:
             logger.error(f"Search error: {e}")
-            return []
+            return {}
+
