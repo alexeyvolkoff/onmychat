@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse, JSONResponse
@@ -70,15 +70,15 @@ except Exception as e:
 # PeARS-compatible endpoints
 
 @app.get("/indexer/from_crawl")
-async def indexer_from_crawl(url: str, request: Request, background_tasks: BackgroundTasks):
+async def indexer_from_crawl(url: str, request: Request):
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     if not search_node:
         raise HTTPException(status_code=503, detail="Search service unavailable")
         
-    background_tasks.add_task(search_node.index_url, url)
-    return {"status": "indexing_started", "url": url}
+    result = search_node.index_url(url)
+    return result
 
 @app.get("/api/urls/delete")
 async def delete_url(path: str, request: Request):
