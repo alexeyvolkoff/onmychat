@@ -116,23 +116,6 @@ async def move_url(request: Request):
     result = search_node.move_path(src, target)
     return result
 
-@app.get("/search")
-async def search(q: str, limit: int = 20, lang: str = "en"):
-    # PeARS args: q=<query>, limit=<int>, lang=<lang>
-    # Note: Authentication for search is handled by OMD gateway, 
-    # but we might want to check for 'Omni-Search-Token' if this is exposed directly.
-    # However, OMD gateway proxies it.
-    
-    if not search_node:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
-        
-    results = search_node.search(q, limit)
-    
-    # Return as JSON (list of items or dict depending on frontend expectation)
-    # The frontend code iterates: "for (var searchItem in data)"
-    # A list is fine for this loop.
-    return results
-
 def not_authorized(request: Request):
     # Basic check for token if we want to enforce it for management endpoints
     # PeARS checks 'Authorization' header for the crawler token.
@@ -181,6 +164,18 @@ def get_omd_key(
 
     logging.warning("No omd_key found in request")
     return None
+
+@app.get("/search")
+async def search(q: str, limit: int = 20, lang: str = "en", omd_key: str = Depends(get_omd_key)):
+    if not search_node:
+        raise HTTPException(status_code=503, detail="Search service unavailable")
+        
+    owner = ""
+    if omd_key:
+        owner = user_context.get_username_from_token(omd_key)
+
+    results = search_node.search(q, limit, owner=owner)
+    return results
 # CORS middleware already added at line 34
 
 @app.on_event("startup")

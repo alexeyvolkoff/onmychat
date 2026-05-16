@@ -201,12 +201,19 @@ class SearchNode:
             logger.error(f"Error moving path {src} to {target}: {e}")
             return {"status": "error", "message": str(e)}
 
-    def search(self, query: str, limit: int = 20):
+    def search(self, query: str, limit: int = 20, owner: str = ""):
         try:
-            query_embedding = self.model.encode([query]).tolist()
+            query_embedding = self.model.encode([query], show_progress_bar=False).tolist()
+            
+            where = None
+            if owner:
+                where = {"owner": {"$eq": owner}}
+                
+            logger.info(f"Searching for '{query}' with filter: {where}")
             results = self.get_collection().query(
                 query_embeddings=query_embedding,
-                n_results=limit
+                n_results=limit,
+                where=where
             )
             
             out_dict = {}

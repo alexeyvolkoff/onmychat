@@ -96,6 +96,23 @@ def get_context(telegram_id: int) -> UserContext:
         return UserContext(type="omd", user_id=binding["username"], settings=load_user_settings(), history=[], omd_key=binding.get("account_id"))
     return UserContext(type="temp", user_id=str(telegram_id), settings=load_user_settings(), history=[])
 
+def get_username_from_token(account_id: str) -> str | None:
+    """Fetches the real username from OMD gateway using the session/token."""
+    import requests
+    from config import SETTINGS
+    gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net")
+    url = f"{gateway_url}/userinfo"
+    data = {"action": "getUserInfo", "session_id": account_id}
+    try:
+        response = requests.post(url, json=data, timeout=5)
+        response.raise_for_status()
+        user_info = response.json()
+        if user_info.get("valid"):
+            return user_info["user"]
+    except Exception as e:
+        logging.error(f"Get username error: {e}")
+    return None
+
 def bind(ctx: UserContext, account_id: str):
     """Связывает TG с OMD аккаунтом. Используется только при онбординге в Telegram."""
     import requests
