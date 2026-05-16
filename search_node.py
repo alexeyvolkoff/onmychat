@@ -128,7 +128,7 @@ class SearchNode:
                 total_indexed += 1
                 
             if ids:
-                embeddings = self.model.encode(documents).tolist()
+                embeddings = self.model.encode(documents, show_progress_bar=False).tolist()
                 self.get_collection().upsert(
                     ids=ids,
                     embeddings=embeddings,
