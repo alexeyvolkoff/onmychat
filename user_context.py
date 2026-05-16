@@ -80,13 +80,20 @@ def get_user_info_from_token(account_id: str) -> dict | None:
     import requests
     from config import SETTINGS
     gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net")
-    url = f"{gateway_url}/userinfo"
-    data = {"action": "getUserInfo", "session_id": account_id}
+    # Correct endpoint and action for user profile as used by frontend
+    url = f"{gateway_url}/" 
+    data = {"action": "getProfileData", "user": ""}
+    headers = {"Authorization": f"token:{account_id}"}
     try:
-        response = requests.post(url, json=data, timeout=5)
+        response = requests.post(url, json=data, headers=headers, timeout=5)
         response.raise_for_status()
-        user_info = response.json()
-        return user_info
+        resp_json = response.json()
+        if resp_json and "result" in resp_json and "profile" in resp_json["result"]:
+            user_info = resp_json["result"]["profile"]
+            # Ensure 'valid' is set if we got a profile
+            if "user" in user_info:
+                user_info["valid"] = True
+            return user_info
     except Exception as e:
         logging.error(f"Get user info error: {e}")
     return None
