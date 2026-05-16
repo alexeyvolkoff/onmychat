@@ -180,8 +180,7 @@ async def search(q: str, limit: int = 20, lang: str = "en", omd_key: str = Depen
 
 @app.on_event("startup")
 async def startup_event():
-    user_context.load_bindings()
-    logging.info("[api] Bindings loaded")
+    logging.info("[api] Startup complete")
 
 # ==== Модели ввода ====
 
@@ -1295,9 +1294,7 @@ async def update_assistant(request: Request):
 
 @app.post("/notify/signout")
 async def notify_signout(data: SignoutInput):
-    if data.omd_key in user_context.bindings["by_account"]:
-        del user_context.bindings["by_account"][data.omd_key]
-        logging.info(f"Signed out user with key {data.omd_key}")
+    logging.info(f"Signout notification for key {data.omd_key[:10]}...")
     return {"status": "ok"}
 
 
