@@ -38,7 +38,7 @@ from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
