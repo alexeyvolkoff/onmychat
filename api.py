@@ -119,10 +119,16 @@ async def move_url(request: Request):
 def not_authorized(request: Request):
     # Basic check for token if we want to enforce it for management endpoints
     # PeARS checks 'Authorization' header for the crawler token.
-    auth_header = request.headers.get("Authorization")
-    if SEARCH_TOKEN and auth_header != SEARCH_TOKEN:
-        return True
-    return False
+    auth_header = request.headers.get("Authorization") or ""
+    
+    # Handle 'token:MYTOKEN' format used by gateway
+    token = auth_header
+    if token.startswith("token:"):
+        token = token[len("token:"):]
+        
+    if SEARCH_TOKEN and token != SEARCH_TOKEN:
+        return True # Not authorized
+    return False # Authorized
 
 def get_omd_key(
     request: Request,
@@ -170,11 +176,8 @@ async def search(q: str, limit: int = 20, lang: str = "en", omd_key: str = Depen
     if not search_node:
         raise HTTPException(status_code=503, detail="Search service unavailable")
         
-    owner = ""
-    if omd_key:
-        owner = user_context.get_username_from_token(omd_key)
-
-    results = search_node.search(q, limit, owner=owner)
+    ctx = get_ctx(omd_key)
+    results = search_node.search(q, limit, ctx=ctx)
     return results
 # CORS middleware already added at line 34
 

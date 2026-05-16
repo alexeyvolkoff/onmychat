@@ -29,7 +29,8 @@ from memory_index import (
     add_memory_card,
     fetch_document_text,
     chunk_and_vectorize_to_file,
-    search_memories
+    search_memories,
+    search_indexed_files
 )
 
 
@@ -1353,6 +1354,7 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
     return metadata
 
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[dict]]:
+    logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     document_ids = []
 
@@ -1377,24 +1379,35 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             owner = m.get("owner", "alexey")
             if doc_id:
                 key = f"{owner}:{doc_id}"
-                logging.info(f"Processing source: {key}")
                 if key not in sources_map:
                     filename = doc_id.split("/")[-1]
-                    source = {
+                    sources_map[key] = {
                         "title": filename,
                         "owner": owner,
-                        "mimetype": None,
-                        "url": None,
                         "clickable": False,
-                        "fullPath": None
                     }
-                    
-                    # Try to get metadata and secure link
-                    logging.info(f"Fetching metadata for source: {owner}/{doc_id}")
-                    meta = await get_source_metadata(ctx, owner, doc_id)
-                    source.update(meta)
-                    
-                    sources_map[key] = source
+
+    # Личные проиндексированные файлы (omd_search)
+    user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=5)
+    for f in user_files:
+        facts.append(f"• [From file {f['title']}]: {f['text']}")
+        key = f"file:{f['document_id']}"
+        if key not in sources_map:
+            sources_map[key] = {
+                "title": f['title'],
+                "owner": f['owner'],
+                "clickable": True,
+                "url": f"https://onmydisk.net{f['document_id']}",
+                "fullPath": f['document_id']
+            }
+
+    # Fetch metadata for all sources
+    for key, source in sources_map.items():
+        if not source.get("clickable"): # Already has metadata if clickable
+             owner = source.get("owner", "alexey")
+             doc_id = key.split(":", 1)[1] if ":" in key else key
+             meta = await get_source_metadata(ctx, owner, doc_id)
+             source.update(meta)
 
     return facts, list(sources_map.values())
 

@@ -17,9 +17,14 @@ class SearchNode:
     def __init__(self, storage_path: str, model: SentenceTransformer = None, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
         self.storage_path = storage_path
         self.chroma_client = chromadb.PersistentClient(path=os.path.join(storage_path, "search_index"))
-        self._collection = self.chroma_client.get_or_create_collection(name="omd_search")
+        self._collection = self.chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
         self.model = model or SentenceTransformer(model_name)
         self.token = token
+        self.blacklist = [
+            "Bineon", "node_modules", ".git", ".venv", "venv", "__pycache__", 
+            "site-packages", "bin", "obj", "target", "dist", "build",
+            ".cache", ".idea", ".vscode", ".metadata"
+        ]
         
     def get_collection(self):
         try:
@@ -29,7 +34,7 @@ class SearchNode:
         except Exception:
             logger.warning("SearchNode collection stale, re-initializing")
             self.chroma_client = chromadb.PersistentClient(path=os.path.join(self.storage_path, "search_index"))
-            self._collection = self.chroma_client.get_or_create_collection(name="omd_search")
+            self._collection = self.chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
             return self._collection
         
     def _fetch_xml(self, url: str) -> str:
@@ -99,17 +104,57 @@ class SearchNode:
                 item_url = urljoin(current_url.rstrip('/') + '/', item_name)
                 
                 if item['contentType'] == 'folder':
+                    item_name_lower = item_name.lower()
+                    if any(b.lower() in item_name_lower for b in self.blacklist):
+                        logger.info(f"Skipping blacklisted folder: {item_url}")
+                        continue
                     queue.append(item_url)
                     continue
                 
+                # List of users/groups that can access this item
+                allowed_entities = []
+                item_owner = item.get('owner', '')
+                if item_owner:
+                    allowed_entities.append(item_owner)
+                
+                shared_with = item.get('shared_with', '')
+                if shared_with:
+                    entities = [e.strip() for e in shared_with.split(',') if e.strip()]
+                    allowed_entities.extend(entities)
+                
+                # If no owner or shared_with, default to alexey for now (compatibility)
+                if not allowed_entities:
+                    allowed_entities = ['alexey']
+
+                logger.info(f"Indexing {item_url} for entities: {allowed_entities}")
                 # Check if item already exists and hasn't changed
+                # We check the primary entry (actual owner)
+                primary_id = f"{item_url}:{allowed_entities[0]}"
                 try:
-                    existing = self.get_collection().get(ids=[item_url], include=['metadatas'])
-                    if existing and existing['metadatas']:
-                        if existing['metadatas'][0].get('last_modified') == item['last_modified']:
-                            logger.info(f"Skipping unchanged file: {item_url}")
-                            total_skipped += 1
-                            continue
+                    # We also check how many entries we have for this URL
+                    # to see if shared_with has changed
+                    existing_entries = self.get_collection().get(
+                        where={"url": item_url},
+                        include=['metadatas']
+                    )
+                    
+                    if existing_entries and existing_entries['metadatas']:
+                        primary_meta = None
+                        for m in existing_entries['metadatas']:
+                            if m.get('owner') == item_owner:
+                                primary_meta = m
+                                break
+                        
+                        if primary_meta and primary_meta.get('last_modified') == item['last_modified']:
+                            # Check if the number of shared entries matches
+                            if len(existing_entries['metadatas']) == len(allowed_entities):
+                                logger.info(f"Skipping unchanged file and permissions: {item_url}")
+                                total_skipped += 1
+                                continue
+                            else:
+                                logger.info(f"Permissions changed for {item_url}, re-indexing...")
+                                # Delete old entries before re-indexing
+                                self.get_collection().delete(where={"url": item_url})
                 except Exception as e:
                     logger.warning(f"Error checking existing item {item_url}: {e}")
 
@@ -119,25 +164,28 @@ class SearchNode:
                 if not file_text:
                     continue
                 
-                doc_id = item_url
                 text_to_index = f"{item['title']}\n{item['description']}\n{file_text}"[:10000]
-                
-                ids.append(doc_id)
-                documents.append(text_to_index)
                 
                 parsed_url = urlparse(item_url)
                 item_path = parsed_url.path
+
+                # Add an entry for EACH allowed entity
+                for entity in allowed_entities:
+                    doc_id = f"{item_url}:{entity}"
+                    ids.append(doc_id)
+                    documents.append(text_to_index)
+                    
+                    meta = {
+                        "url": item_url,
+                        "itemPath": item_path,
+                        "title": item['title'] or os.path.basename(item_path),
+                        "description": item['description'] or "",
+                        "owner": entity, # Store the specific entity as owner for filtering
+                        "contentType": item['contentType'] or "",
+                        "last_modified": item['last_modified'] or ""
+                    }
+                    metadatas.append(meta)
                 
-                meta = {
-                    "url": item_url,
-                    "itemPath": item_path,
-                    "title": item['title'] or os.path.basename(item_path),
-                    "description": item['description'] or "",
-                    "owner": item['owner'] or "",
-                    "contentType": item['contentType'] or "",
-                    "last_modified": item['last_modified'] or ""
-                }
-                metadatas.append(meta)
                 total_indexed += 1
                 
             if ids:
@@ -163,6 +211,7 @@ class SearchNode:
                     'url': doc.get('url'),
                     'contentType': doc.get('contentType'),
                     'owner': doc.get('owner'),
+                    'shared_with': doc.get('shared_with', ''),
                     'last_modified': doc.get('last_modified'),
                     'convertible': doc.get('convertible'),
                     'title': '',
@@ -214,13 +263,24 @@ class SearchNode:
             logger.error(f"Error moving path {src} to {target}: {e}")
             return {"status": "error", "message": str(e)}
 
-    def search(self, query: str, limit: int = 20, owner: str = ""):
+    def search(self, query: str, limit: int = 20, owner: str = "", ctx = None):
         try:
             query_embedding = self.model.encode([query], show_progress_bar=False).tolist()
             
-            where = None
+            allowed_owners = set()
             if owner:
-                where = {"owner": {"$eq": owner}}
+                allowed_owners.add(owner)
+            elif ctx:
+                allowed_owners.add(ctx.user_id)
+                if hasattr(ctx, 'groups') and ctx.groups:
+                    for g in ctx.groups:
+                        if g: allowed_owners.add(g)
+                allowed_owners.add('public') # Always allow public content
+            
+            where = None
+            if allowed_owners:
+                allowed_owners_list = list(allowed_owners)
+                where = {"owner": {"$in": allowed_owners_list}}
                 
             logger.info(f"Searching for '{query}' with filter: {where}")
             results = self.get_collection().query(

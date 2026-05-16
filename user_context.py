@@ -15,6 +15,8 @@ class UserContext:
     user_id: str
     settings: dict
     history: list
+    group: str = ""
+    groups: list = None
     omd_key: str = ""
     storage: str = ""
 
@@ -53,16 +55,28 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
     if not account_id:
         return UserContext(type="temp", user_id="anon", settings=load_user_settings(), history=[], storage=storage)
 
-    # Для Web - stateless идентификатор
-    # Пытаемся получить имя пользователя через токен, если возможно
-    username = get_username_from_token(account_id)
-    if username:
-        return UserContext(type="omd", user_id=username, settings=load_user_settings(), history=[], omd_key=account_id, storage=storage)
+    # Пытаемся получить информацию о пользователе через токен
+    user_info = get_user_info_from_token(account_id)
+    if user_info and user_info.get("valid"):
+        username = user_info.get("user")
+        group = user_info.get("group", "")
+        # Могут быть и другие группы или список групп в будущем
+        groups = [group] if group else []
+        return UserContext(
+            type="omd", 
+            user_id=username, 
+            group=group,
+            groups=groups,
+            settings=load_user_settings(), 
+            history=[], 
+            omd_key=account_id, 
+            storage=storage
+        )
 
     return UserContext(type="temp", user_id=f"web_{account_id[:8]}", settings=load_user_settings(), history=[], omd_key=account_id, storage=storage)
 
-def get_username_from_token(account_id: str) -> str | None:
-    """Fetches the real username from OMD gateway using the session/token."""
+def get_user_info_from_token(account_id: str) -> dict | None:
+    """Fetches the real user info from OMD gateway using the session/token."""
     import requests
     from config import SETTINGS
     gateway_url = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net")
@@ -72,8 +86,7 @@ def get_username_from_token(account_id: str) -> str | None:
         response = requests.post(url, json=data, timeout=5)
         response.raise_for_status()
         user_info = response.json()
-        if user_info.get("valid"):
-            return user_info["user"]
+        return user_info
     except Exception as e:
-        logging.error(f"Get username error: {e}")
+        logging.error(f"Get user info error: {e}")
     return None

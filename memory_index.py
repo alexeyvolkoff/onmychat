@@ -75,6 +75,67 @@ def ensure_collection():
 
 _collection = ensure_collection()
 
+SEARCH_DB_DIR = os.path.join(BASE_INDEX_DIR, "search_index")
+_search_chroma_client = chromadb.PersistentClient(path=SEARCH_DB_DIR)
+
+def ensure_search_collection():
+    global _search_chroma_client
+    try:
+        col = _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
+        col.count()
+        return col
+    except Exception as e:
+        logging.warning(f"Search collection re-initializing: {e}")
+        _search_chroma_client = chromadb.PersistentClient(path=SEARCH_DB_DIR)
+        return _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
+
+def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: str = "") -> list[dict]:
+    """
+    Search in the omd_search collection (indexed files).
+    """
+    query_emb = embed_text(query)
+    coll = ensure_search_collection()
+    
+    where = None
+    # Search by user ID and all their groups
+    allowed_owners = [ctx.user_id]
+    if ctx.groups:
+        allowed_owners.extend(ctx.groups)
+    
+    where = {"owner": {"$in": allowed_owners}}
+        
+    try:
+        logging.info(f"[memory] Searching indexed files for '{query}' (owner: {owner})")
+        results = coll.query(
+            query_embeddings=[query_emb],
+            n_results=top_k,
+            where=where
+        )
+        
+        out = []
+        if results['ids'] and results['ids'][0]:
+            logging.info(f"[memory] Found {len(results['ids'][0])} potential matches in indexed files.")
+            for i in range(len(results['ids'][0])):
+                dist = results['distances'][0][i]
+                logging.info(f"[memory] Match {i}: distance={dist}, title={results['metadatas'][0][i].get('title')}")
+                # Note: distance_threshold for cosine in Chroma is 1 - cosine_similarity.
+                # 0 is identical, 2 is opposite. 0.8 is quite loose.
+                if dist <= 0.8:
+                    meta = results['metadatas'][0][i]
+                    out.append({
+                        "text": results['documents'][0][i],
+                        "distance": dist,
+                        "source": "file",
+                        "document_id": meta.get("itemPath", meta.get("url", "")),
+                        "title": meta.get("title", ""),
+                        "owner": meta.get("owner", ""),
+                        "relevance": "contextual",
+                    })
+        return out
+    except Exception as e:
+        logging.error(f"[memory] search_indexed_files error: {e}")
+        return []
+
 def migrate_legacy_data():
     try:
         if ensure_collection().count() > 0:
