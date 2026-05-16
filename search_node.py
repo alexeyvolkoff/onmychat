@@ -3,6 +3,7 @@ import os
 import logging
 import requests
 import chromadb
+import json
 from chromadb.config import Settings
 from lxml import etree
 from bs4 import BeautifulSoup
@@ -72,6 +73,7 @@ class SearchNode:
         queue = [start_url]
         visited = set()
         total_indexed = 0
+        total_skipped = 0
         
         while queue:
             current_url = queue.pop(0)
@@ -100,6 +102,17 @@ class SearchNode:
                     queue.append(item_url)
                     continue
                 
+                # Check if item already exists and hasn't changed
+                try:
+                    existing = self.get_collection().get(ids=[item_url], include=['metadatas'])
+                    if existing and existing['metadatas']:
+                        if existing['metadatas'][0].get('last_modified') == item['last_modified']:
+                            logger.info(f"Skipping unchanged file: {item_url}")
+                            total_skipped += 1
+                            continue
+                except Exception as e:
+                    logger.warning(f"Error checking existing item {item_url}: {e}")
+
                 convertible = item.get('convertible') == 'True'
                 file_text = self._fetch_file_content(item_url, convertible, item['contentType'])
                 
@@ -137,7 +150,7 @@ class SearchNode:
                 )
                 logger.info(f"Batch indexed {len(ids)} items from {current_url}")
 
-        return {"status": "ok", "indexed": total_indexed}
+        return {"status": "ok", "indexed": total_indexed, "skipped": total_skipped}
 
     def _parse_omd_index(self, content: str, base_url: str):
         items = []
