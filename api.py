@@ -70,7 +70,11 @@ except Exception as e:
 # PeARS-compatible endpoints
 
 @app.get("/indexer/from_crawl")
-async def indexer_from_crawl(url: str, request: Request):
+async def indexer_from_crawl(request: Request):
+    url = request.query_params.get("url") or request.headers.get("url")
+    if not url:
+         raise HTTPException(status_code=422, detail="url is required in query or headers")
+
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
@@ -81,7 +85,11 @@ async def indexer_from_crawl(url: str, request: Request):
     return result
 
 @app.get("/api/urls/delete")
-async def delete_url(path: str, request: Request):
+async def delete_url(request: Request):
+    path = request.query_params.get("path") or request.headers.get("path")
+    if not path:
+         raise HTTPException(status_code=422, detail="path is required in query or headers")
+
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
         
@@ -92,7 +100,13 @@ async def delete_url(path: str, request: Request):
     return result
 
 @app.get("/api/urls/move")
-async def move_url(src: str, target: str, request: Request):
+async def move_url(request: Request):
+    src = request.query_params.get("src") or request.headers.get("src")
+    target = request.query_params.get("target") or request.headers.get("target")
+        
+    if not src or not target:
+         raise HTTPException(status_code=422, detail="src and target are required in query or headers")
+
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
