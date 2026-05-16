@@ -95,5 +95,5 @@ def get_user_info_from_token(account_id: str) -> dict | None:
                 user_info["valid"] = True
             return user_info
     except Exception as e:
-        logging.error(f"Get user info error: {e}")
+        logging.info(f"Get user info: {e}")
     return None
