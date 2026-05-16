@@ -136,7 +136,8 @@ def get_omd_key(
     token: str | None = Query(None),
     x_omd_key: str | None = Header(None, alias="X-OMD-Key"),
     x_omd_token: str | None = Header(None, alias="X-OMD-Token"),
-    authorization: str | None = Header(None)
+    authorization: str | None = Header(None),
+    token_header: str | None = Header(None, alias="Token")
 ):
     if omd_key:
         logging.info(f"omd_key found in query: {omd_key[:10]}...")
@@ -144,6 +145,9 @@ def get_omd_key(
     if token:
         logging.info(f"omd_key (token) found in query: {token[:10]}...")
         return token
+    if token_header:
+        logging.info(f"omd_key found in Token header: {token_header[:10]}...")
+        return token_header
     if x_omd_key:
         logging.info(f"omd_key found in X-OMD-Key header: {x_omd_key[:10]}...")
         return x_omd_key
