@@ -23,7 +23,9 @@ class SearchNode:
         self.blacklist = [
             "Bineon", "node_modules", ".git", ".venv", "venv", "__pycache__", 
             "site-packages", "bin", "obj", "target", "dist", "build",
-            ".cache", ".idea", ".vscode", ".metadata"
+            ".cache", ".idea", ".vscode", ".metadata", ".ruff_cache",
+            ".pytest_cache", "vendor", "bower_components", ".yarn",
+            ".npm", ".pnpm", ".gradle", ".terraform", ".next", ".nuxt"
         ]
         
     def get_collection(self):
