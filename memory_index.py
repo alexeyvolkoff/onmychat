@@ -19,6 +19,8 @@ import chromadb
 from chromadb.config import Settings
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+RAG_THRESHOLD = float(SETTINGS.get("RAG_THRESHOLD", "0.75"))
+
 
 
 MEMORY_KEYWORDS = [
@@ -120,7 +122,7 @@ def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: st
                 logging.info(f"[memory] Match {i}: distance={dist}, title={results['metadatas'][0][i].get('title')}")
                 # Note: distance_threshold for cosine in Chroma is 1 - cosine_similarity.
                 # 0 is identical, 2 is opposite. 0.8 is quite loose.
-                if dist <= 0.8:
+                if dist <= RAG_THRESHOLD:
                     meta = results['metadatas'][0][i]
                     out.append({
                         "text": results['documents'][0][i],
@@ -393,7 +395,7 @@ def search_document_chunks(
     vec_file: str,
     collection: str,
     top_k: int = 6,
-    distance_threshold: float = 0.8,
+    distance_threshold: float = RAG_THRESHOLD,
     document_id: str | None = None
 ) -> list[dict]:
     """
@@ -484,7 +486,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
         print(f"[memory] Legacy load error: {e}")
         return []
 
-def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 5, distance_threshold: float = 0.8) -> list[dict]:
+def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 5, distance_threshold: float = RAG_THRESHOLD) -> list[dict]:
     """
     Поиск воспоминаний в ChromaDB.
     """
@@ -502,7 +504,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
             for i in range(len(perm_results['ids'])):
                 doc_id = perm_results['metadatas'][i].get("document_id")
                 if doc_id:
-                    chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=0.8)
+                    chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=RAG_THRESHOLD)
                     permanent.extend(chunks)
                 else:
                     permanent.append({
@@ -554,7 +556,7 @@ def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_
                         })
                     # If it's a document link (summary), search for its chunks
                     elif doc_id:
-                        chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=0.8)
+                        chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=RAG_THRESHOLD)
                         contextual.extend(chunks)
                     else:
                         contextual.append({

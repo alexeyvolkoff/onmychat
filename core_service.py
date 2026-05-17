@@ -1357,6 +1357,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     document_ids = []
+    
+    # Load RAG_TOP_K from SETTINGS
+    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
 
     # Личные воспоминания (только если предоставлены фронтендом)
     if provided_knowledge is not None:
@@ -1372,7 +1375,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     # Общие знания — если есть collection
     sources_map = {} # To avoid duplicates
     if collection:
-        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=10)
+        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=rag_top_k)
         for m in shared:
             facts.append(f"• {m['text']}")
             doc_id = m.get("document_id")
@@ -1388,7 +1391,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     }
 
     # Личные проиндексированные файлы (omd_search)
-    user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=5)
+    user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=rag_top_k)
     for f in user_files:
         facts.append(f"• [From file {f['title']}]: {f['text']}")
         key = f"file:{f['document_id']}"
@@ -1400,6 +1403,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 "url": f"https://onmydisk.net{f['document_id']}",
                 "fullPath": f['document_id']
             }
+
 
     # Fetch metadata for all sources
     for key, source in sources_map.items():

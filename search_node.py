@@ -263,8 +263,13 @@ class SearchNode:
             logger.error(f"Error moving path {src} to {target}: {e}")
             return {"status": "error", "message": str(e)}
 
-    def search(self, query: str, limit: int = 20, owner: str = "", ctx = None):
+    def search(self, query: str, limit: int = None, owner: str = "", ctx = None):
         try:
+            # Load SEARCH_TOP_K from SETTINGS if limit not provided
+            from config import SETTINGS
+            if limit is None:
+                limit = int(SETTINGS.get("SEARCH_TOP_K", "20"))
+
             query_embedding = self.model.encode([query], show_progress_bar=False).tolist()
             
             allowed_owners = set()
@@ -283,31 +288,73 @@ class SearchNode:
                 where = {"owner": {"$in": allowed_owners_list}}
                 
             logger.info(f"Searching for '{query}' with filter: {where}")
+            
+            # Load SEARCH_THRESHOLD from SETTINGS
+            from config import SETTINGS
+            threshold = float(SETTINGS.get("SEARCH_THRESHOLD", "0.75"))
+            
+            # Query a larger number of items so we can filter and compute the actual total matching count
+            query_limit = max(limit * 5, 100)
             results = self.get_collection().query(
                 query_embeddings=query_embedding,
-                n_results=limit,
+                n_results=query_limit,
                 where=where
             )
             
             out_dict = {}
-            if results['ids']:
+            valid_results = []
+            
+            if results['ids'] and results['ids'][0]:
                 for i in range(len(results['ids'][0])):
                     doc_id = results['ids'][0][i]
                     meta = results['metadatas'][0][i]
                     doc_text = results['documents'][0][i]
-                    snippet = doc_text[:200] + "..." if len(doc_text) > 200 else doc_text
+                    dist = results['distances'][0][i]
                     
-                    out_dict[doc_id] = {
-                        "itemPath": meta.get("itemPath", ""),
-                        "snippet": snippet,
-                        "title": meta.get("title", ""),
-                        "description": meta.get("description", ""),
-                        "owner": meta.get("owner", ""),
-                        "contentType": meta.get("contentType", ""),
-                        "last_modified": meta.get("last_modified", "")
-                    }
+                    if dist <= threshold:
+                        valid_results.append({
+                            "doc_id": doc_id,
+                            "meta": meta,
+                            "doc_text": doc_text,
+                            "distance": dist
+                        })
+            
+            # Explicitly sort by distance (relevance) ascending
+            valid_results.sort(key=lambda x: x["distance"])
+            total_found = len(valid_results)
+            
+            # Limit results
+            limited_results = valid_results[:limit]
+            
+            # Include service metadata record
+            out_dict["system_info"] = {
+                "is_system": True,
+                "total_found": total_found,
+                "returned_limit": limit,
+                "relevance_threshold": threshold
+            }
+            
+            for item in limited_results:
+                doc_id = item["doc_id"]
+                meta = item["meta"]
+                doc_text = item["doc_text"]
+                dist = item["distance"]
+                snippet = doc_text[:200] + "..." if len(doc_text) > 200 else doc_text
+                
+                out_dict[doc_id] = {
+                    "itemPath": meta.get("itemPath", ""),
+                    "snippet": snippet,
+                    "title": meta.get("title", ""),
+                    "description": meta.get("description", ""),
+                    "owner": meta.get("owner", ""),
+                    "contentType": meta.get("contentType", ""),
+                    "last_modified": meta.get("last_modified", ""),
+                    "relevance": round((1.0 - dist) * 100, 1) # Relevance percentage score
+                }
+                
             return out_dict
         except Exception as e:
             logger.error(f"Search error: {e}")
             return {}
+
 

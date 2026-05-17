@@ -190,7 +190,8 @@ async def search(
 
     if limit is None:
         header_limit = request.headers.get("limit")
-        limit = int(header_limit) if header_limit and header_limit.isdigit() else 20
+        default_limit = int(SETTINGS.get("SEARCH_TOP_K", "20"))
+        limit = int(header_limit) if header_limit and header_limit.isdigit() else default_limit
 
     if not lang:
         lang = request.headers.get("lang") or "en"
