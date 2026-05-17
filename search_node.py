@@ -21,7 +21,7 @@ class SearchNode:
         self.model = model or SentenceTransformer(model_name)
         self.token = token
         self.blacklist = [
-            "Bineon", "node_modules", ".git", ".venv", "venv", "__pycache__", 
+            "node_modules", ".git", ".venv", "venv", "__pycache__", 
             "site-packages", "bin", "obj", "target", "dist", "build",
             ".cache", ".idea", ".vscode", ".metadata", ".ruff_cache",
             ".pytest_cache", "vendor", "bower_components", ".yarn",
