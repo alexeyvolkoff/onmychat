@@ -76,7 +76,7 @@ class SearchNode:
             logger.error(f"Error fetching file content {url}: {e}")
             return ""
 
-    def index_url(self, start_url: str):
+    def index_url(self, start_url: str, collection: str = None):
         queue = [start_url]
         visited = set()
         total_indexed = 0
@@ -114,19 +114,22 @@ class SearchNode:
                     continue
                 
                 # List of users/groups that can access this item
-                allowed_entities = []
-                item_owner = item.get('owner', '')
-                if item_owner:
-                    allowed_entities.append(item_owner)
-                
-                shared_with = item.get('shared_with', '')
-                if shared_with:
-                    entities = [e.strip() for e in shared_with.split(',') if e.strip()]
-                    allowed_entities.extend(entities)
-                
-                # If no owner or shared_with, default to alexey for now (compatibility)
-                if not allowed_entities:
-                    allowed_entities = ['alexey']
+                if collection:
+                    allowed_entities = [collection]
+                else:
+                    allowed_entities = []
+                    item_owner = item.get('owner', '')
+                    if item_owner:
+                        allowed_entities.append(item_owner)
+                    
+                    shared_with = item.get('shared_with', '')
+                    if shared_with:
+                        entities = [e.strip() for e in shared_with.split(',') if e.strip()]
+                        allowed_entities.extend(entities)
+                    
+                    # If no owner or shared_with, default to alexey for now (compatibility)
+                    if not allowed_entities:
+                        allowed_entities = ['alexey']
 
                 logger.info(f"Indexing {item_url} for entities: {allowed_entities}")
                 # Check if item already exists and hasn't changed

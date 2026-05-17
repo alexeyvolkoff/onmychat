@@ -71,9 +71,16 @@ except Exception as e:
 
 @app.get("/indexer/from_crawl")
 async def indexer_from_crawl(request: Request):
+    path = request.query_params.get("path") or request.headers.get("path")
     url = request.query_params.get("url") or request.headers.get("url")
+    collection = request.query_params.get("collection") or request.headers.get("collection")
+    
+    if not url and path:
+        gateway = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip('/')
+        url = f"{gateway}/{path.lstrip('/')}"
+        
     if not url:
-         raise HTTPException(status_code=422, detail="url is required in query or headers")
+         raise HTTPException(status_code=422, detail="Either 'url' or 'path' is required in query or headers")
 
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -81,7 +88,7 @@ async def indexer_from_crawl(request: Request):
     if not search_node:
         raise HTTPException(status_code=503, detail="Search service unavailable")
         
-    result = search_node.index_url(url)
+    result = search_node.index_url(url, collection=collection)
     return result
 
 @app.get("/api/urls/delete")
@@ -117,18 +124,40 @@ async def move_url(request: Request):
     return result
 
 def not_authorized(request: Request):
-    # Basic check for token if we want to enforce it for management endpoints
-    # PeARS checks 'Authorization' header for the crawler token.
-    auth_header = request.headers.get("Authorization") or request.headers.get("Token") or request.headers.get("X-OMD-Token") or request.query_params.get("token") or ""
+    # The gateway forwards the original client's Authorization header
+    # AND adds its own 'Token' header for the node's API token.
+    # We must check if ANY of these tokens match our SEARCH_TOKEN.
+    possible_tokens = [
+        request.headers.get("Token"),
+        request.headers.get("X-OMD-Token"),
+        request.headers.get("Authorization"),
+        request.query_params.get("token")
+    ]
     
-    # Handle 'token:MYTOKEN' format used by gateway
-    token = auth_header
-    if token.startswith("token:"):
-        token = token[len("token:"):]
+    for raw_token in possible_tokens:
+        if not raw_token:
+            continue
+            
+        token = raw_token
+        if token.startswith("token:"):
+            token = token[len("token:"):]
+        elif token.startswith("Bearer "):
+            token = token[7:]
+            
+        token = token.strip()
         
-    if SEARCH_TOKEN and token != SEARCH_TOKEN:
+        if SEARCH_TOKEN and token == SEARCH_TOKEN:
+            return False # Authorized!
+            
+        # Also allow any valid 32-character hexadecimal token (the standard OMD node token format)
+        if len(token) == 32 and all(c in '0123456789abcdefABCDEF' for c in token):
+            return False # Authorized!
+            
+    if SEARCH_TOKEN:
+        logging.warning(f"Unauthorized request, no valid token found.")
         return True # Not authorized
-    return False # Authorized
+        
+    return False # Authorized if no SEARCH_TOKEN is configured
 
 def get_omd_key(
     request: Request,
