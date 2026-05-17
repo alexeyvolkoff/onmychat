@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, WebSocket, WebSocketDisconnect, BackgroundTasks
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response, RedirectResponse, JSONResponse
@@ -70,10 +70,11 @@ except Exception as e:
 # PeARS-compatible endpoints
 
 @app.get("/indexer/from_crawl")
-async def indexer_from_crawl(request: Request):
+async def indexer_from_crawl(request: Request, background_tasks: BackgroundTasks):
     path = request.query_params.get("path") or request.headers.get("path")
     url = request.query_params.get("url") or request.headers.get("url")
     collection = request.query_params.get("collection") or request.headers.get("collection")
+    is_async = (request.query_params.get("async") or request.headers.get("async") or "false").lower() == "true"
     
     if not url and path:
         gateway = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip('/')
@@ -88,8 +89,12 @@ async def indexer_from_crawl(request: Request):
     if not search_node:
         raise HTTPException(status_code=503, detail="Search service unavailable")
         
-    result = search_node.index_url(url, collection=collection)
-    return result
+    if is_async:
+        background_tasks.add_task(search_node.index_url, url, collection)
+        return {"status": "indexing_started", "url": url}
+    else:
+        result = search_node.index_url(url, collection=collection)
+        return result
 
 @app.get("/api/urls/delete")
 async def delete_url(request: Request):
