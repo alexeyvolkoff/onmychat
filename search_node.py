@@ -346,8 +346,23 @@ class SearchNode:
                 dist = item["distance"]
                 snippet = doc_text[:200] + "..." if len(doc_text) > 200 else doc_text
                 
-                out_dict[doc_id] = {
-                    "itemPath": meta.get("itemPath", ""),
+                item_path = meta.get("itemPath", "")
+                owner_val = meta.get("owner", "")
+                
+                if ctx and hasattr(ctx, 'user_id') and ctx.user_id and item_path.startswith(f"/{ctx.user_id}/"):
+                    item_path = item_path[len(ctx.user_id) + 1:]
+                elif owner_val and item_path.startswith(f"/{owner_val}/"):
+                    item_path = item_path[len(owner_val) + 1:]
+                
+                # Use pure URL as dictionary key to prevent C++ gateway from getting confused by the :owner suffix
+                url_key = doc_id
+                if ":" in doc_id:
+                    parts = doc_id.rsplit(":", 1)
+                    if len(parts) == 2 and parts[1] == owner_val:
+                        url_key = parts[0]
+                
+                out_dict[url_key] = {
+                    "itemPath": item_path,
                     "snippet": snippet,
                     "title": meta.get("title", ""),
                     "description": meta.get("description", ""),
