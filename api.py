@@ -119,7 +119,7 @@ async def move_url(request: Request):
 def not_authorized(request: Request):
     # Basic check for token if we want to enforce it for management endpoints
     # PeARS checks 'Authorization' header for the crawler token.
-    auth_header = request.headers.get("Authorization") or ""
+    auth_header = request.headers.get("Authorization") or request.headers.get("Token") or request.headers.get("X-OMD-Token") or request.query_params.get("token") or ""
     
     # Handle 'token:MYTOKEN' format used by gateway
     token = auth_header
@@ -176,7 +176,25 @@ def get_omd_key(
     return None
 
 @app.get("/search")
-async def search(q: str, limit: int = 20, lang: str = "en", omd_key: str = Depends(get_omd_key)):
+async def search(
+    request: Request,
+    q: str | None = Query(None),
+    limit: int | None = Query(None),
+    lang: str | None = Query(None),
+    omd_key: str | None = Depends(get_omd_key)
+):
+    if not q:
+        q = request.headers.get("q")
+    if not q:
+        raise HTTPException(status_code=422, detail="q is required in query or headers")
+
+    if limit is None:
+        header_limit = request.headers.get("limit")
+        limit = int(header_limit) if header_limit and header_limit.isdigit() else 20
+
+    if not lang:
+        lang = request.headers.get("lang") or "en"
+
     if not search_node:
         raise HTTPException(status_code=503, detail="Search service unavailable")
         
