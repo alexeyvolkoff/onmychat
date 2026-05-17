@@ -2589,7 +2589,25 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         if not key:
             raise Exception("⚠️ Provide On My Disk account key to access your files:\n`/bind abcdxxxxx...`")
         
-        raw_text = await fetch_document_text(url_or_path, key)
+        # Check if it is a directory by checking the extension of the path (without query params)
+        path_part = url_or_path.split("?")[0]
+        ext = os.path.splitext(path_part)[-1].lower().lstrip('.')
+        is_dir = not ext or ext == ''
+        
+        if is_dir:
+            list_url = url_or_path
+            if "?" in list_url:
+                list_url += "&list"
+            else:
+                list_url += "?list"
+            logging.info(f"[import] Directory detected, fetching listing: {list_url}")
+            raw_text = await fetch_document_text(list_url, key)
+            # If standard directory listing fetch fails or returns error, we fall back to normal fetch
+            if raw_text.startswith("Failed to fetch document:"):
+                logging.info("[import] Directory listing fetch failed, falling back to standard fetch")
+                raw_text = await fetch_document_text(url_or_path, key)
+        else:
+            raw_text = await fetch_document_text(url_or_path, key)
     else:
         # External URL: Try Crawl4AI first for better parsing
         if url_or_path.startswith("http"):
@@ -2615,9 +2633,67 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
         }
     
     # Reject directory listings (JSON results) from being imported as documents
+    # and instead recursively import their files.
     if raw_text.strip().startswith('{"list":') or raw_text.strip().startswith('{"result":'):
-        logging.info(f"[import] identified as directory listing, skipping import.")
-        return None
+        logging.info(f"[import] identified as directory listing, recursively importing contents...")
+        try:
+            import json
+            data = json.loads(raw_text)
+            items = data.get("list", []) or data.get("result", [])
+            imported_count = 0
+            errors = []
+            
+            # Clean trailing slash from base url_or_path
+            base_url = url_or_path.split("?")[0].rstrip('/')
+            
+            for item in items:
+                name = item.get("name", "")
+                item_type = item.get("type", "")
+                if not name:
+                    continue
+                
+                # Build sub-item path
+                sub_url = f"{base_url}/{name}"
+                # If it's a file, we import it
+                if item_type == "file":
+                    logging.info(f"[import] Recursively importing sub-file: {sub_url}")
+                    try:
+                        res = await import_doc(ctx, sub_url, collection=collection)
+                        if res and not res.get("error"):
+                            if "imported_count" in res:
+                                imported_count += res["imported_count"]
+                            else:
+                                imported_count += 1
+                        elif res:
+                            errors.append(f"{name}: {res.get('text')}")
+                    except Exception as sub_err:
+                        logging.error(f"[import] Failed to import sub-file {sub_url}: {sub_err}")
+                        errors.append(f"{name}: {sub_err}")
+                elif item_type == "dir":
+                    # Recursively import sub-directories
+                    logging.info(f"[import] Recursively importing sub-directory: {sub_url}")
+                    try:
+                        res = await import_doc(ctx, sub_url, collection=collection)
+                        if res and not res.get("error"):
+                            imported_count += int(res.get("imported_count", 0))
+                        elif res:
+                            errors.append(f"{name}: {res.get('text')}")
+                    except Exception as sub_err:
+                        logging.error(f"[import] Failed to import sub-dir {sub_url}: {sub_err}")
+                        errors.append(f"{name}: {sub_err}")
+            
+            return {
+                "id": "directory",
+                "text": f"Successfully imported {imported_count} files from directory '{url_or_path.split('?')[0]}' into collection '{collection}'." + (f" Errors: {', '.join(errors)}" if errors else ""),
+                "imported_count": imported_count
+            }
+        except Exception as e:
+            logging.error(f"[import] Error parsing directory listing JSON: {e}")
+            return {
+                "id": "error",
+                "error": True,
+                "text": f"Error listing directory: {e}"
+            }
 
     # If it's an external HTML or we just want to ensure it's plain text via pandoc
     if not is_omd or url_or_path.lower().endswith(".html") or url_or_path.lower().endswith(".htm"):
