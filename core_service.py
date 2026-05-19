@@ -283,6 +283,8 @@ async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -
     return data["message"]["content"].strip()
 
 async def list_supported_tools(ctx: UserContext) -> str:
+    if ctx.settings.get("nsfw", False):
+        return "No tools available in NSFW mode."
     # Construct description from MCP_TOOLS to ensure it's always accurate
     output = "Currently supported System Tools:\n"
     for tool in MCP_TOOLS:
@@ -510,6 +512,8 @@ async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
         return f"Exception writing file: {e}"
 
 async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerator[dict, None]:
+    if ctx.settings.get("nsfw", False):
+        return
     # 1. Path Extraction Heuristic (Help the model find the path)
     potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
     path_hint = ""
@@ -1613,10 +1617,11 @@ async def _perform_prompt_gen(ctx: UserContext,
     if user_lang:
         instruction_prompt += f"\nPrefer user's language ({user_lang}) for generating responses."
 
-    instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
-    
-    # [HALLUCINATION SHIELD]
-    instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output:\n*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content. Do NOT pretend to run actions like saving files by inventing system logs."
+    if not nsfw_enabled:
+        instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
+        
+        # [HALLUCINATION SHIELD]
+        instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output:\n*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content. Do NOT pretend to run actions like saving files by inventing system logs."
 
     if nsfw_enabled:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"

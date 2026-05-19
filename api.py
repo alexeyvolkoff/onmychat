@@ -960,6 +960,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             
             # Check primary intent or prefixed intent (e.g. import:url)
             check_intent = intent.split(":")[0] if ":" in intent else intent
+
+            if ctx.settings.get("nsfw", False) and check_intent in ["tools", "import", "search", "explain", "think"]:
+                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in NSFW mode.', 'role': 'assistant', 'done': True})}\n\n"
+                 return
             
             logging.info(f"Token Balance: {token_balance}")
             if token_balance <= 0:
