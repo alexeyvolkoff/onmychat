@@ -1376,7 +1376,7 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
 
     return metadata
 
-async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None) -> tuple[list[str], list[dict]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     document_ids = []
@@ -1397,35 +1397,36 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
     # Общие знания — если есть collection
     sources_map = {} # To avoid duplicates
-    if collection:
-        shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=rag_top_k)
-        for m in shared:
-            facts.append(f"• {m['text']}")
-            doc_id = m.get("document_id")
-            owner = m.get("owner", "alexey")
-            if doc_id:
-                key = f"{owner}:{doc_id}"
-                if key not in sources_map:
-                    filename = doc_id.split("/")[-1]
-                    sources_map[key] = {
-                        "title": filename,
-                        "owner": owner,
-                        "clickable": False,
-                    }
+    if not skip_db:
+        if collection:
+            shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=rag_top_k)
+            for m in shared:
+                facts.append(f"• {m['text']}")
+                doc_id = m.get("document_id")
+                owner = m.get("owner", "alexey")
+                if doc_id:
+                    key = f"{owner}:{doc_id}"
+                    if key not in sources_map:
+                        filename = doc_id.split("/")[-1]
+                        sources_map[key] = {
+                            "title": filename,
+                            "owner": owner,
+                            "clickable": False,
+                        }
 
-    # Личные проиндексированные файлы (omd_search)
-    user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=rag_top_k)
-    for f in user_files:
-        facts.append(f"• [From file {f['title']}]: {f['text']}")
-        key = f"file:{f['document_id']}"
-        if key not in sources_map:
-            sources_map[key] = {
-                "title": f['title'],
-                "owner": f['owner'],
-                "clickable": True,
-                "url": f"https://onmydisk.net{f['document_id']}",
-                "fullPath": f['document_id']
-            }
+        # Личные проиндексированные файлы (omd_search)
+        user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=rag_top_k)
+        for f in user_files:
+            facts.append(f"• [From file {f['title']}]: {f['text']}")
+            key = f"file:{f['document_id']}"
+            if key not in sources_map:
+                sources_map[key] = {
+                    "title": f['title'],
+                    "owner": f['owner'],
+                    "clickable": True,
+                    "url": f"https://onmydisk.net{f['document_id']}",
+                    "fullPath": f['document_id']
+                }
 
 
     # Fetch metadata for all sources
@@ -1527,6 +1528,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                 del ctx.temp_sources
             except AttributeError:
                 pass
+    elif intent == "show":
+        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
     else:
         facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
     
