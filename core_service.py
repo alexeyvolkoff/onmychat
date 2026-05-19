@@ -1500,7 +1500,12 @@ async def _perform_prompt_gen(ctx: UserContext,
     collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
     logging.debug(f"Loading facts: {collection} {is_rag}")
     # === Facts injection ===
-    facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
+    if intent == "search":
+        # Search results are already packed into 'instruction' inside api.py
+        # Skipping duplicate Chroma DB search to optimize performance and prevent duplication
+        facts, sources = [], []
+    else:
+        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
     
     # Yield sources immediately for the frontend widget
     if sources:

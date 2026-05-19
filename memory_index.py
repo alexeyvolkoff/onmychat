@@ -107,7 +107,7 @@ def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: st
     where = {"owner": {"$in": allowed_owners}}
         
     try:
-        logging.info(f"[memory] Searching indexed files for '{query}' (owner: {owner})")
+        logging.info(f"[memory] Searching indexed files for '{query}' (allowed_owners: {allowed_owners})")
         results = coll.query(
             query_embeddings=[query_emb],
             n_results=top_k,
