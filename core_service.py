@@ -393,6 +393,23 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
         
         all_results = mem_results + file_results
         
+        # Collect sources for the frontend widget (cached on UserContext)
+        sources = []
+        for res in all_results:
+             doc_id = res.get('document_id', '')
+             title = res.get('title', '')
+             owner = res.get('owner', 'alexey')
+             if doc_id or title:
+                 # Deduplicate sources
+                 filename = title or doc_id.split("/")[-1]
+                 if not any(s['title'] == filename and s['owner'] == owner for s in sources):
+                     sources.append({
+                         "title": filename,
+                         "owner": owner,
+                         "clickable": False
+                     })
+        ctx.temp_sources = sources
+        
         if not all_results:
             return "No relevant knowledge or files found."
             
@@ -1502,8 +1519,14 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === Facts injection ===
     if intent == "search":
         # Search results are already packed into 'instruction' inside api.py
-        # Skipping duplicate Chroma DB search to optimize performance and prevent duplication
-        facts, sources = [], []
+        # Skipping duplicate Chroma DB search, but restoring sources from the cache
+        facts = []
+        sources = getattr(ctx, "temp_sources", [])
+        if hasattr(ctx, "temp_sources"):
+            try:
+                del ctx.temp_sources
+            except AttributeError:
+                pass
     else:
         facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
     
