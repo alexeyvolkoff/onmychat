@@ -40,10 +40,14 @@ DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 CODE_BASE_URL = SETTINGS.get("CODE_BASE_URL", "http://localhost:4096")
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
-MCP_MODEL = SETTINGS.get("MCP_MODEL", "google/function-gemma")
+SFW_MODEL = SETTINGS.get("SFW_MODEL", DEFAULT_MODEL)
+NSFW_MODEL = SETTINGS.get("NSFW_MODEL", DEFAULT_MODEL)
+MCP_MODEL = DEFAULT_MODEL
 
 def get_llm_model(ctx: UserContext) -> str:
-    return DEFAULT_MODEL
+    if ctx.settings.get("nsfw", False):
+        return NSFW_MODEL
+    return SFW_MODEL
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -266,7 +270,7 @@ async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -
     )
     
     payload = {
-        "model": DEFAULT_MODEL,
+        "model": get_llm_model(ctx),
         "messages": [{"role": "system", "content": prompt}],
         "stream": False,
         "options": {"temperature": 0.0}
@@ -1493,9 +1497,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_history: list = None,
                          provided_knowledge: list = None) -> AsyncGenerator:
 
+    model = get_llm_model(ctx)
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    #model = get_llm_model(ctx)
-    model = DEFAULT_MODEL
     b64_image = None
     
     # Internal flags
