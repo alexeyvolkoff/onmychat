@@ -40,14 +40,10 @@ DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 CODE_BASE_URL = SETTINGS.get("CODE_BASE_URL", "http://localhost:4096")
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
-SFW_MODEL = SETTINGS["SFW_MODEL"]
-NSFW_MODEL = SETTINGS["NSFW_MODEL"]
 MCP_MODEL = SETTINGS.get("MCP_MODEL", "google/function-gemma")
 
 def get_llm_model(ctx: UserContext) -> str:
-    if ctx.settings.get("nsfw", False):
-        return NSFW_MODEL
-    return SFW_MODEL
+    return DEFAULT_MODEL
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -270,7 +266,7 @@ async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -
     )
     
     payload = {
-        "model": SFW_MODEL,
+        "model": DEFAULT_MODEL,
         "messages": [{"role": "system", "content": prompt}],
         "stream": False,
         "options": {"temperature": 0.0}
@@ -2031,7 +2027,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     chat = chat or "default"
     user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
     nsfw_enabled = ctx.settings.get("nsfw", False)
-    #model =  NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
     # Clean prompt from slash commands
     clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', prompt).strip()
@@ -2058,8 +2053,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Добавляем запрос
     messages.append({ "role": "user", "content": image_instruction})
-
-    #model = NSFW_MODEL if nsfw_enabled else SFW_MODEL
 
 
     request_payload = {
