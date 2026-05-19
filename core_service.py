@@ -178,27 +178,10 @@ MCP_TOOLS = [
   },
 
   {
-    "type": "function",
-    "function": {
-      "name": "search_web",
-      "description": "Search the internet for real-time information. REQUIRED for queries about 'weather', 'news', 'flights', 'stocks', 'events', or any topic not in your training data. Do NOT invent new tools like 'weather_forecast' or 'flights'.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string",
-            "description": "The search query to send to the search engine"
-          }
-        },
-        "required": ["query"]
-      }
-    }
-  },
-  {
       "type": "function",
       "function": {
           "name": "search_memory",
-          "description": "Search user memory for facts, details or information. Use ONLY if the file system tools fail to provide info.",
+          "description": "Search the internal knowledge base and indexed files for facts or information. You MUST use this tool FIRST for any general questions before falling back to the web search.",
           "parameters": {
               "type": "object",
               "properties": {
@@ -210,6 +193,23 @@ MCP_TOOLS = [
               "required": ["query"]
           }
       }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_web",
+      "description": "Search the public internet (DuckDuckGo). ONLY use this if `search_memory` failed to find the answer, or if the user explicitly asks for real-time web data (weather, news).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query to send to the search engine"
+          }
+        },
+        "required": ["query"]
+      }
+    }
   },
   {
       "type": "function",
@@ -383,29 +383,35 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
 
 async def search_memory_tool(ctx: UserContext, query: str) -> str:
     try:
-        # Re-using existing sync search_memories but wrapping it if needed.
-        # core_service imports search_memories.
-        # search_memories(ctx, query, collection=..., mem_id=..., top_k=3)
-        # We search both user and generic collection if possible? Or just default kb_id.
         collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
         
-        # It's a sync function in memory_index.py? 
-        # Imported as: from memory_index import search_memories
-        # We should check if it's async. core_service calls it without await in inject_facts? 
-        # Line 463: personal = search_memories(...)
-        # So it is synchronous. We can run it in executor if it's slow, but for now direct call.
+        # 1. Search semantic memory/knowledge base
+        mem_results = search_memories(ctx, query, collection=collection, top_k=3)
         
-        results = search_memories(ctx, query, collection=collection, top_k=5)
-        if not results:
-            return "No relevant memories found."
+        # 2. Search indexed files
+        file_results = search_indexed_files(ctx, query, top_k=3)
+        
+        all_results = mem_results + file_results
+        
+        if not all_results:
+            return "No relevant knowledge or files found."
             
-        output = f"Memory Search Results for '{query}':\n"
-        for i, res in enumerate(results, 1):
+        output = f"Knowledge & Indexed Files Search Results for '{query}':\n"
+        for i, res in enumerate(all_results, 1):
              text = res.get('text', '')
-             output += f"{i}. {text}\n"
-        return output
+             source = res.get('source', 'unknown')
+             doc_id = res.get('document_id', '')
+             title = res.get('title', '')
+             
+             header = f"Source: {source}"
+             if doc_id or title:
+                 header += f" ({title or doc_id})"
+                 
+             output += f"{i}. [{header}]\n{text}\n\n"
+             
+        return output.strip()
     except Exception as e:
-        return f"Error searching memory: {e}"
+        return f"Error searching memory/files: {e}"
 
 async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
     if not ctx.omd_key or not ctx.storage:
