@@ -1057,14 +1057,20 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 if prompt.lower().startswith("/search"):
                     search_query = prompt[7:].strip()
                 
-                # Call search_web directly - no MCP, no hallucination
-                search_results = await core_service.search_web(ctx, search_query)
+                # 1. First search internal memory and indexed files
+                search_results = await core_service.search_memory_tool(ctx, search_query)
+                
+                # 2. Fall back to web search if nothing found internally
+                if "No relevant knowledge or files found." in search_results:
+                    logging.info(f"No internal results for '{search_query}'. Falling back to web search.")
+                    web_results = await core_service.search_web(ctx, search_query)
+                    search_results = f"Web Search Results:\n{web_results}"
                 
                 # [LEGACY HISTORY] Load history removed
                 history = provided_history or []
                 
                 instruction = (
-                    f"The user asked to search the web. Here are the REAL search results:\n\n"
+                    f"The user asked to search for information. Here are the REAL search results (from internal knowledge or web):\n\n"
                     f"{search_results}\n\n"
                     "Summarize these results for the user in a helpful way. "
                     "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
