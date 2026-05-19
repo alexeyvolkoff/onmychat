@@ -28,6 +28,24 @@ class SearchNode:
             ".npm", ".pnpm", ".gradle", ".terraform", ".next", ".nuxt"
         ]
         
+        # Comprehensive system folder exact-match blacklist (case-insensitive)
+        self.exact_blacklist = {
+            # Windows System Folders
+            "windows", "program files", "program files (x86)", "programdata",
+            "appdata", "system32", "syswow64", "$recycle.bin", "system volume information",
+            "msocache", "recovery",
+            
+            # Android System Folders
+            "android", "dcim", "camera", "tencent", "proc", "sys", "system", "data",
+            
+            # macOS / iOS System Folders
+            "library", "system", "applications", "private",
+            
+            # Linux System Folders
+            "usr", "var", "sys", "proc", "dev", "run", "etc", "boot", "lib", "lib64",
+            "opt", "srv", "lost+found", ".local", ".config", ".cache"
+        }
+        
     def get_collection(self):
         try:
             # Test if collection is still valid
@@ -106,8 +124,14 @@ class SearchNode:
                 item_url = urljoin(current_url.rstrip('/') + '/', item_name)
                 
                 if item['contentType'] == 'folder':
-                    item_name_lower = item_name.lower()
-                    if any(b.lower() in item_name_lower for b in self.blacklist):
+                    item_name_lower = item_name.lower().strip('/')
+                    
+                    is_blacklisted = (
+                        item_name_lower in self.exact_blacklist or
+                        any(b.lower() in item_name_lower for b in self.blacklist)
+                    )
+                    
+                    if is_blacklisted:
                         logger.info(f"Skipping blacklisted folder: {item_url}")
                         continue
                     queue.append(item_url)

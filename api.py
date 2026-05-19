@@ -248,7 +248,6 @@ class ChatInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
-    storage: str = ""
     settings: dict | None = None
     history: list | None = None
     prompt_id: str | None = None
@@ -257,7 +256,6 @@ class ChatStreamInput(BaseModel):
     omd_key: str
     prompt: str
     chat: str = "default"
-    storage: str = ""
     history: list | None = None
     settings: dict | None = None
     knowledge: list | None = None
@@ -276,7 +274,6 @@ class RecognizeInput(BaseModel):
     omd_key: str
     prompt: str = ""
     chat: str = "default"
-    storage: str = ""
     settings: dict | None = None
     history: list | None = None
 
@@ -299,7 +296,6 @@ class GenerateInput(BaseModel):
     chat: str = "default"
     message_index: int | None = None
     message_nonce: str | None = None
-    storage: str = ""
     settings: dict | None = None
     history: list | None = None
     prompt_id: str | None = None
@@ -322,7 +318,6 @@ class AvatarGenerateInput(BaseModel):
     style: str | None = None
     character_lora: str | None = None
     prompt: str = ""
-    storage: str = ""
     settings: dict | None = None
     history: list | None = None
 
@@ -409,12 +404,10 @@ class SignoutInput(BaseModel):
 
 # ==== Хелпер ====
 
-def get_ctx(omd_key: str | None, storage: str = "", force_reload: bool = False):
+def get_ctx(omd_key: str | None, force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
-    if storage in ["undefined", "null"]:
-        storage = ""
-    return user_context.get_context_by_account(omd_key, storage, force_reload)
+    return user_context.get_context_by_account(omd_key, "", force_reload)
 
 
 def serve_file(filepath: str, request: Request, size: int = None) -> Response:
@@ -504,9 +497,10 @@ async def assistant_avatar(
 
 @app.post("/assistant/avatar/generate")
 async def generate_avatar_endpoint(data: AvatarGenerateInput):
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         # Use hardcoded prompt for avatar generation as requested
         prompt = "social profile photo, office style, headshot"
@@ -720,9 +714,10 @@ async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends
 
 @app.post("/chat")
 async def chat_endpoint(data: ChatInput):
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         instruction=(
             "Respond to user. If user question relates to *Known facts*, be extreamly accurate, do not guess."
@@ -745,7 +740,6 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         prompt=data.prompt,
         omd_key=data.omd_key,
         chat=data.chat,
-        storage=data.storage,
         provided_history=data.history,
         provided_settings=data.settings,
         provided_knowledge=data.knowledge,
@@ -754,18 +748,18 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
 
 @app.get("/chat/stream")
 async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depends(get_omd_key), chat: str = "default", 
-                      storage: str = "",
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
                       provided_knowledge: list|None = None,
                       provided_prompt_id: str|None = None):
-    logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}... storage={storage}")
+    logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
-    ctx = get_ctx(omd_key, storage=storage)
+    ctx = get_ctx(omd_key)
 
     if provided_settings:
         logging.info(f"Applying client-provided settings for {ctx.user_id}")
         ctx.settings.update(provided_settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
 
     async def event_generator():
         try:
@@ -1215,17 +1209,17 @@ async def recognize_endpoint(
     omd_key: str | None = Depends(get_omd_key),
     chat: str = Form("default"),
     prompt: str = Form(""),
-    storage: str = Form(""),
     settings: str = Form(None),
     history: str = Form(None),
     file: UploadFile = File(...)
 ):
     chat = chat or "default"
-    ctx = get_ctx(omd_key, storage=storage)
+    ctx = get_ctx(omd_key)
     if settings:
         try:
             provided_settings = json.loads(settings)
             ctx.settings.update(provided_settings)
+            ctx.storage = ctx.settings.get("defaultStorage", "")
         except:
              logging.warning("Failed to parse settings in /recognize")
     
@@ -1247,9 +1241,10 @@ async def recognize_endpoint(
 @app.post("/generate/image/character")
 async def generate_character_image(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         # generate_image returns (filename, title, description)
         is_new = data.message_nonce is None and data.message_index is None
@@ -1271,9 +1266,10 @@ async def generate_character_image(data: GenerateInput):
 @app.post("/generate/image/general")
 async def generate_general_image(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         # generate_image returns (filename, title, description)
         filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
@@ -1288,9 +1284,10 @@ async def generate_general_image(data: GenerateInput):
 @app.post("/generate/prompt/character")
 async def generate_character_image_prompt(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         result = await core_service.generate_character_image_prompt(ctx, data.prompt, data.chat, history=data.history)
         return {"prompt": result}
@@ -1303,9 +1300,10 @@ async def generate_character_image_prompt(data: GenerateInput):
 @app.post("/generate/prompt/general")
 async def generate_general_image_prompt(data: GenerateInput):
     data.chat = data.chat or "default"
-    ctx = get_ctx(data.omd_key, storage=data.storage)
+    ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat, history=data.history)
         return {"prompt": result}
