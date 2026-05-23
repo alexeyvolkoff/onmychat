@@ -1536,7 +1536,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
         opencode_payload["model"] = {
             "providerID": "ollama",
-            "modelID": core_service.DEFAULT_MODEL
+            "modelID": core_service.CODE_MODEL
         }
         
         session = await get_proxy_session()
