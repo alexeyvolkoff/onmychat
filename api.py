@@ -1511,6 +1511,44 @@ async def proxy_opencode_sessions_create(request: Request):
 @app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
 async def proxy_opencode_session_item(request: Request, session_id: str):
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+    if request.method == "PATCH":
+        session = await get_proxy_session()
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("connection", None)
+        headers.pop("accept-encoding", None)
+        headers["accept-encoding"] = "identity"
+        
+        try:
+            body_json = await request.json()
+        except Exception:
+            body_json = {}
+            
+        directory = body_json.pop("directory", None)
+        if directory:
+            import os
+            parts = [p for p in directory.split('/') if p]
+            if parts:
+                if len(parts) > 1 and parts[1] == "root":
+                    relative_path = '/'.join(parts[2:])
+                else:
+                    relative_path = '/'.join(parts[1:])
+                resolved_dir = os.path.join(os.path.expanduser('~'), relative_path)
+                headers["x-opencode-directory"] = resolved_dir
+                logging.info(f"[OpenCode Proxy] Resolved directory for PATCH: {directory} -> {resolved_dir}")
+                
+        body_data = json.dumps(body_json).encode('utf-8')
+        headers["Content-Type"] = "application/json"
+        
+        try:
+            async with session.patch(target_url, data=body_data, headers=headers) as resp:
+                data = await resp.json()
+                return {"session": data}
+        except Exception as e:
+            logging.error(f"[OpenCode Proxy] Error updating session: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
     return await proxy_request(target_url, request, method=request.method)
 
 @app.api_route("/code/sessions/{session_id}/message", methods=["POST"])
