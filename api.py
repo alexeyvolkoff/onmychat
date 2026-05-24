@@ -1606,6 +1606,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         headers.pop("host", None)
         headers["Content-Type"] = "application/json"
         
+        directory = omd_payload.get("directory")
+        if directory:
+            import os
+            parts = [p for p in directory.split('/') if p]
+            if parts:
+                if len(parts) > 1 and parts[1] == "root":
+                    relative_path = '/'.join(parts[2:])
+                else:
+                    relative_path = '/'.join(parts[1:])
+                resolved_dir = os.path.join(os.path.expanduser('~'), relative_path)
+                headers["x-opencode-directory"] = resolved_dir
+                logging.info(f"[OpenCode Proxy] Resolved directory and set x-opencode-directory for message: {directory} -> {resolved_dir}")
+        
         async def stream_generator():
             try:
                 # 0. Yield initial status to inform UI immediately
