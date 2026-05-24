@@ -1911,7 +1911,20 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                 target_url += f"?directory={urllib.parse.quote(directory)}"
             async with session.get(target_url, headers=headers) as resp:
                 data = await resp.json()
-                return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
+                diffs = data if isinstance(data, list) else []
+                
+                # Fallback to VCS diff if session diff is empty and directory is available
+                if not diffs and directory:
+                    vcs_url = f"{core_service.CODE_BASE_URL}/vcs/diff?mode=git&directory={urllib.parse.quote(directory)}"
+                    try:
+                        async with session.get(vcs_url, headers=headers) as vcs_resp:
+                            vcs_data = await vcs_resp.json()
+                            if isinstance(vcs_data, list) and vcs_data:
+                                diffs = vcs_data
+                    except Exception as vex:
+                        logging.error(f"[OpenCode Proxy] Failed to fetch VCS diff fallback: {vex}")
+                
+                return {"diffs": inject_diffs(diffs)}
 
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching session diffs: {e}")
