@@ -1847,38 +1847,14 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
         return diff_list
 
     try:
-        # If no message_id is provided, safely fetch the overall cumulative session diff
-        if not message_id:
+        if message_id:
+            target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={message_id}"
+        else:
             target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff"
-            async with session.get(target_url, headers=headers) as resp:
-                data = await resp.json()
-                return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
         
-        # If message_id is provided (Assistant's reply), we must fetch the session messages
-        # and pull the cached modifications array from its parent USER message natively.
-        session_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
-        async with session.get(session_url, headers=headers) as resp:
+        async with session.get(target_url, headers=headers) as resp:
             data = await resp.json()
-            messages = data if isinstance(data, list) else []
-            
-            # 1. Locate the specific Assistant message
-            assistant_msg = next((m for m in messages if m.get("info", {}).get("id") == message_id), None)
-            if not assistant_msg:
-                return {"diffs": []}
-                
-            # 2. Extract its parentID (the user message that originated the generations)
-            parent_id = assistant_msg.get("info", {}).get("parentID")
-            if not parent_id:
-                return {"diffs": []}
-                
-            # 3. Locate the parent user message
-            user_msg = next((m for m in messages if m.get("info", {}).get("id") == parent_id), None)
-            if not user_msg:
-                return {"diffs": []}
-                
-            # 4. Extract diffs from the user message's summary map
-            msg_diffs = user_msg.get("info", {}).get("summary", {}).get("diffs", [])
-            return {"diffs": inject_diffs(msg_diffs if isinstance(msg_diffs, list) else [])}
+            return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
 
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching session diffs: {e}")
