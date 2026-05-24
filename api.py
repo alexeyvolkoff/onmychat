@@ -1502,6 +1502,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
     try:
         omd_payload = await request.json()
         prompt_text = omd_payload.get("prompt", "")
+        agent = omd_payload.get("agent", "build")
         
         opencode_payload = {
             "parts": [
@@ -1511,6 +1512,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 }
             ]
         }
+        if agent:
+            opencode_payload["agent"] = agent
         
         # Inject custom assistant personality & settings directly into OpenCode's system parameters
         settings = omd_payload.get("settings", {})
@@ -1831,6 +1834,8 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
     def inject_diffs(diff_list):
         if not isinstance(diff_list, list): return []
         for item in diff_list:
+            if "diff" in item and item["diff"]:
+                continue
             file_name = item.get("file", "unknown")
             before_lines = (item.get("before", "") or "").splitlines(keepends=True)
             after_lines = (item.get("after", "") or "").splitlines(keepends=True)
