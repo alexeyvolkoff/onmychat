@@ -1489,7 +1489,10 @@ async def proxy_opencode_sessions_create(request: Request):
         import os
         parts = [p for p in directory.split('/') if p]
         if parts:
-            relative_path = '/'.join(parts[1:])
+            if len(parts) > 1 and parts[1] == "root":
+                relative_path = '/'.join(parts[2:])
+            else:
+                relative_path = '/'.join(parts[1:])
             resolved_dir = os.path.join(os.path.expanduser('~'), relative_path)
             headers["x-opencode-directory"] = resolved_dir
             logging.info(f"[OpenCode Proxy] Resolved directory and set x-opencode-directory: {directory} -> {resolved_dir}")
