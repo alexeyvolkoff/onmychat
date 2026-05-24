@@ -1508,10 +1508,10 @@ async def proxy_opencode_sessions_create(request: Request):
         logging.error(f"[OpenCode Proxy] Error creating session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH"])
+@app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH", "POST"])
 async def proxy_opencode_session_item(request: Request, session_id: str):
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
-    if request.method == "PATCH":
+    if request.method in ["PATCH", "POST"]:
         session = await get_proxy_session()
         headers = dict(request.headers)
         headers.pop("host", None)
