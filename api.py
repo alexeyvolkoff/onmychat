@@ -1478,9 +1478,27 @@ async def proxy_opencode_sessions_create(request: Request):
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
-    body = await request.body()
+    
     try:
-        async with session.post(target_url, data=body, headers=headers) as resp:
+        body_json = await request.json()
+    except Exception:
+        body_json = {}
+
+    directory = body_json.pop("directory", None)
+    if directory:
+        import os
+        parts = [p for p in directory.split('/') if p]
+        if parts:
+            relative_path = '/'.join(parts[1:])
+            resolved_dir = os.path.join(os.path.expanduser('~'), relative_path)
+            headers["x-opencode-directory"] = resolved_dir
+            logging.info(f"[OpenCode Proxy] Resolved directory and set x-opencode-directory: {directory} -> {resolved_dir}")
+            
+    body_data = json.dumps(body_json).encode('utf-8')
+    headers["Content-Type"] = "application/json"
+    
+    try:
+        async with session.post(target_url, data=body_data, headers=headers) as resp:
             data = await resp.json()
             return {"session": data}
     except Exception as e:
@@ -1788,6 +1806,68 @@ async def proxy_opencode_changes(request: Request, session_id: str = Query(...))
         logging.error(f"[OpenCode Proxy] Error fetching changes: {e}")
         return {"changes": []}
 
+def shorten_patch(patch_str, n=1):
+    if not patch_str: return ""
+    lines = patch_str.splitlines()
+    output = []
+    hunk_started = False
+    hunk_lines = []
+    
+    def process_hunk(h_lines):
+        if not h_lines: return []
+        change_indices = []
+        for idx, line in enumerate(h_lines):
+            if idx == 0 and line.startswith("@@"):
+                continue
+            if (line.startswith("+") and not line.startswith("+++")) or (line.startswith("-") and not line.startswith("---")):
+                change_indices.append(idx)
+        if not change_indices:
+            return h_lines
+            
+        keep_indices = set()
+        for idx in range(len(h_lines)):
+            if idx == 0:
+                continue
+            if idx in change_indices:
+                keep_indices.add(idx)
+                continue
+            for c_idx in change_indices:
+                if abs(idx - c_idx) <= n:
+                    keep_indices.add(idx)
+                    break
+                    
+        shortened = []
+        shortened.append(h_lines[0])  # Keep hunk header
+        last_idx = 0
+        for idx in sorted(keep_indices):
+            if last_idx > 0 and idx > last_idx + 1:
+                shortened.append("...")
+            shortened.append(h_lines[idx])
+            last_idx = idx
+        return shortened
+
+    for line in lines:
+        if line.startswith("@@"):
+            if hunk_started:
+                output.extend(process_hunk(hunk_lines))
+                hunk_lines = []
+            hunk_started = True
+            hunk_lines.append(line)
+        elif hunk_started:
+            if line.startswith("diff --git") or line.startswith("Index:") or (line.startswith("--- ") and not line.startswith("--- \t") and not hunk_lines[-1].startswith("@@")):
+                output.extend(process_hunk(hunk_lines))
+                hunk_lines = []
+                hunk_started = False
+                output.append(line)
+            else:
+                hunk_lines.append(line)
+        else:
+            output.append(line)
+            
+    if hunk_started:
+        output.extend(process_hunk(hunk_lines))
+    return "\n".join(output)
+
 @app.get("/code/diff")
 async def proxy_opencode_diff(request: Request, change_id: str = Query(...), session_id: str = Query(...)):
     """
@@ -1823,7 +1903,7 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
                     full_diff += f"File: {file_diff.get('file')}\n"
                     # Handle both 'diff' and 'patch' keys
                     diff_content = file_diff.get('diff') or file_diff.get('patch', '')
-                    full_diff += diff_content + "\n\n"
+                    full_diff += shorten_patch(diff_content, n=1) + "\n\n"
             return {"diff": full_diff}
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching diff: {e}")
@@ -1850,11 +1930,14 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
     
     def inject_diffs(diff_list):
         if not isinstance(diff_list, list): return []
-        for item in diff_list:
+        import copy
+        new_list = copy.deepcopy(diff_list)
+        for item in new_list:
             if "diff" in item and item["diff"]:
+                item["diff"] = shorten_patch(item["diff"], n=1)
                 continue
             if "patch" in item and item["patch"]:
-                item["diff"] = item["patch"]
+                item["diff"] = shorten_patch(item["patch"], n=1)
                 continue
             file_name = item.get("file", "unknown")
             before = item.get("before")
@@ -1864,12 +1947,12 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                 after_lines = (after or "").splitlines(keepends=True)
                 diff_gen = difflib.unified_diff(
                     before_lines, after_lines,
-                    fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=3
+                    fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=1
                 )
                 item["diff"] = "".join(diff_gen)
             else:
                 item["diff"] = ""
-        return diff_list
+        return new_list
 
     try:
         # First, fetch the session directory to pass to the diff API for correct workspace matching
@@ -1898,6 +1981,14 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                 if assistant_msg:
                     parent_id = assistant_msg.get("info", {}).get("parentID")
                     if parent_id:
+                        # Try to get diffs directly from parent user message summary first!
+                        parent_msg = next((m for m in messages if m.get("info", {}).get("id") == parent_id), None)
+                        if parent_msg:
+                            summary = parent_msg.get("info", {}).get("summary") or {}
+                            diffs = summary.get("diffs")
+                            if diffs:
+                                return {"diffs": inject_diffs(diffs)}
+                        
                         # Fetch the diff using the parent user message ID as messageID
                         target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={parent_id}{dir_param}"
                         async with session.get(target_url, headers=headers) as diff_resp:
