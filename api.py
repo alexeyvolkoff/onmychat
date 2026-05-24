@@ -1794,10 +1794,25 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
     OnMyDisk expects: { "diff": "unified diff string" }
     OpenCode returns: [ { file, diff, ... }, ... ]
     """
-    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={change_id}"
+    # First, get session directory to ensure we pass it to OpenCode server's diff API
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
+
+    directory = None
+    try:
+        session_info_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+        async with session.get(session_info_url, headers=headers) as info_resp:
+            if info_resp.status == 200:
+                session_info = await info_resp.json()
+                directory = session_info.get("directory")
+    except Exception as ex:
+        logging.error(f"[OpenCode Proxy] Failed to fetch session info for diff: {ex}")
+
+    import urllib.parse
+    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={change_id}"
+    if directory:
+        target_url += f"&directory={urllib.parse.quote(directory)}"
     
     try:
         async with session.get(target_url, headers=headers) as resp:
@@ -1806,7 +1821,9 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
             if isinstance(data, list):
                 for file_diff in data:
                     full_diff += f"File: {file_diff.get('file')}\n"
-                    full_diff += file_diff.get('diff', '') + "\n\n"
+                    # Handle both 'diff' and 'patch' keys
+                    diff_content = file_diff.get('diff') or file_diff.get('patch', '')
+                    full_diff += diff_content + "\n\n"
             return {"diff": full_diff}
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching diff: {e}")
@@ -1836,25 +1853,65 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
         for item in diff_list:
             if "diff" in item and item["diff"]:
                 continue
+            if "patch" in item and item["patch"]:
+                item["diff"] = item["patch"]
+                continue
             file_name = item.get("file", "unknown")
-            before_lines = (item.get("before", "") or "").splitlines(keepends=True)
-            after_lines = (item.get("after", "") or "").splitlines(keepends=True)
-            diff_gen = difflib.unified_diff(
-                before_lines, after_lines,
-                fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=3
-            )
-            item["diff"] = "".join(diff_gen)
+            before = item.get("before")
+            after = item.get("after")
+            if before is not None or after is not None:
+                before_lines = (before or "").splitlines(keepends=True)
+                after_lines = (after or "").splitlines(keepends=True)
+                diff_gen = difflib.unified_diff(
+                    before_lines, after_lines,
+                    fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=3
+                )
+                item["diff"] = "".join(diff_gen)
+            else:
+                item["diff"] = ""
         return diff_list
 
     try:
+        # First, fetch the session directory to pass to the diff API for correct workspace matching
+        directory = None
+        try:
+            session_info_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
+            async with session.get(session_info_url, headers=headers) as info_resp:
+                if info_resp.status == 200:
+                    session_info = await info_resp.json()
+                    directory = session_info.get("directory")
+        except Exception as ex:
+            logging.error(f"[OpenCode Proxy] Failed to fetch session info: {ex}")
+
+        import urllib.parse
+        dir_param = f"&directory={urllib.parse.quote(directory)}" if directory else ""
+
         if message_id:
-            target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={message_id}"
+            # First, fetch all messages to find the parent user message ID
+            session_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
+            async with session.get(session_url, headers=headers) as resp:
+                data = await resp.json()
+                messages = data if isinstance(data, list) else []
+                
+                # Locate the assistant message with this ID
+                assistant_msg = next((m for m in messages if m.get("info", {}).get("id") == message_id), None)
+                if assistant_msg:
+                    parent_id = assistant_msg.get("info", {}).get("parentID")
+                    if parent_id:
+                        # Fetch the diff using the parent user message ID as messageID
+                        target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={parent_id}{dir_param}"
+                        async with session.get(target_url, headers=headers) as diff_resp:
+                            diff_data = await diff_resp.json()
+                            return {"diffs": inject_diffs(diff_data if isinstance(diff_data, list) else [])}
+                return {"diffs": []}
         else:
+            # Cumulative session diff
             target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff"
-        
-        async with session.get(target_url, headers=headers) as resp:
-            data = await resp.json()
-            return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
+            if directory:
+                target_url += f"?directory={urllib.parse.quote(directory)}"
+            async with session.get(target_url, headers=headers) as resp:
+                data = await resp.json()
+                return {"diffs": inject_diffs(data if isinstance(data, list) else [])}
 
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching session diffs: {e}")
