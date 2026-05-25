@@ -1652,7 +1652,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
 
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
-                async with aiohttp.ClientSession(read_bufsize=10*1024*1024) as sse_session:
+                async with aiohttp.ClientSession() as sse_session:
                     async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
                         if event_resp.status != 200:
                             logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
@@ -1764,6 +1764,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 authorized_sids.add(event_sid)
 
                                         # Only process events for authorized sessions (Primary + Subagents)
+                                        logging.debug(f"[OpenCode Proxy] Event: {event_type} | event_sid: {event_sid} | authorized: {event_sid in authorized_sids} | authorized_sids: {list(authorized_sids)}")
                                         if event_sid in authorized_sids:
                                             # DEBUG: Trace EVERY event for authorized sessions
                                             logging.debug(f"[OpenCode Proxy] EVENT: {event_type} | SID: {event_sid} | Primary: {event_sid == str(session_id)}")
