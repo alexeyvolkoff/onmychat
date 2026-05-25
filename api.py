@@ -1478,6 +1478,9 @@ async def proxy_opencode_sessions_create(request: Request):
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
+    headers.pop("content-length", None)
+    headers.pop("connection", None)
+    headers.pop("accept-encoding", None)
     
     try:
         body_json = await request.json()
@@ -1604,6 +1607,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         session = await get_proxy_session()
         headers = dict(request.headers)
         headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("connection", None)
+        headers.pop("accept-encoding", None)
         headers["Content-Type"] = "application/json"
         
         directory = omd_payload.get("directory")
@@ -2084,6 +2090,9 @@ async def proxy_opencode_revert(request: Request, session_id: str):
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
+    headers.pop("content-length", None)
+    headers.pop("connection", None)
+    headers.pop("accept-encoding", None)
     
     try:
         req_data = await request.json()
