@@ -1644,6 +1644,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
         
         async def stream_generator():
+            read_task = None
             try:
                 # 0. Yield initial status to inform UI immediately
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
@@ -1693,6 +1694,18 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         primary_message_ids = set()
                         terminal_event_received = False
                         
+                        event_queue = asyncio.Queue()
+                        async def read_events(content_reader, queue):
+                            try:
+                                async for line in content_reader:
+                                    await queue.put(line)
+                            except Exception as read_ex:
+                                logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
+                            finally:
+                                await queue.put(None)
+                        
+                        read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
+                        
                         while True:
                             # Break conditions:
                             if post_task.done() and post_task.exception():
@@ -1719,19 +1732,18 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 if idle_time > 2.0:
                                     logging.info(f"[OpenCode Proxy] Post task completed and stream drained (2s silence). Closing.")
                                     break
-                                    break
                             else:
                                 # We no longer time out on silence while generating.
                                 pass
 
                             try:
                                 try:
-                                    line = await asyncio.wait_for(event_resp.content.readline(), timeout=0.2)
+                                    line = await asyncio.wait_for(event_queue.get(), timeout=0.2)
                                 except asyncio.TimeoutError:
                                     await asyncio.sleep(0.05)
                                     continue
 
-                                if not line:
+                                if line is None:
                                     logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF).")
                                     break
                                     
@@ -1832,9 +1844,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             await asyncio.sleep(0.01) 
                         
                         # 4. Final cleanup
-                        if str(session_id) in active_tasks:
-                            del active_tasks[str(session_id)]
-                            
                         if not post_task.done():
                             await post_task
                         
@@ -1843,8 +1852,25 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             except Exception as e:
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
+            finally:
+                if read_task and not read_task.done():
+                    read_task.cancel()
+                    try:
+                        await read_task
+                    except asyncio.CancelledError:
+                        pass
+                if str(session_id) in active_tasks:
+                    del active_tasks[str(session_id)]
         
-        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
         
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error in prompt proxy: {e}")
