@@ -1625,6 +1625,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         headers["Content-Type"] = "application/json"
         
         directory = omd_payload.get("directory")
+        resolved_dir = None
         if directory:
             import os, urllib.parse
             home_dir = os.path.expanduser('~')
@@ -1652,6 +1653,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
 
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
+                if resolved_dir:
+                    import urllib.parse
+                    event_url += f"&directory={urllib.parse.quote(resolved_dir)}"
                 async with aiohttp.ClientSession() as sse_session:
                     async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
                         if event_resp.status != 200:
@@ -1683,28 +1687,35 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 logging.error(f"[OpenCode Proxy] POST Task failed: {e}")
                                 return {"error": f"Task failed: {str(e)}"}
                         
+                        event_queue = asyncio.Queue()
+                        async def read_events(content_reader, queue):
+                            try:
+                                logging.debug("[OpenCode Proxy] read_events started")
+                                async for line in content_reader:
+                                    logging.debug(f"[OpenCode Proxy] read_events read line: {line.decode('utf-8').strip()}")
+                                    await queue.put(line)
+                            except Exception as read_ex:
+                                logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
+                            finally:
+                                logging.debug("[OpenCode Proxy] read_events finished")
+                                await queue.put(None)
+                        
+                        # 3. Start the event stream reader task first to establish the socket connection
+                        read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
+                        
+                        # Wait a brief moment to allow OpenCode to register the SSE event subscription
+                        await asyncio.sleep(0.2)
+                        
+                        # 4. Start the POST request in the background
                         post_task = asyncio.create_task(do_post())
                         active_tasks[str(session_id)] = post_task
                         
-                        # 3. Read events persistently (outliving post_task for autonomous agents)
                         # We track the primary session and any subagent (child) sessions spawned from it
                         authorized_sids = {str(session_id)}
                         last_event_time = asyncio.get_event_loop().time()
                         last_emitted_states = {}
                         primary_message_ids = set()
                         terminal_event_received = False
-                        
-                        event_queue = asyncio.Queue()
-                        async def read_events(content_reader, queue):
-                            try:
-                                async for line in content_reader:
-                                    await queue.put(line)
-                            except Exception as read_ex:
-                                logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
-                            finally:
-                                await queue.put(None)
-                        
-                        read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
                         
                         while True:
                             # Break conditions:
@@ -1723,6 +1734,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 
                                 # Check if the task returned an error dict instead of raising an exception.
                                 task_result = post_task.result()
+                                logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
                                 if isinstance(task_result, dict) and "error" in task_result:
                                     logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
                                     yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
