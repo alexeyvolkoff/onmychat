@@ -1799,8 +1799,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             last_event_time = asyncio.get_event_loop().time()
                                             
                                             if event_type == "session.updated":
-                                                if "title" in info:
-                                                    yield f"data: {json.dumps({'action': 'rename', 'title': info['title']})}\n\n".encode('utf-8')
+                                                title = (info.get("title") or 
+                                                         props.get("title") or 
+                                                         event_data.get("title") or 
+                                                         (props.get("session", {}).get("title") if isinstance(props.get("session"), dict) else None))
+                                                if title:
+                                                    logging.info(f"[OpenCode Proxy] Stream rename event received: {title}")
+                                                    yield f"data: {json.dumps({'action': 'rename', 'title': title})}\n\n".encode('utf-8')
                                             
                                             elif event_type == "session.diff":
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
