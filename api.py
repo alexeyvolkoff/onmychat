@@ -1725,6 +1725,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         last_emitted_states = {}
                         primary_message_ids = set()
                         terminal_event_received = False
+                        active_tool_parts = set()
                         
                         while True:
                             # Break conditions:
@@ -1750,9 +1751,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     break
 
                                 # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
-                                if terminal_event_received:
+                                if terminal_event_received and not active_tool_parts:
                                     if idle_time > 0.5:
-                                        logging.info(f"[OpenCode Proxy] Post task completed, terminal event received and 0.5s silence. Closing.")
+                                        logging.info(f"[OpenCode Proxy] Post task completed, terminal event received, no active tools ({len(active_tool_parts)} active) and 0.5s silence. Closing.")
                                         break
 
                                 # Grace period: Wait 2.0s for trailing SSE events after task completion.
@@ -1819,12 +1820,18 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             
                                             elif event_type == "session.status":
                                                 status_info = props.get("status", {})
-                                                if isinstance(status_info, dict) and status_info.get("type") == "idle":
-                                                    if event_sid == str(session_id):
-                                                        logging.info(f"[OpenCode Proxy] Primary SESSION STATUS IDLE event. Generation complete.")
-                                                        terminal_event_received = True
-                                                    else:
-                                                        logging.info(f"[OpenCode Proxy] Subagent status idle: {event_sid}")
+                                                if isinstance(status_info, dict):
+                                                    status_type = status_info.get("type")
+                                                    if status_type == "idle":
+                                                        if event_sid == str(session_id):
+                                                            logging.info(f"[OpenCode Proxy] Primary SESSION STATUS IDLE event. Generation complete.")
+                                                            terminal_event_received = True
+                                                        else:
+                                                            logging.info(f"[OpenCode Proxy] Subagent status idle: {event_sid}")
+                                                    elif status_type in ["thinking", "running", "generating"]:
+                                                        if event_sid == str(session_id):
+                                                            logging.info(f"[OpenCode Proxy] Primary SESSION STATUS ACTIVE ({status_type}). Resetting terminal status.")
+                                                            terminal_event_received = False
                                             
                                             elif event_type in ["message.created", "message.updated"]:
                                                 if info.get("role") == "assistant":
@@ -1835,6 +1842,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         
                                                         if is_new:
                                                             primary_message_ids.add(msg_id)
+                                                            if event_sid == str(session_id):
+                                                                terminal_event_received = False
                                                             # Start a new bubble if this isn't the very first assistant message of the stream
                                                             if not is_first_msg:
                                                                logging.info(f"[OpenCode Proxy] NEW assistant message: {msg_id}. Switching bubbles.")
@@ -1851,6 +1860,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                                 logging.debug(f"[OpenCode Proxy] Message {msg_id} marked as completed in metadata.")
                                                     
                                             elif event_type == "message.part.delta":
+                                                if event_sid == str(session_id):
+                                                    terminal_event_received = False
                                                 chunk = {
                                                     "id": props.get("partID") or props.get("id"),
                                                     "delta": props.get("delta"),
@@ -1862,15 +1873,32 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             elif event_type in ["message.part.updated", "part.update", "message.part.created"]:
                                                 part = props.get("part") or props or {}
                                                 part_id = part.get("id") or props.get("partID")
+                                                part_type = part.get("type") or props.get("type")
                                                 state_obj = part.get("state")
+                                                
+                                                if part_type == "tool" and part_id:
+                                                    if isinstance(state_obj, dict):
+                                                        status = state_obj.get("status")
+                                                        if status in ["success", "error", "finished"]:
+                                                            if part_id in active_tool_parts:
+                                                                logging.info(f"[OpenCode Proxy] Tool part {part_id} finished with status: {status}")
+                                                                active_tool_parts.remove(part_id)
+                                                        else:
+                                                            logging.info(f"[OpenCode Proxy] Tool part {part_id} is active (status: {status})")
+                                                            active_tool_parts.add(part_id)
+                                                            if event_sid == str(session_id):
+                                                                terminal_event_received = False
+                                                
                                                 if isinstance(state_obj, dict):
                                                     state_copy = dict(state_obj); state_copy.pop("time", None)
                                                     state_str = json.dumps(state_copy, sort_keys=True)
-                                                    if last_emitted_states.get(part_id) == state_str: continue
-                                                    last_emitted_states[part_id] = state_str
-                                                    
-                                                chunk = { "id": part_id, "type": part.get("type"), "state": state_obj, "action": "part_update" }
-                                                yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                    if last_emitted_states.get(part_id) != state_str:
+                                                        last_emitted_states[part_id] = state_str
+                                                        chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
+                                                        yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                else:
+                                                    chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
+                                                    yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
                                             elif event_type in ["task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
