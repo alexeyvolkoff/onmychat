@@ -1695,7 +1695,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     logging.debug(f"[OpenCode Proxy] read_events read line: {line.decode('utf-8').strip()}")
                                     await queue.put(line)
                             except Exception as read_ex:
-                                logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
+                                if terminal_event_received:
+                                    logging.debug(f"[OpenCode Proxy] Event stream connection closed normally: {read_ex}")
+                                else:
+                                    logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
                             finally:
                                 logging.debug("[OpenCode Proxy] read_events finished")
                                 await queue.put(None)
@@ -1738,6 +1741,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 if isinstance(task_result, dict) and "error" in task_result:
                                     logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
                                     yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
+                                    break
+
+                                # If the terminal SSE event has already been received, we can close immediately.
+                                if terminal_event_received:
+                                    logging.info(f"[OpenCode Proxy] Post task completed and terminal event received. Closing immediately.")
                                     break
 
                                 # Grace period: Wait 2.0s for trailing SSE events after task completion.
@@ -1791,12 +1799,20 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
                                             
                                             elif event_type == "session.idle":
-                                                logging.info(f"[OpenCode Proxy] SESSION IDLE (Agent waiting/thinking).")
+                                                if event_sid == str(session_id):
+                                                    logging.info(f"[OpenCode Proxy] Primary SESSION IDLE event. Generation complete.")
+                                                    terminal_event_received = True
+                                                else:
+                                                    logging.info(f"[OpenCode Proxy] Subagent session idle: {event_sid}")
                                             
                                             elif event_type == "session.status":
                                                 status_info = props.get("status", {})
                                                 if isinstance(status_info, dict) and status_info.get("type") == "idle":
-                                                    logging.info(f"[OpenCode Proxy] SESSION STATUS IDLE (Agent waiting/thinking).")
+                                                    if event_sid == str(session_id):
+                                                        logging.info(f"[OpenCode Proxy] Primary SESSION STATUS IDLE event. Generation complete.")
+                                                        terminal_event_received = True
+                                                    else:
+                                                        logging.info(f"[OpenCode Proxy] Subagent status idle: {event_sid}")
                                             
                                             elif event_type in ["message.created", "message.updated"]:
                                                 if info.get("role") == "assistant":
@@ -1846,7 +1862,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 
                                             elif event_type in ["task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
-                                                    logging.info(f"[OpenCode Proxy] TERMINAL SSE EVENT: {event_type} (waiting for post_task to finalize)")
+                                                    logging.info(f"[OpenCode Proxy] TERMINAL SSE EVENT: {event_type}. Generation complete.")
+                                                    terminal_event_received = True
                                                     
                                     except json.JSONDecodeError:
                                         pass 
