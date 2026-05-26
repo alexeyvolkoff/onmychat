@@ -1743,10 +1743,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
                                     break
 
-                                # If the terminal SSE event has already been received, we can close immediately.
+                                # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
                                 if terminal_event_received:
-                                    logging.info(f"[OpenCode Proxy] Post task completed and terminal event received. Closing immediately.")
-                                    break
+                                    if idle_time > 0.5:
+                                        logging.info(f"[OpenCode Proxy] Post task completed, terminal event received and 0.5s silence. Closing.")
+                                        break
 
                                 # Grace period: Wait 2.0s for trailing SSE events after task completion.
                                 if idle_time > 2.0:
@@ -2002,6 +2003,104 @@ def shorten_patch(patch_str, n=1):
         output.extend(process_hunk(hunk_lines))
     return "\n".join(output)
 
+def get_local_git_diff(directory: str):
+    if not directory or not os.path.exists(directory):
+        return []
+    
+    # Resolve directory to absolute path
+    directory = os.path.abspath(directory)
+    
+    # We want to find any Git repositories under this directory (up to depth 2)
+    git_repos = []
+    if os.path.exists(os.path.join(directory, ".git")):
+        git_repos.append(directory)
+    else:
+        try:
+            for item in os.listdir(directory):
+                sub = os.path.join(directory, item)
+                if os.path.isdir(sub) and os.path.exists(os.path.join(sub, ".git")):
+                    git_repos.append(sub)
+        except Exception:
+            pass
+            
+    if not git_repos:
+        return []
+        
+    diffs = []
+    import subprocess
+    for repo in git_repos:
+        try:
+            # 1. Run git status --porcelain
+            status_res = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo, capture_output=True, text=True, timeout=2
+            )
+            if status_res.returncode != 0:
+                continue
+                
+            files_status = {}
+            for line in status_res.stdout.splitlines():
+                if len(line) > 3:
+                    code = line[:2].strip()
+                    file_path = line[3:].strip()
+                    # Handle quoted git paths
+                    if file_path.startswith('"') and file_path.endswith('"'):
+                        file_path = file_path[1:-1]
+                    status_name = "modified"
+                    if "A" in code or "?" in code:
+                        status_name = "added"
+                    elif "D" in code:
+                        status_name = "deleted"
+                    files_status[file_path] = status_name
+                    
+            if not files_status:
+                continue
+                
+            # 2. Run git diff --numstat
+            numstat_res = subprocess.run(
+                ["git", "diff", "--numstat"],
+                cwd=repo, capture_output=True, text=True, timeout=2
+            )
+            stats = {}
+            if numstat_res.returncode == 0:
+                for line in numstat_res.stdout.splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        adds, dels, fpath = parts[0], parts[1], parts[2]
+                        additions = 0 if adds == "-" else int(adds)
+                        deletions = 0 if dels == "-" else int(dels)
+                        stats[fpath] = (additions, deletions)
+                        
+            # 3. For each file, get its diff
+            for fpath, status in files_status.items():
+                diff_res = subprocess.run(
+                    ["git", "diff", "--", fpath],
+                    cwd=repo, capture_output=True, text=True, timeout=2
+                )
+                diff_content = diff_res.stdout if diff_res.returncode == 0 else ""
+                
+                adds, dels = stats.get(fpath, (0, 0))
+                if adds == 0 and dels == 0 and status == "added":
+                    try:
+                        with open(os.path.join(repo, fpath), "r", encoding="utf-8", errors="ignore") as f:
+                            adds = len(f.readlines())
+                    except Exception:
+                        adds = 0
+                
+                rel_path = os.path.relpath(os.path.join(repo, fpath), directory)
+                
+                diffs.append({
+                    "file": rel_path,
+                    "additions": adds,
+                    "deletions": dels,
+                    "status": status,
+                    "diff": diff_content
+                })
+        except Exception as e:
+            logging.error(f"[OpenCode Proxy] Error running git diff for {repo}: {e}")
+            
+    return diffs
+
 @app.get("/code/diff")
 async def proxy_opencode_diff(request: Request, change_id: str = Query(...), session_id: str = Query(...)):
     """
@@ -2032,12 +2131,16 @@ async def proxy_opencode_diff(request: Request, change_id: str = Query(...), ses
         async with session.get(target_url, headers=headers) as resp:
             data = await resp.json()
             full_diff = ""
-            if isinstance(data, list):
-                for file_diff in data:
-                    full_diff += f"File: {file_diff.get('file')}\n"
-                    # Handle both 'diff' and 'patch' keys
-                    diff_content = file_diff.get('diff') or file_diff.get('patch', '')
-                    full_diff += shorten_patch(diff_content, n=1) + "\n\n"
+            diffs = data if isinstance(data, list) else []
+            
+            # Fallback to local git diff if empty
+            if not diffs and directory:
+                diffs = get_local_git_diff(directory)
+                
+            for file_diff in diffs:
+                full_diff += f"File: {file_diff.get('file')}\n"
+                diff_content = file_diff.get('diff') or file_diff.get('patch', '')
+                full_diff += shorten_patch(diff_content, n=1) + "\n\n"
             return {"diff": full_diff}
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error fetching diff: {e}")
@@ -2127,7 +2230,12 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                         target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/diff?messageID={parent_id}{dir_param}"
                         async with session.get(target_url, headers=headers) as diff_resp:
                             diff_data = await diff_resp.json()
-                            return {"diffs": inject_diffs(diff_data if isinstance(diff_data, list) else [])}
+                            diffs = diff_data if isinstance(diff_data, list) else []
+                            
+                            # Fallback to local git diff if empty
+                            if not diffs and directory:
+                                diffs = get_local_git_diff(directory)
+                            return {"diffs": inject_diffs(diffs)}
                 return {"diffs": []}
         else:
             # Cumulative session diff
@@ -2138,16 +2246,9 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
                 data = await resp.json()
                 diffs = data if isinstance(data, list) else []
                 
-                # Fallback to VCS diff if session diff is empty and directory is available
+                # Fallback to local git diff if session diff is empty
                 if not diffs and directory:
-                    vcs_url = f"{core_service.CODE_BASE_URL}/vcs/diff?mode=git&directory={urllib.parse.quote(directory)}"
-                    try:
-                        async with session.get(vcs_url, headers=headers) as vcs_resp:
-                            vcs_data = await vcs_resp.json()
-                            if isinstance(vcs_data, list) and vcs_data:
-                                diffs = vcs_data
-                    except Exception as vex:
-                        logging.error(f"[OpenCode Proxy] Failed to fetch VCS diff fallback: {vex}")
+                    diffs = get_local_git_diff(directory)
                 
                 return {"diffs": inject_diffs(diffs)}
 
