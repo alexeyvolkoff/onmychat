@@ -1512,6 +1512,12 @@ async def proxy_opencode_sessions_create(request: Request):
     try:
         async with session.post(target_url, data=body_data, headers=headers) as resp:
             data = await resp.json()
+            logging.info(f"[OpenCode Proxy] Session created successfully. Response: {data}")
+            if isinstance(data, dict):
+                if "id" not in data and "session_id" in data:
+                    data["id"] = data["session_id"]
+                elif "id" not in data and "session" in data and isinstance(data["session"], dict) and "id" in data["session"]:
+                    data = data["session"]
             return {"session": data}
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error creating session: {e}")
