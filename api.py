@@ -1697,9 +1697,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         async def read_events(content_reader, queue):
                             try:
                                 logging.debug("[OpenCode Proxy] read_events started")
-                                async for line in content_reader:
-                                    logging.debug(f"[OpenCode Proxy] read_events read line: {line.decode('utf-8').strip()}")
-                                    await queue.put(line)
+                                buffer = b""
+                                while True:
+                                    chunk = await content_reader.read(65536)
+                                    if not chunk:
+                                        break
+                                    buffer += chunk
+                                    while b"\n" in buffer:
+                                        line, buffer = buffer.split(b"\n", 1)
+                                        await queue.put(line)
+                                if buffer:
+                                    await queue.put(buffer)
                             except Exception as read_ex:
                                 if terminal_event_received:
                                     logging.debug(f"[OpenCode Proxy] Event stream connection closed normally: {read_ex}")
