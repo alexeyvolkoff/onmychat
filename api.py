@@ -1458,6 +1458,34 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
 active_tasks = {}
 
+def resolve_session_directory(directory: str) -> str:
+    if not directory:
+        return directory
+    import os
+    home_dir = os.path.expanduser('~')
+    
+    # 1. If it starts with home_dir and actually exists, use it!
+    if directory.startswith(home_dir) and os.path.exists(directory):
+        return directory
+        
+    parts = [p for p in directory.split('/') if p]
+    if not parts:
+        return directory
+        
+    # 2. Try to find a suffix that exists when joined with home_dir
+    for i in range(len(parts)):
+        subpath = '/'.join(parts[i:])
+        test_path = os.path.join(home_dir, subpath)
+        if os.path.exists(test_path):
+            return test_path
+            
+    # 3. Fallback to original resolution logic
+    if len(parts) > 1 and parts[1] == "root":
+        relative_path = '/'.join(parts[2:])
+    else:
+        relative_path = '/'.join(parts[1:])
+    return os.path.join(home_dir, relative_path)
+
 @app.get("/code/sessions")
 async def proxy_opencode_sessions_list(request: Request):
     target_url = f"{core_service.CODE_BASE_URL}/session"
@@ -1489,20 +1517,8 @@ async def proxy_opencode_sessions_create(request: Request):
 
     directory = body_json.pop("directory", None)
     if directory:
-        import os, urllib.parse
-        home_dir = os.path.expanduser('~')
-        if directory.startswith(home_dir):
-            resolved_dir = directory
-        else:
-            parts = [p for p in directory.split('/') if p]
-            if parts:
-                if len(parts) > 1 and parts[1] == "root":
-                    relative_path = '/'.join(parts[2:])
-                else:
-                    relative_path = '/'.join(parts[1:])
-                resolved_dir = os.path.join(home_dir, relative_path)
-            else:
-                resolved_dir = directory
+        import urllib.parse
+        resolved_dir = resolve_session_directory(directory)
         target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
         logging.info(f"[OpenCode Proxy] Resolved directory for session create: {directory} -> {resolved_dir}")
             
@@ -1542,20 +1558,8 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
             
         directory = body_json.pop("directory", None)
         if directory:
-            import os, urllib.parse
-            home_dir = os.path.expanduser('~')
-            if directory.startswith(home_dir):
-                resolved_dir = directory
-            else:
-                parts = [p for p in directory.split('/') if p]
-                if parts:
-                    if len(parts) > 1 and parts[1] == "root":
-                        relative_path = '/'.join(parts[2:])
-                    else:
-                        relative_path = '/'.join(parts[1:])
-                    resolved_dir = os.path.join(home_dir, relative_path)
-                else:
-                    resolved_dir = directory
+            import urllib.parse
+            resolved_dir = resolve_session_directory(directory)
             target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
             logging.info(f"[OpenCode Proxy] Resolved directory for session update: {directory} -> {resolved_dir}")
                 
@@ -1640,20 +1644,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         directory = omd_payload.get("directory")
         resolved_dir = None
         if directory:
-            import os, urllib.parse
-            home_dir = os.path.expanduser('~')
-            if directory.startswith(home_dir):
-                resolved_dir = directory
-            else:
-                parts = [p for p in directory.split('/') if p]
-                if parts:
-                    if len(parts) > 1 and parts[1] == "root":
-                        relative_path = '/'.join(parts[2:])
-                    else:
-                        relative_path = '/'.join(parts[1:])
-                    resolved_dir = os.path.join(home_dir, relative_path)
-                else:
-                    resolved_dir = directory
+            import urllib.parse
+            resolved_dir = resolve_session_directory(directory)
             target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
             logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
         
