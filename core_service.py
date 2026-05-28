@@ -2040,23 +2040,34 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default", history: list = None) -> str:
     chat = chat or "default"
     appearance = ctx.settings.get("assistant_appearance") or user_context.DEFAULT_ASSISTANT_APPEARANCE
-    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + appearance
+    
+    # Extract tags (like <dream>, <Minerva>) from prompt and appearance so LLM tokenizer/special tokens are not confused
+    tags_in_prompt = re.findall(r"<[^>]+>", prompt)
+    tags_in_appearance = re.findall(r"<[^>]+>", appearance)
+    all_tags = list(dict.fromkeys(tags_in_prompt + tags_in_appearance)) # Deduplicate preserving order
+    
+    # Clean tags from the text sent to the LLM
+    clean_prompt_text = re.sub(r"<[^>]+>", "", prompt).strip()
+    clean_appearance_text = re.sub(r"<[^>]+>", "", appearance).strip()
+
+    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + clean_appearance_text
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     # Clean prompt from slash commands
-    clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', prompt).strip()
+    clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', clean_prompt_text).strip()
     if not clean_prompt:
-        clean_prompt = prompt
+        clean_prompt = clean_prompt_text
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=appearance)}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)}"
     else:  
         system_prompt =  user_prompt
-        image_instruction = instruction.format(prompt=clean_prompt, appearance=appearance)
+        image_instruction = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
 
     logging.info(f"[image_prompt] User original prompt: {prompt}")
-    logging.info(f"[image_prompt] Appearance: {appearance[:200]}..." if len(appearance) > 200 else f"[image_prompt] Appearance: {appearance}")
+    logging.info(f"[image_prompt] Clean appearance for LLM: {clean_appearance_text}")
+    logging.info(f"[image_prompt] Extracted tags: {all_tags}")
     logging.info(f"[image_prompt] Formatted image_instruction: {image_instruction}")
 
     history = history or []
@@ -2064,7 +2075,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     # Добавляем system-инструкцию
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Добавляем историю с явным указанием контекста
+    # Добавляем история с явным указанием контекста
     if history:
         messages.append({"role": "system", "content": "CONVERSATION CONTEXT (use this to determine current location, character's outfit, and situation):"})
         messages.extend(history[-20:])
@@ -2078,7 +2089,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         "model": get_llm_model(ctx),
         "stream": False,
         "options": {
-            "temperature": 0.1,
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "frequency_penalty": 0.5,
+            "presence_penalty": 0.5,
         }
     }
 
@@ -2092,8 +2106,24 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
+    # Append the extracted tags to the final LLM response so Stable Diffusion/ComfyUI gets them
+    final_prompt = response.strip()
+    if all_tags:
+        tag_suffix = " " + " ".join(all_tags)
+        # If response contains 'Image: ...', append tag to that line, otherwise to the end
+        if "Image:" in final_prompt:
+             lines = final_prompt.split("\n")
+             for idx, line in enumerate(lines):
+                  if line.strip().startswith("Image:"):
+                       lines[idx] = line.rstrip() + tag_suffix
+                       break
+             final_prompt = "\n".join(lines)
+        else:
+             final_prompt += tag_suffix
+
     logging.info(f"[image_prompt] LLM Generated Prompt Response: {response}")
-    return response.strip()
+    logging.info(f"[image_prompt] Final Prompt with Tags: {final_prompt}")
+    return final_prompt
 
 
 # Generate character image, returns full path for further sending or conversion
