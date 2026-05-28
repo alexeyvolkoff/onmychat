@@ -3,7 +3,7 @@ Return 'Image: prompt'.
 
 Craft a structured, detail-rich prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
 
-**Mandatory: Incorporate the character's physical description:**
+**CRITICAL MANDATORY REQUIREMENT:** You MUST strictly depict the assistant/character using this EXACT physical appearance and features. Do NOT use default or standard hair colors, eye colors, or other descriptions. You must merge these exact physical details into the prompt:
 {appearance}
 
 **Mandatory: Extract and incorporate the scene context from the history provided above:**

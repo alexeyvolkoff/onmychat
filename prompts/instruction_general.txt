@@ -10,6 +10,7 @@ Create a high-quality SDXL prompt based on the conversation history and the requ
 4.  **Perspective**: External observer view.
 5.  **Visuals**: Focus on physical descriptions, textures, colors, and lighting.
 6.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
+7.  **CRITICAL - Assistant's Appearance**: If the requested scene or conversation context depicts or involves the assistant/companion, you MUST strictly incorporate the companion's EXACT physical appearance and features: {appearance}. Do NOT use default or standard hair colors, eye colors, or other descriptions.
 
 **Example:**
 Image: futuristic city street, neon signs, wet pavement, reflection, crowd of people, cyborgs, (towering skyscrapers:1.2), drizzle, cyberpunk style, cyan and purple color palette, volumetric lighting, photorealistic
