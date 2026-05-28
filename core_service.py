@@ -2065,10 +2065,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         system_prompt =  user_prompt
         image_instruction = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
 
-    logging.info(f"[image_prompt] User original prompt: {prompt}")
-    logging.info(f"[image_prompt] Clean appearance for LLM: {clean_appearance_text}")
-    logging.info(f"[image_prompt] Extracted tags: {all_tags}")
-    logging.info(f"[image_prompt] Formatted image_instruction: {image_instruction}")
+
 
     # Format history as a structured text block instead of active chat messages to prevent model roleplay priming
     history_text = ""
@@ -2170,7 +2167,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         else:
              final_prompt += tag_suffix
 
-    logging.info(f"[image_prompt] LLM Generated Prompt Response: {response}")
     logging.info(f"[image_prompt] Final Prompt with Tags & Appearance: {final_prompt}")
     return final_prompt
 
