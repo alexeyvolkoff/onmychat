@@ -1,9 +1,13 @@
 *This is not a conversational request, simply create an image prompt*.
 Return 'Image: prompt'.
 
-Craft a structured, detail-rich prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
+Craft a structured, tag-based prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
 
-**CRITICAL MANDATORY REQUIREMENT:** You MUST strictly depict the assistant/character using this EXACT physical appearance and features. Do NOT use default or standard hair colors, eye colors, or other descriptions. You must merge these exact physical details into the prompt:
+**CRITICAL MANDATORY REQUIREMENT:**
+- DO NOT write full sentences, narrative text, or explanations.
+- DO NOT output bullet points, lists, markdown headers (like "### Key Details"), or comments.
+- ONLY output a single line starting with 'Image:' followed by the comma-separated tags.
+- You MUST strictly depict the assistant/character using this EXACT physical appearance and features. Do NOT use default or standard hair colors, eye colors, or other descriptions. You must merge these exact physical details into the prompt:
 {appearance}
 
 **Mandatory: Extract and incorporate the scene context from the history provided above:**
@@ -14,19 +18,12 @@ Craft a structured, detail-rich prompt for an SDXL/Pony model based on the conve
 
 Your goal is to depict the character performing the requested action with high fidelity, merging the scene description extracted from context/settings with character's appearance.
 
-**Style & Format:**
-1.  **Use Tags & Phrases**: Do NOT use full sentences. Use comma-separated values (e.g., *blue eyes, sitting on sofa, soft lighting*).
-2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`.
-3.  **Emphasis**: Use parentheses for importance: `(keyword:1.1)` or `((keyword))`. Highlight distinctive features from the description.
+**Style & Format (ComfyUI / Danbooru Tag Style):**
+1.  **Tags & Phrases Only**: Format the prompt strictly as comma-separated tags, keywords, and short descriptive phrases. Use lowercase tags and standard anime/concept art tags (e.g., `1girl, solo, looking at viewer, sitting on sofa, soft lighting, detailed clothing`). Do NOT write full sentences, narrative text, or verbs (like "she is posing"). Use short, clear, precise tags.
+2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style/Quality Tags]`.
+3.  **Emphasis**: Use standard parentheses and weights for tag emphasis when appropriate, e.g., `(keyword:1.2)` or `((keyword))` to emphasize key tags. Highlight distinctive features from the description.
 4.  **Context**: Translate conversational context into visual details.
 5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
-
-**Components:**
-1.  **Subject**: Explicitly describe the character using their defined features (hair, body type, etc), anatomy, pose, and interaction.
-2.  **Outfit**: Detailed clothing description (or lack thereof).
-3.  **Environment**: Detailed background elements (e.g. *cluttered bedroom, dim lamp, night*).
-4.  **Lighting/Mood**: *cinematic lighting, volumetric fog, rim light, moody*.
-5.  **Camera**: *close-up, wide angle, depth of field*.
 
 **Example Output:**
 Image: 1girl, solo, sitting by window, looking at viewer, (rainy night:1.2), wet glass, reflection, intricate black dress, cleavage, pale skin, (sorrowful expression), cinematic lighting, dark atmosphere, 8k, masterpiece
