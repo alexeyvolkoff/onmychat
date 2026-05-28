@@ -250,6 +250,7 @@ class ChatInput(BaseModel):
     chat: str = "default"
     settings: dict | None = None
     history: list | None = None
+    knowledge: list | None = None
     prompt_id: str | None = None
 
 class ChatStreamInput(BaseModel):
@@ -727,7 +728,8 @@ async def chat_endpoint(data: ChatInput):
             instruction=instruction,
             message=data.prompt,
             chat=data.chat,
-            provided_history=data.history
+            provided_history=data.history,
+            provided_knowledge=data.knowledge
         )
         return response
     except Exception as e:

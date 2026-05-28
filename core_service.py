@@ -1389,6 +1389,11 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     # Load RAG_TOP_K from SETTINGS
     rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
 
+    # Force skip_db if NSFW is enabled to exclude working knowledge base search and only use frontend-provided facts
+    if ctx.settings.get("nsfw", False):
+        logging.info("[memory] NSFW mode enabled: skipping working database and indexed files search, using provided knowledge only.")
+        skip_db = True
+
     # Личные воспоминания (только если предоставлены фронтендом)
     if provided_knowledge is not None:
         # If knowledge is provided via frontend, it fully replaces EXISTING personal memory access.
@@ -2034,7 +2039,8 @@ async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
 
 async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str, chat = "default", history: list = None) -> str:
     chat = chat or "default"
-    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", "")
+    appearance = ctx.settings.get("assistant_appearance") or user_context.DEFAULT_ASSISTANT_APPEARANCE
+    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + appearance
     nsfw_enabled = ctx.settings.get("nsfw", False)
 
     # Clean prompt from slash commands
@@ -2044,11 +2050,14 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     if nsfw_enabled:
         system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=ctx.settings.get('assistant_appearance', ''))}"
+        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=appearance)}"
     else:  
         system_prompt =  user_prompt
-        image_instruction = instruction.format(prompt=clean_prompt, appearance=ctx.settings.get('assistant_appearance', ''))
+        image_instruction = instruction.format(prompt=clean_prompt, appearance=appearance)
 
+    logging.info(f"[image_prompt] User original prompt: {prompt}")
+    logging.info(f"[image_prompt] Appearance: {appearance[:200]}..." if len(appearance) > 200 else f"[image_prompt] Appearance: {appearance}")
+    logging.info(f"[image_prompt] Formatted image_instruction: {image_instruction}")
 
     history = history or []
 
@@ -2083,6 +2092,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
+    logging.info(f"[image_prompt] LLM Generated Prompt Response: {response}")
     return response.strip()
 
 
