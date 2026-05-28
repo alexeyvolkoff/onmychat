@@ -2070,18 +2070,22 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     logging.info(f"[image_prompt] Extracted tags: {all_tags}")
     logging.info(f"[image_prompt] Formatted image_instruction: {image_instruction}")
 
-    history = history or []
-
-    # Добавляем system-инструкцию
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # Добавляем история с явным указанием контекста
+    # Format history as a structured text block instead of active chat messages to prevent model roleplay priming
+    history_text = ""
     if history:
-        messages.append({"role": "system", "content": "CONVERSATION CONTEXT (use this to determine current location, character's outfit, and situation):"})
-        messages.extend(history[-20:])
+        history_text = "\n\n=== RECENT CONVERSATION HISTORY (for context: location, outfit, scene) ===\n"
+        for msg in history[-15:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                 history_text += f"{role.upper()}: {content}\n"
+        history_text += "========================================================\n"
 
-    # Добавляем запрос
-    messages.append({ "role": "user", "content": image_instruction})
+    # Сборка запроса: ровно 2 сообщения, чтобы LLM не переключалась в режим диалога/списков
+    messages = [
+        {"role": "system", "content": system_prompt + history_text},
+        {"role": "user", "content": image_instruction}
+    ]
 
 
     request_payload = {
