@@ -2110,11 +2110,56 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
-    # Append the extracted tags to the final LLM response so Stable Diffusion/ComfyUI gets them
+    # Deterministic post-processing to inject style, model, and appearance into the final prompt
     final_prompt = response.strip()
-    if all_tags:
-        tag_suffix = " " + " ".join(all_tags)
-        # If response contains 'Image: ...', append tag to that line, otherwise to the end
+
+    # 1. Prepend the clean physical description at the beginning of the prompt (only for assistant/character image)
+    if instruction == SYSTEM_INSTRUCTION_CHARACTER:
+        if "Image:" in final_prompt:
+            parts = final_prompt.split("Image:", 1)
+            prompt_content = parts[1].strip()
+            
+            # Ensure "1girl, solo" prefix exists, then add clean appearance text
+            prefix = "1girl, "
+            if "solo" not in prompt_content.lower()[:25]:
+                prefix += "solo, "
+                
+            final_prompt = f"{parts[0]}Image: {prefix}{clean_appearance_text}, {prompt_content}"
+        else:
+            final_prompt = f"1girl, solo, {clean_appearance_text}, {final_prompt}"
+
+    # 2. Collect all style and model/LoRA tags to append to the end of the prompt
+    tags_to_add = []
+    
+    # Add style tag (for all prompt types)
+    style = ctx.settings.get("style", "realistic")
+    if style:
+        style_tag = f"<{style}>"
+        if style_tag not in tags_to_add:
+            tags_to_add.append(style_tag)
+            
+    # Add model/LoRA tags (only for assistant/character image)
+    if instruction == SYSTEM_INSTRUCTION_CHARACTER:
+        assistant_model = ctx.settings.get("assistant_model", "")
+        if assistant_model:
+            model_tag = assistant_model if assistant_model.startswith("<") else f"<{assistant_model}>"
+            if model_tag not in tags_to_add:
+                tags_to_add.append(model_tag)
+                
+        character_lora = ctx.settings.get("character_lora", "")
+        if character_lora:
+            lora_tag = character_lora if character_lora.startswith("<") else f"<{character_lora}>"
+            if lora_tag not in tags_to_add:
+                tags_to_add.append(lora_tag)
+
+    # Merge in any raw tags extracted from the prompt/settings
+    for tag in all_tags:
+        if tag not in tags_to_add:
+            tags_to_add.append(tag)
+
+    # 3. Append the tags to the prompt
+    if tags_to_add:
+        tag_suffix = " " + " ".join(tags_to_add)
         if "Image:" in final_prompt:
              lines = final_prompt.split("\n")
              for idx, line in enumerate(lines):
@@ -2126,7 +2171,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
              final_prompt += tag_suffix
 
     logging.info(f"[image_prompt] LLM Generated Prompt Response: {response}")
-    logging.info(f"[image_prompt] Final Prompt with Tags: {final_prompt}")
+    logging.info(f"[image_prompt] Final Prompt with Tags & Appearance: {final_prompt}")
     return final_prompt
 
 
