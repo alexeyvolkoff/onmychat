@@ -944,7 +944,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
     path_hint = ""
     
     if potential_paths:
-        path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
+        # Check if any path looks like a specific file with an extension
+        files = [p for p in potential_paths if any(p.lower().endswith(ext) for ext in [".odt", ".pdf", ".txt", ".docx", ".csv", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".html", ".css", ".js", ".cpp", ".py"])]
+        if files:
+            path_hint = f"\nSYSTEM HINT: Detected exact file paths: {', '.join(files)}. \nSTRATEGY: Access/read these files directly using appropriate tools (e.g. `read_odt_placeholders` or `read_omd_file`). Do NOT use `list_omd_files` if you already know the exact file path."
+        else:
+            path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
