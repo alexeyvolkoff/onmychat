@@ -3,6 +3,8 @@ import hashlib
 import re
 import random
 import json
+import zipfile
+import shutil
 import logging
 from PIL import Image, PngImagePlugin
 import io
@@ -249,6 +251,51 @@ MCP_TOOLS = [
               "required": ["fact"]
           }
       }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_odt_placeholders",
+      "description": "Read an ODT file and extract all unique placeholders of the form {{placeholder}}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The absolute path of the ODT file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "modify_odt_file",
+      "description": "Create a new ODT document by copying a template ODT document and replacing specified placeholders or strings. All values are automatically XML-escaped.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "template_path": {
+            "type": "string",
+            "description": "The absolute path of the source template ODT file, e.g. /Linux-desktop/Private/Templates/contract.odt"
+          },
+          "output_path": {
+            "type": "string",
+            "description": "The absolute path of the new ODT file to be written, e.g. /Linux-desktop/Private/Contracts/contract_new.odt"
+          },
+          "replacements": {
+            "type": "object",
+            "description": "A dictionary of key-value pairs to replace. Keys are target strings/placeholders, and values are the new texts.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["template_path", "output_path", "replacements"]
+      }
+    }
   }
 ]
 
@@ -282,6 +329,236 @@ async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -
         return "[NO FILE FOUND]"
     
     return data["message"]["content"].strip()
+
+async def download_omd_file(ctx: UserContext, path: str) -> bytes:
+    if not ctx.omd_key or not ctx.storage:
+        raise ValueError("OMD storage not linked.")
+        
+    storage_id = ctx.storage.strip("/")
+    base_url = GATEWAY_URL.rstrip("/")
+    
+    clean_path = path if not path.startswith("/") else path[1:]
+    root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+
+    if path.startswith("/") or path.startswith(root_folder):
+        url_path = path.lstrip("/")
+    else:
+        url_path = f"{storage_id}/{clean_path}"
+        
+    url = f"{base_url}/{url_path}"
+    # Consistent URL-based token authentication
+    separator = "&" if "?" in url else "?"
+    url += f"{separator}token={ctx.omd_key}"
+    
+    logging.info(f"Downloading raw binary file from OMD URL: {url.split('token=')[0]}...")
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=30) as resp:
+            if resp.status == 200:
+                return await resp.read()
+            else:
+                text = await resp.text()
+                raise IOError(f"Failed to download file from OMD: Status {resp.status} - {text}")
+
+async def upload_omd_file_binary(ctx: UserContext, path: str, data: bytes) -> str:
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+        
+    storage_id = ctx.storage.strip("/")
+    storage_key = ctx.omd_key
+    base_url = GATEWAY_URL.rstrip("/")
+    
+    clean_path = path if not path.startswith("/") else path[1:]
+    root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
+    
+    if path.startswith("/") or path.startswith(root_folder):
+        url_path = path.lstrip("/")
+        dest_url = f"{base_url}/{url_path}"
+        path = "/" + url_path
+    else:
+        dest_url = f"{base_url}/{storage_id}/{clean_path}"
+        path = f"/{storage_id}/{clean_path}"
+        
+    # Consistent URL-based token authentication
+    separator = "&" if "?" in dest_url else "?"
+    dest_url += f"{separator}token={storage_key}"
+    
+    headers = {
+        "Response": "json",
+        "Content-Type": "application/vnd.oasis.opendocument.text"
+    }
+    
+    logging.info(f"Uploading raw binary file to OMD URL: {dest_url.split('token=')[0]}...")
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.put(dest_url, data=data, headers=headers) as resp:
+            if resp.status in [200, 201, 204]:
+                return f"Successfully wrote binary file to {path}"
+            else:
+                text = await resp.text()
+                return f"Error writing file: Status {resp.status} - {text}"
+
+def secure_extract_zip(z: zipfile.ZipFile, extract_dir: str):
+    """
+    Extracts all files from a ZIP archive securely while validating paths
+    against Zip Slip directory traversal vulnerabilities.
+    """
+    extract_dir_abs = os.path.abspath(extract_dir)
+    for member in z.infolist():
+        # Resolve absolute destination path
+        target_path = os.path.abspath(os.path.join(extract_dir_abs, member.filename))
+        # Enforce boundary check to prevent Zip Slip
+        if not target_path.startswith(extract_dir_abs + os.sep) and target_path != extract_dir_abs:
+            raise PermissionError(f"Security Block: Zip Slip directory traversal path detected: {member.filename}")
+        # Explicit validation for double dots or absolute path indicators
+        if ".." in member.filename or member.filename.startswith("/") or member.filename.startswith("\\"):
+            raise PermissionError(f"Security Block: Traversing or absolute filename in ZIP archive: {member.filename}")
+        z.extract(member, extract_dir_abs)
+
+async def read_odt_placeholders(ctx: UserContext, path: str) -> str:
+    """
+    Inspects an ODT document and extracts all unique placeholders of the form {{placeholder}}.
+    """
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+        
+    try:
+        file_bytes = await download_omd_file(ctx, path)
+        
+        # Safe temp directories inside the workspace
+        import uuid
+        temp_id = str(uuid.uuid4())
+        workspace_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_dir = os.path.join(workspace_dir, "user_data", f"temp_odt_{temp_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        local_odt_path = os.path.join(temp_dir, "temp.odt")
+        with open(local_odt_path, "wb") as f:
+            f.write(file_bytes)
+            
+        placeholders = set()
+        extract_dir = os.path.join(temp_dir, "extract")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        with zipfile.ZipFile(local_odt_path, 'r') as z:
+            # Secure unzipping with Zip Slip defense
+            secure_extract_zip(z, extract_dir)
+            
+            # Read content from the unzipped files
+            for name in ["content.xml", "styles.xml", "meta.xml"]:
+                xml_path = os.path.join(extract_dir, name)
+                if os.path.exists(xml_path):
+                    with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
+                        content = f_xml.read()
+                        found = re.findall(r"\{\{([^}]+)\}\}", content)
+                        for item in found:
+                            placeholders.add(item.strip())
+                            
+        # Clean up temporary directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+        if not placeholders:
+            return "No placeholders (e.g. {{placeholder}}) found in this ODT document."
+            
+        return json.dumps(sorted(list(placeholders)), ensure_ascii=False)
+        
+    except PermissionError as se:
+        logging.error(f"Security error in read_odt_placeholders: {se}")
+        return f"Security Error: {se}"
+    except Exception as e:
+        logging.error(f"Error in read_odt_placeholders: {e}", exc_info=True)
+        return f"Error reading placeholders: {e}"
+
+async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str, replacements: dict) -> str:
+    """
+    Reads a template ODT document from OMD storage, executes an XML-safe search-and-replace
+    using replacements, and uploads the resulting ODT document to output_path.
+    """
+    if not ctx.omd_key or not ctx.storage:
+        return "Error: OMD storage not linked."
+        
+    if not replacements:
+        return "Error: Replacements dictionary is empty."
+        
+    try:
+        file_bytes = await download_omd_file(ctx, template_path)
+        
+        # Safe temp directories inside the workspace
+        import uuid
+        temp_id = str(uuid.uuid4())
+        workspace_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_dir = os.path.join(workspace_dir, "user_data", f"temp_odt_{temp_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        local_odt_path = os.path.join(temp_dir, "temp_in.odt")
+        with open(local_odt_path, "wb") as f:
+            f.write(file_bytes)
+            
+        extract_dir = os.path.join(temp_dir, "extract")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        with zipfile.ZipFile(local_odt_path, 'r') as z:
+            # Secure unzipping with Zip Slip defense
+            secure_extract_zip(z, extract_dir)
+            
+        # XML-escape helpers to avoid breaking target XML markup (equivalent to invoice.py)
+        def escape_xml(s) -> str:
+            if s is None:
+                return ""
+            return (
+                str(s).replace("&", "&amp;")
+                      .replace("<", "&lt;")
+                      .replace(">", "&gt;")
+                      .replace('"', "&quot;")
+                      .replace("'", "&apos;")
+            )
+            
+        # Perform replacements on main files
+        xml_names = ["content.xml", "styles.xml", "meta.xml"]
+        for name in xml_names:
+            xml_path = os.path.join(extract_dir, name)
+            if os.path.exists(xml_path):
+                with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
+                    content = f_xml.read()
+                    
+                modified = False
+                for key, val in replacements.items():
+                    escaped_val = escape_xml(val)
+                    if key in content:
+                        content = content.replace(key, escaped_val)
+                        modified = True
+                        
+                if modified:
+                    with open(xml_path, "w", encoding="utf-8") as f_xml:
+                        f_xml.write(content)
+                        
+        # Repack everything securely into a new ODT zip container
+        output_local_odt = os.path.join(temp_dir, "temp_out.odt")
+        with zipfile.ZipFile(output_local_odt, 'w', zipfile.ZIP_DEFLATED) as z_out:
+            for root, _, files in os.walk(extract_dir):
+                for file in files:
+                    full_filepath = os.path.join(root, file)
+                    relative_path = os.path.relpath(full_filepath, extract_dir)
+                    z_out.write(full_filepath, relative_path)
+                    
+        # Read the generated modified ODT raw bytes
+        with open(output_local_odt, "rb") as f_out:
+            modified_bytes = f_out.read()
+            
+        # Clean up temporary directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+        # Upload the final raw binary to OMD storage
+        return await upload_omd_file_binary(ctx, output_path, modified_bytes)
+        
+    except PermissionError as se:
+        logging.error(f"Security error in modify_odt_file: {se}")
+        return f"Security Error: {se}"
+    except Exception as e:
+        logging.error(f"Error in modify_odt_file: {e}", exc_info=True)
+        return f"Error modifying ODT file: {e}"
 
 async def list_supported_tools(ctx: UserContext) -> str:
     if ctx.settings.get("nsfw", False):
@@ -717,7 +994,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
             "write_omd_file": "writing",
             "search_web": "searching",
             "search_memory": "searching",
-            "save_user_fact": "learning"
+            "save_user_fact": "learning",
+            "read_odt_placeholders": "reading",
+            "modify_odt_file": "writing"
         }
         status_msg = status_map.get(name, "executing")
         
@@ -727,6 +1006,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
              status_args["path"] = os.path.basename(args.get('path', 'directory').rstrip('/'))
         elif name == "read_omd_file":
              status_args["path"] = os.path.basename(args.get('path', 'file'))
+        elif name == "read_odt_placeholders":
+             status_args["path"] = os.path.basename(args.get('path', 'file'))
+        elif name == "modify_odt_file":
+             status_args["path"] = os.path.basename(args.get('output_path', 'file'))
         elif name == "find_omd_file":
              status_args["path"] = os.path.basename(args.get('root_directory', 'root').rstrip('/'))
         elif name == "write_omd_file":
@@ -890,6 +1173,14 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                          res = f"Success. Memorized: {fact}"
                      except Exception as e:
                          res = f"Error saving memory: {e}"
+             elif name == "read_odt_placeholders":
+                 path_arg = args.get("path", "").strip()
+                 res = await read_odt_placeholders(ctx, path_arg)
+             elif name == "modify_odt_file":
+                 template_path = args.get("template_path", "").strip()
+                 output_path = args.get("output_path", "").strip()
+                 replacements = args.get("replacements", {})
+                 res = await modify_odt_file(ctx, template_path, output_path, replacements)
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
             msg_entry = {"role": "tool", "content": str(res)}

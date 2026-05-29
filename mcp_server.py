@@ -98,6 +98,34 @@ async def search_memory(query: str) -> str:
     return await core_service.search_memory_tool(ctx, query)
 
 
+@mcp.tool()
+async def read_odt_placeholders(path: str) -> str:
+    """
+    Read an ODT file and extract all unique placeholders of the form {{placeholder}}.
+    This is useful for discovering what fields need to be replaced in a template.
+    
+    Args:
+        path: The absolute path of the ODT file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt
+    """
+    ctx = get_current_user_context()
+    return await core_service.read_odt_placeholders(ctx, path)
+
+
+@mcp.tool()
+async def modify_odt_file(template_path: str, output_path: str, replacements: dict) -> str:
+    """
+    Create a new ODT document by copying a template ODT document and replacing specified placeholders or strings.
+    All replacement values are automatically XML-escaped to ensure the document remains valid.
+    
+    Args:
+        template_path: The absolute path of the source template ODT file, e.g. /Linux-desktop/Private/Templates/contract.odt
+        output_path: The absolute path of the new ODT file to be written, e.g. /Linux-desktop/Private/Contracts/contract_new.odt
+        replacements: A dictionary of key-value pairs to replace in the document. Keys are target strings/placeholders, and values are the new texts.
+    """
+    ctx = get_current_user_context()
+    return await core_service.modify_odt_file(ctx, template_path, output_path, replacements)
+
+
 if __name__ == "__main__":
     # Start the MCP server using standard IO (suitable for Cursor, Claude Desktop, Hermes Agent)
     # Logging will go to stderr, MCP protocol messages to stdout.

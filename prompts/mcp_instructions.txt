@@ -26,7 +26,7 @@ Rules:
 - NO HALLUCINATIONS: Do NOT invent file content. If you haven't read a file using `read_omd_file`, you do NOT know its content. State "File not read" instead of inventing details. This is the MOST IMPORTANT rule.
 - SEQUENCE: One tool call per turn. Turn 1 and beyond MUST be execution steps (tool calls) until the task is complete. Do NOT provide reasoning without a tool call if the task is pending.
 - SCOPE: Focus exclusively on file operations. Do NOT perform web searches for general knowledge unless specifically requested.
-- TOOLS: `list_omd_files`, `find_omd_file`, `read_omd_file`, `write_omd_file`, `search_memory`, `search_web`.
+- TOOLS: `list_omd_files`, `find_omd_file`, `read_omd_file`, `write_omd_file`, `search_memory`, `search_web`, `read_odt_placeholders`, `modify_odt_file`.
 - FILE LISTING: `list_omd_files` provides the absolute path for every item in the format `[ABS_PATH]: /path/to/file`.
 - CRITICAL: If no absolute file path is provided in user request, only the criteria is provided, you MUST call `find_omd_file` to find the file before accessing it. 
 - CRITICAL: Never call `read_omd_file` on a directory path. You MUST use the full path of a single file. Do NOT join paths manually.
@@ -34,3 +34,6 @@ Rules:
 Technical Details:
 - `read_omd_file` supports PDF, DOCX, ODT, CSV, and plain text.
 - If `read_omd_file` is called on a directory, it will return an error and the directory listing.
+- `read_odt_placeholders` takes the absolute path of an ODT template and extracts all placeholders of the form `{{placeholder}}` inside it.
+- `modify_odt_file` copies a template ODT file and substitutes specific strings/placeholders (keys of replacements dict) with new values, keeping the XML structure valid via automatic escaping. Use this to construct new documents based on template documents!
+
