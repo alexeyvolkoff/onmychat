@@ -1159,8 +1159,11 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 
                 async for chunk in core_service.check_and_execute_mcp(ctx, prompt):
                     if isinstance(chunk, dict):
-                        if chunk.get("type") == "status":
-                            yield f"data: {json.dumps({'status': chunk.get('content')})}\n\n"
+                        # Support direct forwarding of rich OpenCode-like events
+                        if any(k in chunk for k in ["id", "action", "state", "delta", "thought_delta", "tool_call_delta", "tool_result_delta"]):
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                        elif chunk.get("type") == "status":
+                            yield f"data: {json.dumps({'status': chunk.get('content'), 'args': chunk.get('args')})}\n\n"
                         elif chunk.get("type") == "result":
                             yield f"data: {json.dumps({'delta': chunk.get('content'), 'role': 'assistant', 'done': True})}\n\n"
                     await asyncio.sleep(0.05)

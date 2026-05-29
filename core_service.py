@@ -805,9 +805,50 @@ async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
     except Exception as e:
         return f"Exception writing file: {e}"
 
+def extract_plan_steps(text: str) -> list:
+    steps = []
+    lines = text.split('\n')
+    in_plan = False
+    for line in lines:
+        line_strip = line.strip()
+        if not line_strip:
+            continue
+        if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
+            in_plan = True
+            continue
+        if in_plan:
+            # If we hit a new section like "Tool Call:" or "Agent Reasoning" or something empty/different
+            if line_strip.startswith("[") and not line_strip.upper().startswith("[PLAN"):
+                break
+            # Match plan items
+            # Supports: "Step 1: ...", "1. ...", "- [ ] ...", "- ...", "* ..."
+            match = re.match(r'^(?:-\s*\[\s*\]\s*|-\s*\[\s*x\s*\]\s*|-\s*|\*\s*|Step\s*\d+\s*:\s*|\d+\.\s*)(.*)', line_strip, re.IGNORECASE)
+            if match:
+                content = match.group(1).strip()
+                if content:
+                    steps.append(content)
+            elif line_strip.startswith("Step") or (line_strip and line_strip[0].isdigit()):
+                # Fallback for plain "Step 1 ..." or "1 ..."
+                content = re.sub(r'^(?:Step\s*\d+\s*|\d+\s+)', '', line_strip).strip()
+                if content:
+                    steps.append(content)
+    # If no steps found with explicit [PLAN] header, try a global scan of the whole text for "Step X:" or "1. " patterns
+    if not steps:
+        for line in lines:
+            line_strip = line.strip()
+            match = re.match(r'^(?:Step\s*\d+\s*:\s*|\d+\.\s+)(.*)', line_strip, re.IGNORECASE)
+            if match:
+                content = match.group(1).strip()
+                if content:
+                    steps.append(content)
+    return steps
+
 async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerator[dict, None]:
     if ctx.settings.get("nsfw", False):
         return
+        
+    todos = []
+    has_initialized_todos = False
     # 1. Path Extraction Heuristic (Help the model find the path)
     potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
     path_hint = ""
@@ -950,6 +991,32 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
              if clean_agent_text:
                   all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{clean_agent_text}\n\n"
                   
+                  # Yield reasoning thought delta block
+                  yield {
+                      "id": f"thought_turn_{turn}",
+                      "type": "reasoning",
+                      "delta": clean_agent_text
+                  }
+                  
+                  # Parse and initialize checklist todos on turn 0
+                  if turn == 0 and not has_initialized_todos:
+                       steps = extract_plan_steps(clean_agent_text)
+                       if steps:
+                            todos = [{"content": step, "status": "pending"} for step in steps]
+                            has_initialized_todos = True
+                            yield {
+                                "id": "mcp_todo",
+                                "type": "tool",
+                                "state": {
+                                    "status": "running",
+                                    "tool": "todo",
+                                    "input": {
+                                        "todos": todos
+                                    }
+                                },
+                                "action": "part_update"
+                            }
+                  
                   # [PLAN LOGGING]
                   if turn == 0:
                        logging.info(f"\n{'='*20} [MCP] GENERATED PLAN {'='*20}\n{clean_agent_text}\n{'='*61}")
@@ -1058,6 +1125,44 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
 
         # Yield status event
         yield {"type": "status", "content": status_msg, "args": status_args}
+
+        # Update checklist todos
+        if todos:
+             matched = False
+             for t_item in todos:
+                 if t_item["status"] == "pending" and (name in t_item["content"] or status_msg in t_item["content"].lower()):
+                     t_item["status"] = "completed"
+                     matched = True
+                     break
+             if not matched:
+                 for t_item in todos:
+                     if t_item["status"] == "pending":
+                         t_item["status"] = "completed"
+                         break
+             yield {
+                 "id": "mcp_todo",
+                 "type": "tool",
+                 "state": {
+                     "status": "running",
+                     "tool": "todo",
+                     "input": {
+                         "todos": todos
+                     }
+                 },
+                 "action": "part_update"
+             }
+
+        # Yield tool start
+        yield {
+            "id": f"tool_turn_{turn}",
+            "type": "tool",
+            "state": {
+                "status": "running",
+                "tool": name,
+                "input": args
+            },
+            "action": "part_update"
+        }
 
         # [DEBUG OUTPUT]
         # User requested to see what is going on with tool calls
@@ -1242,6 +1347,24 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)
 
+        # Yield completion of the tool call part
+        tool_status = "error" if (not res or str(res).startswith("Error") or str(res).startswith("Exception") or "security error" in str(res).lower()) else "success"
+        clean_output = str(res) if res else "Error: Tool returned no result."
+        if len(clean_output) > 2000:
+            clean_output = clean_output[:2000] + "\n... [Output truncated for length] ..."
+            
+        yield {
+            "id": f"tool_turn_{turn}",
+            "type": "tool",
+            "state": {
+                "status": tool_status,
+                "tool": name,
+                "input": args,
+                "output": clean_output
+            },
+            "action": "part_update"
+        }
+
         if not found_new_info:
             break
             
@@ -1271,6 +1394,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
         if requires_read:
              all_tool_results += "\nSYSTEM NOTICE: Discovery succeeded, but no file content was read. The requested details (totals/items) are NOT in this tool output."
         
+    # Mark all remaining todos completed when finished
+    if todos:
+         for t_item in todos:
+              t_item["status"] = "completed"
+         yield {
+             "id": "mcp_todo",
+             "type": "tool",
+             "state": {
+                 "status": "success",
+                 "tool": "todo",
+                 "input": {
+                     "todos": todos
+                 }
+             },
+             "action": "part_update"
+         }
+         
     yield {"type": "result", "content": all_tool_results}
 
 # === Онбординг успешен - перенос песрональных данных ===
