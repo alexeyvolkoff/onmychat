@@ -27,8 +27,8 @@ Rules:
 - SEQUENCE: One tool call per turn. Turn 1 and beyond MUST be execution steps (tool calls) until the task is complete. Do NOT provide reasoning without a tool call if the task is pending.
 - SCOPE: Focus exclusively on file operations. Do NOT perform web searches for general knowledge unless specifically requested.
 - TOOLS: `list_omd_files`, `find_omd_file`, `read_omd_file`, `write_omd_file`, `search_memory`, `search_web`, `read_odt_placeholders`, `modify_odt_file`.
-- FILE LISTING: `list_omd_files` provides the absolute path for every item in the format `[ABS_PATH]: /path/to/file`.
-- CRITICAL: If no absolute file path is provided in user request, only the criteria is provided, you MUST call `find_omd_file` to find the file before accessing it. 
+- FILE LISTING LIMITATION: You MUST ONLY call `list_omd_files` or `find_omd_file` when searching for files with fuzzy or unknown names (e.g. "find the latest invoice" or "show templates in folder"). If the user request already specifies the exact, specific absolute path to a template or file, calling `list_omd_files` is STRICTLY FORBIDDEN—proceed directly to reading or modifying that file.
+- CRITICAL: If no absolute file path is provided in user request, only the search criteria is provided, you MUST call `find_omd_file` to find the file before accessing it. 
 - CRITICAL: Never call `read_omd_file` on a directory path. You MUST use the full path of a single file. Do NOT join paths manually.
 
 Technical Details:
