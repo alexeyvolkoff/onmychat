@@ -847,7 +847,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "/recognize": "recognize", "/detect": "recognize",
                     "/think": "think",
                     "/explain": "explain",
-                    "/search": "search"
+                    "/search": "search",
+                    "/doc": "doc",
+                    "/mcp": "doc"
                 }
                 
                 intent = "chat"
@@ -958,12 +960,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 elif prompt.startswith("/search"):
                     intent = "search"
         
-            restricted_intents = ["tools"]
+            restricted_intents = ["tools", "doc"]
             
             # Check primary intent or prefixed intent (e.g. import:url)
             check_intent = intent.split(":")[0] if ":" in intent else intent
 
-            if ctx.settings.get("nsfw", False) and check_intent in ["tools", "import", "search", "explain", "think"]:
+            if ctx.settings.get("nsfw", False) and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
                  yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in NSFW mode.', 'role': 'assistant', 'done': True})}\n\n"
                  return
             
@@ -1148,6 +1150,20 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
+                return
+
+            elif check_intent == "doc":
+                logging.info(f"[MCP ROUTE] Routing document template operation to check_and_execute_mcp. Prompt: {prompt[:50]}...")
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+                await asyncio.sleep(0.1)
+                
+                async for chunk in core_service.check_and_execute_mcp(ctx, prompt):
+                    if isinstance(chunk, dict):
+                        if chunk.get("type") == "status":
+                            yield f"data: {json.dumps({'status': chunk.get('content')})}\n\n"
+                        elif chunk.get("type") == "result":
+                            yield f"data: {json.dumps({'delta': chunk.get('content'), 'role': 'assistant', 'done': True})}\n\n"
+                    await asyncio.sleep(0.05)
                 return
 
             # 3️⃣ основной стрим чата
