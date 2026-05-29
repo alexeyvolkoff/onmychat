@@ -1165,7 +1165,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         elif chunk.get("type") == "status":
                             yield f"data: {json.dumps({'status': chunk.get('content'), 'args': chunk.get('args')})}\n\n"
                         elif chunk.get("type") == "result":
-                            yield f"data: {json.dumps({'delta': chunk.get('content'), 'role': 'assistant', 'done': True})}\n\n"
+                            payload = {'delta': chunk.get('content'), 'role': 'assistant', 'done': True}
+                            if chunk.get("changedFiles"):
+                                payload["changedFiles"] = chunk.get("changedFiles")
+                            yield f"data: {json.dumps(payload)}\n\n"
                     await asyncio.sleep(0.05)
                 return
 

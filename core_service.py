@@ -908,6 +908,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
         
     todos = []
     has_initialized_todos = False
+    changed_files = []
     # 1. Path Extraction Heuristic (Help the model find the path)
     potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
     path_hint = ""
@@ -1363,6 +1364,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                           res = f"Error: '{path_arg}' is a confirmed DIRECTORY. You cannot write a file to this path. Use a full filename (e.g., {path_arg.rstrip('/')}/report.txt)."
                      else:
                           res = await write_omd_file(ctx, path_arg, content)
+                          if not res.startswith("Error") and not res.startswith("Exception"):
+                               changed_files.append(path_arg)
              elif name == "search_web":
                  res = await search_web(ctx, args.get("query", ""))
              elif name == "search_memory":
@@ -1388,10 +1391,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                  path_arg = args.get("path", "").strip()
                  res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
-                 template_path = args.get("template_path", "").strip()
-                 output_path = args.get("output_path", "").strip()
-                 replacements = args.get("replacements", {})
-                 res = await modify_odt_file(ctx, template_path, output_path, replacements)
+                  template_path = args.get("template_path", "").strip()
+                  output_path = args.get("output_path", "").strip()
+                  replacements = args.get("replacements", {})
+                  res = await modify_odt_file(ctx, template_path, output_path, replacements)
+                  if not res.startswith("Error") and not res.startswith("Exception"):
+                      changed_files.append(output_path)
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
             msg_entry = {"role": "tool", "content": str(res)}
@@ -1481,7 +1486,26 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
             final_output = "I identified the file but could not read its contents. Please verify the file path or permission."
         else:
             final_output = "Task successfully completed."
-    yield {"type": "result", "content": final_output}
+
+    # Build changed files objects
+    changed_objects = []
+    for path in changed_files:
+        filename = os.path.basename(path)
+        ext = os.path.splitext(path)[1].lstrip('.').lower()
+        changed_objects.append({
+            "title": filename,
+            "owner": ctx.user_id or "alexey",
+            "clickable": True,
+            "url": f"https://onmydisk.net{path}",
+            "fullPath": path,
+            "mimetype": ext or "unknown"
+        })
+
+    yield {
+        "type": "result",
+        "content": final_output,
+        "changedFiles": changed_objects
+    }
 
 # === Онбординг успешен - перенос песрональных данных ===
 def bind_account(ctx: UserContext, omd_key: str):
