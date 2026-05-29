@@ -525,9 +525,25 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                 modified = False
                 for key, val in replacements.items():
                     escaped_val = escape_xml(val)
-                    if key in content:
-                        content = content.replace(key, escaped_val)
+                    
+                    # Clean the key to get the raw identifier (e.g. "customer_name")
+                    k_str = str(key).strip()
+                    if k_str.startswith("{{") and k_str.endswith("}}"):
+                        clean_key = k_str[2:-2].strip()
+                    else:
+                        clean_key = k_str
+                        
+                    # Try to replace as a braced placeholder: {{clean_key}} or {{ clean_key }}
+                    placeholder_pattern = r"\{\{\s*" + re.escape(clean_key) + r"\s*\}\}"
+                    new_content, count = re.subn(placeholder_pattern, escaped_val, content)
+                    if count > 0:
+                        content = new_content
                         modified = True
+                    else:
+                        # Fallback: Literal search-and-replace of the original key
+                        if k_str in content:
+                            content = content.replace(k_str, escaped_val)
+                            modified = True
                         
                 if modified:
                     with open(xml_path, "w", encoding="utf-8") as f_xml:
