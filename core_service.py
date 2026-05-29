@@ -1291,7 +1291,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                        logging.warning("[MCP] Blocked secondary web search to prevent loop.")
              
              if not res and name == "list_omd_files":
-                  path_arg = args.get("path", "").strip()
+                  path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
                   
                   # [LOOP PREVENTION]
                   # Prevent recursive directory path loops (e.g. /Templates/Templates/Templates)
@@ -1329,7 +1329,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                                  res += f"\n\nSYSTEM NOTICE: You MUST use one of these [ABS_PATH] values exactly for your next tool call. Forbidden: guessing, relative paths, or reading directories."
              
              elif name == "read_omd_file":
-                 path_arg = args.get("path", "").strip()
+                 path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
                  
                  # [ANTI-HALLUCINATION] List before Read
                  # We encourage the model to list first, but if it knows the file, we check our cache
@@ -1383,7 +1383,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                       logging.warning(f"[MCP] Turn 1 Write Blocked: {args.get('path')}")
                  else:
                      content = args.get("content", "")
-                     path_arg = args.get("path", "").strip()
+                     path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
                      
                      # [ROBUST WRITE SHIELD]
                      # If the content looks like an error, placeholder, or failure report, reject it.
@@ -1423,11 +1423,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                      except Exception as e:
                          res = f"Error saving memory: {e}"
              elif name == "read_odt_placeholders":
-                 path_arg = args.get("path", "").strip()
+                 path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
                  res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
-                  template_path = args.get("template_path", "").strip()
-                  output_path = args.get("output_path", "").strip()
+                  template_path = (args.get("template_path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
+                  output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
                   replacements = args.get("replacements", {})
                   res = await modify_odt_file(ctx, template_path, output_path, replacements)
                   if not res.startswith("Error") and not res.startswith("Exception"):
