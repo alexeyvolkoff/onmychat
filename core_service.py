@@ -898,6 +898,29 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
         # [REASONING CAPTURE]
         # Ensure that plans, thoughts, and checklists are preserved and visible to the main assistant.
         agent_text = msg.get("content", "").strip()
+        
+        # [REPETITIVE GENERATION GUARD]
+        # Detect token-looping issues in local LLM output (e.g., endlessly repeating templates/ or words)
+        is_looping = False
+        if len(agent_text) > 100:
+             # Look for consecutive repetitions of substrings of length 3 to 40
+             for length in range(3, 40):
+                  for i in range(len(agent_text) - length * 6):
+                       sub = agent_text[i:i+length]
+                       # If the substring repeats 6 or more times consecutively
+                       if agent_text[i:].startswith(sub * 6):
+                            logging.warning(f"[MCP LOOP DETECTED] LLM repeating '{sub}' infinitely. Breaking stream.")
+                            agent_text = agent_text[:i] + f"\n\n[System Alert: Generative loop cut off at '{sub}'].\n"
+                            msg["content"] = agent_text
+                            is_looping = True
+                            break
+                  if is_looping:
+                       break
+        
+        if is_looping:
+             all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
+             break
+
         logging.info(f"[MCP] Agent Reasoning (Turn {turn+1}):\n{agent_text}")
         if agent_text:
              # [HALLUCINATION FILTER]
@@ -1051,7 +1074,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                   path_arg = args.get("path", "").strip()
                   
                   # [LOOP PREVENTION]
-                  if path_arg.rstrip("/") in listed_paths:
+                  # Prevent recursive directory path loops (e.g. /Templates/Templates/Templates)
+                  if re.search(r"/([^/]+)/\1/\1", path_arg) or re.search(r"^([^/]+)/\1/\1", path_arg):
+                       res = f"ERROR: Recursion loop detected in path '{path_arg}'. Please list a different, non-repeating directory."
+                       logging.warning(f"[MCP PATH LOOP] Blocked recursive path: {path_arg}")
+                  elif path_arg.rstrip("/") in listed_paths:
                        res = f"Note: You already listed '{path_arg}'. Use the information you already have or list a DIFFERENT directory."
                        logging.info(f"[MCP] Blocked redundant list for {path_arg}")
                   else:
