@@ -1329,7 +1329,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                                  res += f"\n\nSYSTEM NOTICE: You MUST use one of these [ABS_PATH] values exactly for your next tool call. Forbidden: guessing, relative paths, or reading directories."
              
              elif name == "read_omd_file":
-                 path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
+                 path_arg = (args.get("path") or args.get("template_path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
                  
                  # [ANTI-HALLUCINATION] List before Read
                  # We encourage the model to list first, but if it knows the file, we check our cache
@@ -1423,7 +1423,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                      except Exception as e:
                          res = f"Error saving memory: {e}"
              elif name == "read_odt_placeholders":
-                 path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
+                 path_arg = (args.get("path") or args.get("template_path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
                  res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
                   template_path = (args.get("template_path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
