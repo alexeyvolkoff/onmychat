@@ -619,12 +619,42 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
         
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # OMD Gateway list format
-                    items = data.get("list", [])
-                    if not items and "result" in data:
-                        items = data["result"]
+                if resp.status in [200, 206]:
+                    text = await resp.text()
+                    items = []
+                    
+                    # Robust parsing of concatenated JSON chunks (OMD Transfer-Encoding: chunked)
+                    decoder = json.JSONDecoder()
+                    pos = 0
+                    text_len = len(text.strip())
+                    while pos < text_len:
+                        # Skip leading whitespace
+                        while pos < len(text) and text[pos].isspace():
+                            pos += 1
+                        if pos >= len(text):
+                            break
+                        try:
+                            obj, idx = decoder.raw_decode(text, pos)
+                            pos = idx
+                            if "list" in obj:
+                                items.extend(obj["list"])
+                            elif "result" in obj:
+                                if isinstance(obj["result"], list):
+                                    items.extend(obj["result"])
+                                elif isinstance(obj["result"], dict) and "list" in obj["result"]:
+                                    items.extend(obj["result"]["list"])
+                        except json.JSONDecodeError as je:
+                            logging.error(f"OMD chunk JSON decode error at pos {pos}: {je}")
+                            # Fallback if it is a single valid JSON block
+                            try:
+                                single_obj = json.loads(text)
+                                if "list" in single_obj:
+                                    items = single_obj["list"]
+                                elif "result" in single_obj:
+                                    items = single_obj["result"] if isinstance(single_obj["result"], list) else []
+                            except Exception:
+                                pass
+                            break
                     
                     if not items:
                         return f"Result: Directory {path} is empty or does not exist."
