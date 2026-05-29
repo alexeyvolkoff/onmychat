@@ -843,6 +843,65 @@ def extract_plan_steps(text: str) -> list:
                     steps.append(content)
     return steps
 
+def get_non_plan_reasoning(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.split('\n')
+    non_plan_lines = []
+    in_plan = False
+    for line in lines:
+        line_strip = line.strip()
+        if not line_strip:
+            non_plan_lines.append("")
+            continue
+        if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
+            in_plan = True
+            continue
+        
+        is_step = False
+        # Matches: "- [ ]", "- [x]", "- [X]", "* Step 1:", "Step 1:", "1.", "- ", "* "
+        if re.match(r'^(?:-\s*\[\s*[ xX]?\s*\]\s*|-\s*|\*\s*|Step\s*\d+\s*:\s*|\d+\.\s+)(.*)', line_strip, re.IGNORECASE):
+            is_step = True
+        elif line_strip.lower().startswith("step") or (line_strip and line_strip[0].isdigit() and len(line_strip) > 1 and line_strip[1:2] in ['.', ' ', ':']):
+            is_step = True
+            
+        if in_plan:
+            if line_strip.startswith("[") and not line_strip.upper().startswith("[PLAN"):
+                in_plan = False
+            else:
+                is_step = True
+                
+        if is_step:
+            continue
+            
+        non_plan_lines.append(line)
+        
+    # Reconstruct while stripping consecutive empty lines
+    cleaned = []
+    last_empty = False
+    for line in non_plan_lines:
+        if not line.strip():
+            if not last_empty:
+                cleaned.append("")
+                last_empty = True
+        else:
+            cleaned.append(line)
+            last_empty = False
+            
+    return "\n".join(cleaned).strip()
+
+def clean_final_content(text: str) -> str:
+    if not text:
+        return ""
+    # Remove any debug/agent labels
+    text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
+    
+    # Strip plan blocks
+    text = get_non_plan_reasoning(text)
+    
+    return text.strip()
+
 async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerator[dict, None]:
     if ctx.settings.get("nsfw", False):
         return
@@ -894,6 +953,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
 
     
     for turn in range(max_turns):
+        # Keep status as 'performing' throughout the turns
+        yield {"type": "status", "content": "performing"}
         # [TURN-SPECIFIC GUIDANCE]
         guidance = "You are an autonomous agent. "
         # [PROACTIVE DISCOVERY GATE]
@@ -975,7 +1036,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                        break
         
         if is_looping:
-             all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
+             all_tool_results += f"\n{agent_text}\n"
              break
 
         logging.info(f"[MCP] Agent Reasoning (Turn {turn+1}):\n{agent_text}")
@@ -989,14 +1050,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
              clean_agent_text = "\n".join(filtered_lines).strip()
              
              if clean_agent_text:
-                  all_tool_results += f"Agent Reasoning (Turn {turn+1}):\n{clean_agent_text}\n\n"
+                  all_tool_results += f"{clean_agent_text}\n\n"
                   
-                  # Yield reasoning thought delta block
-                  yield {
-                      "id": f"thought_turn_{turn}",
-                      "type": "reasoning",
-                      "delta": clean_agent_text
-                  }
+                  # Show thought block only if there's non-plan reasoning
+                  non_plan_reasoning = get_non_plan_reasoning(clean_agent_text)
+                  if non_plan_reasoning:
+                       yield {
+                           "id": f"thought_turn_{turn}",
+                           "type": "reasoning",
+                           "delta": non_plan_reasoning
+                       }
                   
                   # Parse and initialize checklist todos on turn 0
                   if turn == 0 and not has_initialized_todos:
@@ -1061,7 +1124,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
                        logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading (User Intent: READ). Blocking.")
                        continue
                   
-                  all_tool_results += f"\nAgent Conclusion:\n{agent_text}\n"
+                  all_tool_results += f"\n{agent_text}\n"
                   break
 
             
@@ -1411,7 +1474,14 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
              "action": "part_update"
          }
          
-    yield {"type": "result", "content": all_tool_results}
+    # Clean the final assistant message
+    final_output = clean_final_content(last_content)
+    if not final_output:
+        if not has_read_file and requires_read:
+            final_output = "I identified the file but could not read its contents. Please verify the file path or permission."
+        else:
+            final_output = "Task successfully completed."
+    yield {"type": "result", "content": final_output}
 
 # === Онбординг успешен - перенос песрональных данных ===
 def bind_account(ctx: UserContext, omd_key: str):
