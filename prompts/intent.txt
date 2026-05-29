@@ -25,7 +25,7 @@ RULES:
 7. import:<path>: ONLY for EXPLICIT "import", "learn", or "add to memory" commands with a FILE path.
 8. doc: User explicitly instructs to CREATE, EDIT, MODIFY, FILL, or PROCESS document files (e.g. ODT, DOCX, templates, invoices, contracts) using paths.
    - *CRITICAL*: Any file-based templating, invoice creation, or search-and-replace document operations go here.
-   - Example triggers: "Create invoice based on template /doc.odt", "Fill contract template /contract.odt", "modify ODT file".
+   - Example triggers: "Create invoice based on template /doc.odt", "Fill contract template /invoice.odt", "modify ODT file".
 
 EXAMPLES:
 - "How are you?" -> chat
