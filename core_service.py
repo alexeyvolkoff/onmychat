@@ -1448,11 +1448,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                 messages.append({
                     "role": "user",
                     "content": (
-                        f"Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet! "
-                        f"Discovered placeholders: [{p_list_str}]. "
-                        f"You MUST now execute the `modify_odt_file` tool to generate the final document. "
-                        f"Map the user's request details specifically into these placeholders. "
-                        f"Respond ONLY with the tool call to `modify_odt_file`."
+                        f"Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet!\n"
+                        f"Discovered placeholders: [{p_list_str}].\n\n"
+                        f"You MUST now:\n"
+                        f"1. First perform a 'Data Calculation & Mapping' analysis in your reasoning block to map the user's request details specifically into these placeholders.\n"
+                        f"2. Immediately execute the `modify_odt_file` tool to generate and save the final document.\n\n"
+                        f"Respond with both your analysis and the tool call to `modify_odt_file`."
                     )
                 })
                 continue
