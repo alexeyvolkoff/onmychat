@@ -262,7 +262,7 @@ MCP_TOOLS = [
         "properties": {
           "template_path": {
             "type": "string",
-            "description": "REQUIRED. The absolute path of the ODT template file starting with the active storage root (e.g. /beelink/Documents/Bineon_template.odt). Must end in .odt."
+            "description": "REQUIRED. The absolute path of the ODT template file starting with the active storage root (e.g. /MyDevice/Documents/my_template.odt). Must end in .odt."
           }
         },
         "required": ["template_path"]
@@ -279,11 +279,11 @@ MCP_TOOLS = [
         "properties": {
           "template_path": {
             "type": "string",
-            "description": "REQUIRED. The absolute path of the source ODT template file (same path used in read_odt_placeholders), e.g. /beelink/Documents/Bineon_template.odt"
+            "description": "REQUIRED. The absolute path of the source ODT template file (same path used in read_odt_placeholders), e.g. /MyDevice/Documents/my_template.odt"
           },
           "output_path": {
             "type": "string",
-            "description": "REQUIRED. The absolute path where the resulting ODT file will be saved, e.g. /beelink/Documents/greeting_letter_to_june.odt. Must include filename with .odt extension."
+            "description": "REQUIRED. The absolute path where the resulting ODT file will be saved, e.g. /MyDevice/Documents/output_document.odt. Must include filename with .odt extension."
           },
           "replacements": {
             "type": "object",
@@ -1718,7 +1718,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
              elif name == "read_odt_placeholders":
                   path_arg = (args.get("template_path") or args.get("odt_file_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
                   if not path_arg:
-                      res = "Error: Missing required parameter 'template_path'. You must specify the absolute path to the ODT template file (e.g., '/beelink/Documents/Bineon_template.odt')."
+                      res = "Error: Missing required parameter 'template_path'. You must specify the absolute path to the ODT template file (e.g., '/MyDevice/Documents/my_template.odt')."
                   else:
                       res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
