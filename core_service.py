@@ -1779,15 +1779,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         if summary_data and "message" in summary_data:
             final_output = summary_data["message"]["content"].strip()
             
-        # Safe fallback if API request failed or returned success message when errors occurred
-        if not final_output or (has_errors and "успешно" in final_output.lower()):
+        # Safe fallback if API request failed
+        if not final_output:
             if tool_errors:
-                final_output = f"Произошла ошибка при выполнении файловой операции:\n" + "\n".join(f"- {err}" for err in tool_errors)
+                final_output = f"Произошла ошибка при выполнении операции:\n" + "\n".join(f"- {err}" for err in tool_errors)
             elif changed_files:
                 files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
-                final_output = f"Готово! Я успешно выполнил операцию и сохранил изменённый документ {files_str} в вашем хранилище OnMyDisk."
+                final_output = f"Операция завершена. Изменённые файлы: {files_str}."
             else:
-                final_output = "Я успешно завершил все запланированные действия с файлами по вашему запросу."
+                final_output = "Операция завершена."
 
     # Build changed files objects
     changed_objects = []
