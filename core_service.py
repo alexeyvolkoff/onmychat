@@ -1424,6 +1424,35 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                  # Add a system nudge to actually start tool calls if they haven't yet.
                  messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now."})
                  continue
+            # [STUCK/EMPTY RESPONSE RECOVERY FOR ODT]
+            # If we successfully read placeholders but have not called modify_odt_file yet, 
+            # and the model is stuck/returned an empty response, we force it to proceed.
+            has_read_placeholders = any(
+                "read_odt_placeholders" in str(m.get("content", "")) or 
+                (isinstance(m.get("tool_calls"), list) and any(tc.get("function", {}).get("name") == "read_odt_placeholders" for tc in m["tool_calls"]))
+                for m in messages
+            )
+            has_modified_odt = any(
+                "modify_odt_file" in str(m.get("content", "")) or 
+                (isinstance(m.get("tool_calls"), list) and any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in m["tool_calls"]))
+                for m in messages
+            )
+            
+            if has_read_placeholders and not has_modified_odt and turn < max_turns - 1:
+                p_list_str = discovered_placeholders_str if discovered_placeholders_str else "content, title"
+                logging.warning(f"[MCP][Turn {turn+1}] ODT Stuck Recovery: placeholders read but modify_odt_file not called. Injecting Stuck Nudge.")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet! "
+                        f"Discovered placeholders: [{p_list_str}]. "
+                        f"You MUST now execute the `modify_odt_file` tool to generate the final document. "
+                        f"Map the user's request details specifically into these placeholders. "
+                        f"Respond ONLY with the tool call to `modify_odt_file`."
+                    )
+                })
+                continue
+
             # If we reach here and there are no tool calls, and it wasn't a plan on turn 0,
             # then the agent is done or stuck. Break the loop.
             break
