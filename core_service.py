@@ -1662,13 +1662,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                    replacements = args.get("replacements", {})
                    res = await modify_odt_file(ctx, template_path, output_path, replacements)
                    if not res.startswith("Error") and not res.startswith("Exception"):
-                      changed_files.append(output_path)
+                       changed_files.append(output_path)
              else:
-                   supported_names = [
-                       "list_omd_files", "read_omd_file", "find_omd_file", "write_omd_file",
-                       "search_web", "search_memory", "save_user_fact", "read_odt_placeholders",
-                       "modify_odt_file"
-                   ]
+                   supported_names = [t["function"]["name"] for t in MCP_TOOLS]
                    res = f"Error: Tool '{name}' is not supported. Supported tools are: {supported_names}. Please only call supported tools."
                    logging.warning(f"[MCP HALLUCINATION GUARD] Blocked hallucinated tool: {name}")
 
