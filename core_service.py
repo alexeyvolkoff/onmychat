@@ -1322,19 +1322,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         has_modified_odt = "modify_odt_file" in all_tool_results
         is_modifying_now = any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in tool_calls) if tool_calls else False
         
-        # Determine if the user request actually intends/plans to modify the document
-        clean_user_msg = re.sub(r'/[^\s]+', '', clean_message)
-        clean_user_msg = re.sub(r'[^\s]+\.(odt|docx|pdf|txt|xlsx|csv)', '', clean_user_msg).lower()
-        modification_words = ["create", "modify", "generate", "write", "save", "fill", "replace", "make",
-                              "создай", "заполни", "замени", "сделай", "выпиши", "запиши", "сгенерируй", "правь", "править"]
-        wants_modification = any(w in clean_user_msg for w in modification_words)
-        
         already_nudged = any(
             isinstance(m.get("content"), str) and "Wait! You have successfully read the ODT placeholders" in m["content"]
             for m in messages
         )
         
-        if wants_modification and not already_nudged and has_read_placeholders and not has_modified_odt and not is_modifying_now:
+        if not already_nudged and has_read_placeholders and not has_modified_odt and not is_modifying_now:
               messages.append({
                   "role": "user", 
                   "content": (
