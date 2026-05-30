@@ -1927,8 +1927,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
          
     # Strict validation: if document generation was planned or requested, but no files were actually modified, mark as failure.
     was_write_planned = any("modify_odt_file" in str(t.get("content", "")) or "write_omd_file" in str(t.get("content", "")) for t in todos) if todos else False
-    is_doc_cmd = clean_message.strip().startswith("/doc") or "modify_odt_file" in all_tool_results
-    if (was_write_planned or is_doc_cmd) and not changed_files and success:
+    is_modify_attempted = "modify_odt_file" in all_tool_results
+    if (was_write_planned or is_modify_attempted) and not changed_files and success:
         success = False
         tool_error_msg = "The document was not modified or saved. Please ensure all required parameters are provided."
          
