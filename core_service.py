@@ -1639,11 +1639,30 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                  path_arg = (args.get("template_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
                  res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
-                  template_path = (args.get("template_path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
-                  output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
-                  replacements = args.get("replacements", {})
-                  res = await modify_odt_file(ctx, template_path, output_path, replacements)
-                  if not res.startswith("Error") and not res.startswith("Exception"):
+                   template_path = (args.get("template_path") or args.get("path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
+                   if not template_path:
+                       # Healer: try to find from call history
+                       for call in list(call_history):
+                           if "read_odt_placeholders" in call:
+                               try:
+                                   args_str = call.split(":", 1)[1]
+                                   args_parsed = json.loads(args_str)
+                                   template_path = (args_parsed.get("template_path") or args_parsed.get("path") or "").strip()
+                                   if template_path:
+                                       logging.info(f"[MCP HEALER] Restored missing template_path from read_odt_placeholders: '{template_path}'")
+                                       break
+                               except:
+                                   pass
+                       if not template_path and potential_paths:
+                           odt_files = [p for p in potential_paths if p.lower().endswith(".odt")]
+                           if odt_files:
+                               template_path = odt_files[0]
+                               logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
+                               
+                   output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
+                   replacements = args.get("replacements", {})
+                   res = await modify_odt_file(ctx, template_path, output_path, replacements)
+                   if not res.startswith("Error") and not res.startswith("Exception"):
                       changed_files.append(output_path)
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
