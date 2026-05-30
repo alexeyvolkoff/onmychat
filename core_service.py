@@ -1650,23 +1650,56 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     # Clean the final assistant message
     final_output = clean_final_content(last_content)
     if not final_output:
-        if not has_read_file and requires_read:
-            final_output = "I identified the file but could not read its contents. Please verify the file path or permission."
+        if changed_files:
+            files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
+            final_output = f"Готово! Я успешно выполнил операцию и сохранил изменённый документ {files_str} в вашем хранилище OnMyDisk."
+        elif not has_read_file and requires_read:
+            final_output = "Я смог определить путь к файлу, но столкнулся с трудностью при чтении его содержимого. Пожалуйста, убедитесь, что файл доступен и у меня есть к нему права доступа."
         else:
-            final_output = "Task successfully completed."
+            final_output = "Я успешно завершил все запланированные действия с файлами по вашему запросу."
 
     # Build changed files objects
     changed_objects = []
+    import mimetypes
     for path in changed_files:
         filename = os.path.basename(path)
         ext = os.path.splitext(path)[1].lstrip('.').lower()
+        
+        # Determine the real mimetype accepted by the OnMyDisk frontend
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            # Fallback map for common file types
+            fallback_map = {
+                'odt': 'application-vnd.oasis.opendocument.text',
+                'ods': 'application-vnd.oasis.opendocument.spreadsheet',
+                'odp': 'application-vnd.oasis.opendocument.presentation',
+                'md': 'text-x-markdown',
+                'sql': 'application-sql',
+                'xml': 'application-xml',
+                'json': 'application-json',
+                'php': 'application-x-php',
+                'py': 'application-x-python',
+                'js': 'application-x-javascript',
+                'css': 'text-css',
+                'txt': 'text-plain',
+                'pdf': 'application-pdf',
+                'docx': 'application-vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xlsx': 'application-vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'pptx': 'application-vnd.openxmlformats-officedocument.presentationml.presentation',
+            }
+            mime_type = fallback_map.get(ext, 'unknown')
+            
+        # Slashes are replaced with dashes in the OnMyDisk frontend to match flat icon assets
+        mimetype = mime_type.replace('/', '-') if mime_type else 'unknown'
+        
         changed_objects.append({
             "title": filename,
-            "owner": ctx.user_id or "alexey",
+            "owner": ctx.user_id,
             "clickable": True,
             "url": f"https://onmydisk.net{path}",
             "fullPath": path,
-            "mimetype": ext or "unknown"
+            "size": 0,
+            "mimetype": mimetype
         })
 
     yield {
