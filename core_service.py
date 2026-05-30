@@ -368,14 +368,12 @@ async def download_omd_file(ctx: UserContext, path: str) -> bytes:
         url_path = f"{storage_id}/{clean_path}"
         
     url = f"{base_url}/{url_path}"
-    # Consistent URL-based token authentication
-    separator = "&" if "?" in url else "?"
-    url += f"{separator}token={ctx.omd_key}"
+    headers = {"Authorization": f"Bearer {ctx.omd_key}"}
     
-    logging.info(f"Downloading raw binary file from OMD URL: {url.split('token=')[0]}...")
+    logging.info(f"Downloading raw binary file from OMD URL: {url}")
     
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=30) as resp:
+        async with session.get(url, headers=headers, timeout=30) as resp:
             if resp.status == 200:
                 return await resp.read()
             else:
@@ -387,7 +385,6 @@ async def upload_omd_file_binary(ctx: UserContext, path: str, data: bytes) -> st
         return "Error: OMD storage not linked."
         
     storage_id = ctx.storage.strip("/")
-    storage_key = ctx.omd_key
     base_url = GATEWAY_URL.rstrip("/")
     
     clean_path = path if not path.startswith("/") else path[1:]
@@ -401,16 +398,13 @@ async def upload_omd_file_binary(ctx: UserContext, path: str, data: bytes) -> st
         dest_url = f"{base_url}/{storage_id}/{clean_path}"
         path = f"/{storage_id}/{clean_path}"
         
-    # Consistent URL-based token authentication
-    separator = "&" if "?" in dest_url else "?"
-    dest_url += f"{separator}token={storage_key}"
-    
     headers = {
+        "Authorization": f"Bearer {ctx.omd_key}",
         "Response": "json",
         "Content-Type": "application/vnd.oasis.opendocument.text"
     }
     
-    logging.info(f"Uploading raw binary file to OMD URL: {dest_url.split('token=')[0]}...")
+    logging.info(f"Uploading raw binary file to OMD URL: {dest_url}")
     
     async with aiohttp.ClientSession() as session:
         async with session.put(dest_url, data=data, headers=headers) as resp:
@@ -716,14 +710,15 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
         # Simplified URL Token Authentication
         if path.startswith("/") or path.startswith(root_folder):
             url_path = path.lstrip("/")
-            url = f"{base_url}/{url_path}?list&token={storage_key}"
+            url = f"{base_url}/{url_path}?list"
             path = "/" + url_path
         else:
-            url = f"{base_url}/{storage_id}/{clean_path}?list&token={storage_key}"
+            url = f"{base_url}/{storage_id}/{clean_path}?list"
             path = f"/{storage_id}/{clean_path}"
         
+        list_headers = {"Authorization": f"Bearer {storage_key}"}
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, headers=list_headers, timeout=10) as resp:
                 if resp.status in [200, 206]:
                     text = await resp.text()
                     items = []
@@ -928,11 +923,8 @@ async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
              path = path.rstrip("/") + "/new_file.txt"
              logging.info(f"[write_omd_file] No extension found, appending default filename: {path}")
         
-        # Consistent URL-based token authentication
-        separator = "&" if "?" in dest_url else "?"
-        dest_url += f"{separator}token={storage_key}"
-             
         headers = {
+            "Authorization": f"Bearer {storage_key}",
             "Response": "json",
             "Content-Type": "text/plain; charset=utf-8"
         }
@@ -2101,12 +2093,13 @@ async def get_avatar_version(ctx: UserContext) -> str:
             # Manual URL construction to ensure token is passed correctly
             # Use GET instead of HEAD as HEAD might be blocked or malformed for this gateway
             timestamp = str(int(time.time()))
-            url = f"{base_url}/{clean_storage_id}/avatar.png?token={storage_key}&_t={timestamp}"
+            url = f"{base_url}/{clean_storage_id}/avatar.png?_t={timestamp}"
+            avatar_headers = {"Authorization": f"Bearer {storage_key}"}
             
             #logging.info(f"[get_avatar_version] Checking remote (GET): {url}")
             
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as resp:
+                async with session.get(url, headers=avatar_headers, timeout=5) as resp:
                     #logging.info(f"[get_avatar_version] Response status: {resp.status}")
                     if resp.status == 200:
                         # Use ETag or Last-Modified
@@ -2149,10 +2142,11 @@ async def get_generated_avatars(ctx: UserContext) -> list:
             clean_storage_id = storage_id.strip("/")
             
             # List generated/avatars folder
-            url = f"{base_url}/{clean_storage_id}/generated/avatars?list&token={storage_key}"
+            url = f"{base_url}/{clean_storage_id}/generated/avatars?list"
+            avatars_headers = {"Authorization": f"Bearer {storage_key}"}
             
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as resp:
+                async with session.get(url, headers=avatars_headers, timeout=5) as resp:
                     if resp.status == 200 or resp.status == 206:
                         try:
                             data = await resp.json()
