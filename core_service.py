@@ -540,7 +540,6 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
             secure_extract_zip(z, extract_dir)
             
         # Validate replacements keys against actual placeholders
-        # Validate replacements keys against actual placeholders (warning/logging only to allow custom replacements)
         actual_placeholders = set()
         for xml_name in ["content.xml", "styles.xml", "meta.xml"]:
             xml_path = os.path.join(extract_dir, xml_name)
@@ -555,6 +554,21 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                             
         if actual_placeholders:
             logging.info(f"[ODT] Discovered placeholders in template: {sorted(list(actual_placeholders))}")
+            
+            invalid_keys = []
+            for k in replacements.keys():
+                k_str = str(k).strip()
+                if k_str.startswith("{{") and k_str.endswith("}}"):
+                    clean_k = k_str[2:-2].strip()
+                else:
+                    clean_k = k_str
+                if clean_k not in actual_placeholders:
+                    invalid_keys.append(k)
+            
+            if invalid_keys:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                return f"Error: The replacements dictionary contains keys that do not exist in the template placeholders: {sorted(invalid_keys)}. The actual placeholders found in this template are: {sorted(list(actual_placeholders))}. Please only use these exact placeholder names as keys in your replacements dictionary."
             
         # XML-escape helpers to avoid breaking target XML markup (equivalent to invoice.py)
         def escape_xml(s) -> str:
