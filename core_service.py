@@ -1737,8 +1737,28 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                            logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
                            
                    output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
-                   replacements = args.get("replacements", {})
-                   
+                   replacements = args.get("replacements")
+                   if not isinstance(replacements, dict):
+                       replacements = {}
+                        
+                   # Proactive ODT replacements healer: catch flattened custom arguments and move them to replacements
+                   excluded_keys = {
+                       "template_path", "path", "template_file_path", "templatepath", "template",
+                       "output_path", "output_file_path", "outputpath", "output", "replacements"
+                   }
+                   for k, v in args.items():
+                       if k.lower() not in excluded_keys and v is not None:
+                           # Clean the key to map output_content -> content, output_title -> title
+                           clean_k = k
+                           if k.lower().startswith("output_"):
+                               clean_k = k[7:]
+                           elif k.lower().startswith("output"):
+                               clean_k = k[6:]
+                           replacements[clean_k] = v
+                           
+                   if replacements and not args.get("replacements"):
+                       logging.info(f"[MCP HEALER] Auto-reconstructed replacements from flattened top-level arguments: {replacements}")
+                       
                    res = await modify_odt_file(ctx, template_path, output_path, replacements)
                    if not res.startswith("Error") and not res.startswith("Exception"):
                        changed_files.append(output_path)
