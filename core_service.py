@@ -1161,20 +1161,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     known_files = set() # Strict cache of verified files
     call_history = set() # Prevent repeated failed attempts
     
-    # [USER INTENT DETECTION]
-    # Parse USER'S request for action verbs that imply reading/extraction.
-    # These are universal command verbs, NOT content keywords.
-    read_action_verbs = [
-        "read", "extract", "show", "display", "open", "contents", 
-        "what is inside", "totals", "amount", "items", "data from", "get"
-    ]
-    message_lower = message.lower()
-    requires_read = any(verb in message_lower for verb in read_action_verbs)
-    if requires_read:
-        logging.info(f"[MCP] User Intent: READ/EXTRACT detected. Will force read after discovery.")
-    else:
-        logging.info(f"[MCP] User Intent: FIND ONLY.")
-    
     has_read_file = False
     last_listing = "" # For re-injection on errors
     
@@ -1185,6 +1171,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     for turn in range(max_turns):
         # Keep status as 'performing' throughout the turns
         yield {"type": "status", "content": "performing"}
+        
+        # Determine if reading is required dynamically based on the agent's own planned checklist steps (fully multilingual)
+        requires_read = any("read_omd_file" in str(t.get("content", "")) or "read_odt_placeholders" in str(t.get("content", "")) for t in todos) if todos else False
+
         # [TURN-SPECIFIC GUIDANCE]
         guidance = "You are an autonomous agent. "
         # [PROACTIVE DISCOVERY GATE]
