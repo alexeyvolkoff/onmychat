@@ -1658,12 +1658,20 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                            if odt_files:
                                template_path = odt_files[0]
                                logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
-                               
                    output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
                    replacements = args.get("replacements", {})
                    res = await modify_odt_file(ctx, template_path, output_path, replacements)
                    if not res.startswith("Error") and not res.startswith("Exception"):
                       changed_files.append(output_path)
+             else:
+                   supported_names = [
+                       "list_omd_files", "read_omd_file", "find_omd_file", "write_omd_file",
+                       "search_web", "search_memory", "save_user_fact", "read_odt_placeholders",
+                       "modify_odt_file"
+                   ]
+                   res = f"Error: Tool '{name}' is not supported. Supported tools are: {supported_names}. Please only call supported tools."
+                   logging.warning(f"[MCP HALLUCINATION GUARD] Blocked hallucinated tool: {name}")
+
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
             msg_entry = {"role": "tool", "content": str(res)}
@@ -1742,15 +1750,33 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
          
     # Clean the final assistant message
     final_output = clean_assistant_response(last_content)
-    if not final_output:
-        # Let the LLM generate a natural, conversational response based on what was achieved!
+    
+    # Check for any tool execution errors in the session
+    tool_errors = []
+    has_errors = False
+    for msg_item in messages:
+        if msg_item.get("role") == "tool":
+            content_str = str(msg_item.get("content", ""))
+            if "error" in content_str.lower() or "exception" in content_str.lower() or "failed" in content_str.lower():
+                tool_errors.append(content_str)
+                has_errors = True
+                
+    # If the final output is empty, or if errors occurred (to prevent falsely reporting success), regenerate summary
+    if not final_output or has_errors:
+        error_context = ""
+        if tool_errors:
+            error_context = f"\nCRITICAL: The following errors occurred during tool execution:\n" + "\n".join(f"- {err}" for err in tool_errors)
+            
         summary_prompt = (
             "You are a helpful file system assistant. The requested file system operations have finished.\n"
             f"User's request was: '{clean_message}'\n"
             f"Files modified/created: {changed_files}\n"
             f"Active storage root: '{ctx.storage if ctx else ''}'\n"
-            "Write a short, friendly, and natural conversational response in Russian "
-            "summarizing the actions you performed (in details) and telling the user that everything is successfully saved in their storage."
+            f"{error_context}\n"
+            "Write a short, friendly, and natural conversational response in Russian.\n"
+            "INSTRUCTIONS:\n"
+            "1. If any errors occurred during tool execution, you MUST clearly, politely, and explicitly explain the error to the user in Russian, state exactly what went wrong (e.g., that a tool returned an error or a path was invalid), and ask how they want to proceed. Do NOT claim success under any circumstances!\n"
+            "2. If everything was successful and no errors occurred, summarize the actions you performed (in details) and tell the user that everything is successfully saved in their storage."
         )
         payload = {
             "model": MCP_MODEL,
@@ -1765,9 +1791,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         if summary_data and "message" in summary_data:
             final_output = summary_data["message"]["content"].strip()
             
-        # Safe fallback if API request failed
-        if not final_output:
-            if changed_files:
+        # Safe fallback if API request failed or returned success message when errors occurred
+        if not final_output or (has_errors and "успешно" in final_output.lower()):
+            if tool_errors:
+                final_output = f"Произошла ошибка при выполнении файловой операции:\n" + "\n".join(f"- {err}" for err in tool_errors)
+            elif changed_files:
                 files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
                 final_output = f"Готово! Я успешно выполнил операцию и сохранил изменённый документ {files_str} в вашем хранилище OnMyDisk."
             else:
