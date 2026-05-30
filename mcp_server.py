@@ -99,16 +99,16 @@ async def search_memory(query: str) -> str:
 
 
 @mcp.tool()
-async def read_odt_placeholders(path: str) -> str:
+async def read_odt_placeholders(template_path: str) -> str:
     """
     Read an ODT file and extract all unique placeholders of the form {{placeholder}}.
     This is useful for discovering what fields need to be replaced in a template.
     
     Args:
-        path: The absolute path of the ODT file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt
+        template_path: The absolute path of the ODT template file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt
     """
     ctx = get_current_user_context()
-    return await core_service.read_odt_placeholders(ctx, path)
+    return await core_service.read_odt_placeholders(ctx, template_path)
 
 
 @mcp.tool()

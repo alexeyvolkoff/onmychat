@@ -260,12 +260,12 @@ MCP_TOOLS = [
       "parameters": {
         "type": "object",
         "properties": {
-          "path": {
+          "template_path": {
             "type": "string",
-            "description": "The absolute path of the ODT file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt"
+            "description": "The absolute path of the ODT template file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt"
           }
         },
-        "required": ["path"]
+        "required": ["template_path"]
       }
     }
   },
@@ -1048,13 +1048,43 @@ def clean_mimetype(filename: str, raw_mimetype: str = None) -> str:
 def clean_assistant_response(text: str) -> str:
     """
     Cleans final assistant message without stripping numbered lists, bullet points, or steps.
+    Strips the specific [PLAN] checklists to prevent showing them to the user.
     """
     if not text:
         return ""
     # Remove any debug/agent labels
     text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
-    return text.strip()
+    
+    # Strip the specific [PLAN] block from the final output, preserving other content
+    lines = text.split('\n')
+    cleaned_lines = []
+    in_plan_block = False
+    
+    for line in lines:
+        line_strip = line.strip()
+        if not line_strip:
+            cleaned_lines.append(line)
+            continue
+            
+        # Detect start of plan block
+        if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
+            in_plan_block = True
+            continue
+            
+        if in_plan_block:
+            # Plan lines usually look like checkboxes: - [ ] or - [x] or * Step X: etc.
+            is_checkbox = re.match(r'^(?:-\s*\[\s*[ xX]?\s*\]\s*|Step\s*\d+|Completed in previous turn|\(\s*Completed in previous turn\s*\))', line_strip, re.IGNORECASE)
+            # If we hit a non-plan line, terminate the plan block suppression
+            if not is_checkbox and not line_strip.startswith(("-", "*", "•")) and len(line_strip) > 0:
+                in_plan_block = False
+            else:
+                # Suppress the plan checkbox line
+                continue
+                
+        cleaned_lines.append(line)
+        
+    return "\n".join(cleaned_lines).strip()
 
 async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history: list|None = None) -> AsyncGenerator[dict, None]:
     if ctx.settings.get("nsfw", False):
@@ -1606,7 +1636,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                      except Exception as e:
                          res = f"Error saving memory: {e}"
              elif name == "read_odt_placeholders":
-                 path_arg = (args.get("path") or args.get("template_path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
+                 path_arg = (args.get("template_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
                  res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
                   template_path = (args.get("template_path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
@@ -1660,15 +1690,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
 
     # Hallucination lockdown is now handled by the planning requirement and instructions.
     
-    # Suppression filter for final MCP log
+    # Log final MCP conclusion
     last_content = messages[-1].get("content", "").strip() if messages and messages[-1].get("role") == "assistant" else ""
-    refusal_keywords = [
-        "i cannot", "i'm sorry", "i am sorry", "cannot assist", 
-        "current capabilities are limited", "cannot generate",
-        "do not have access", "as an ai model", "just a chatty assistant",
-        "cannot help with"
-    ]
-    if last_content and not any(phrase in last_content.lower() for phrase in refusal_keywords):
+    if last_content:
         logging.info(f"[MCP] Agent Conclusion: {last_content[:100]}...")
     
     # If the autonomous agent didn't produce any meaningful output, report failure
