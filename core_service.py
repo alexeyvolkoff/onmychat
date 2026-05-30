@@ -1006,7 +1006,7 @@ def clean_final_content(text: str) -> str:
     
     return text.strip()
 
-async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerator[dict, None]:
+async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history: list|None = None) -> AsyncGenerator[dict, None]:
     if ctx.settings.get("nsfw", False):
         return
         
@@ -1051,11 +1051,31 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
+    
+    # Inject username and current date
+    username = ctx.settings.get("name") or ctx.settings.get("username", "User") if ctx else "User"
+    current_date = datetime.now().strftime("%d.%m.%Y")
+    current_date_iso = datetime.now().strftime("%Y-%m-%d")
+    
+    system_instruction += f"\n\n- USERNAME: '{username}'"
+    system_instruction += f"\n- CURRENT DATE: {current_date} (ISO format: {current_date_iso})"
+    
     if ctx and ctx.storage:
         storage_id = ctx.storage.strip("/")
         if storage_id:
             storage_root = "/" + storage_id.split("/")[0] if "/" in storage_id else "/" + storage_id
             system_instruction += f"\n\n- ACTIVE SESSION STORAGE ROOT: '{storage_root}'. All absolute paths you access, list, search inside, or write to MUST start with this root directory. Do NOT guess or use fake directories like '/OnMyDisk' or '/Linux-desktop'."
+
+    if provided_history:
+        # Format the last 6 messages of chat history as a structured text block
+        last_messages = provided_history[-6:]
+        history_str = "\n\n- RECENT CHAT HISTORY (Last 6 messages for context):\n"
+        for msg in last_messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            role_display = "User" if role == "user" else "Assistant"
+            history_str += f"  * {role_display}: {content}\n"
+        system_instruction += history_str
 
     # Initial Turn: Mandatory [PLAN] Phase
     # We use a more permissive system prompt for the planning turn.
