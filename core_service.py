@@ -1185,6 +1185,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                 path_hint += f"\nSYSTEM HINT: Detected exact file paths: {', '.join(other_files)}. Access/read these files directly using appropriate tools. Do NOT use `list_omd_files` if you already know the exact file path."
         else:
             path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
+    
+    logging.info(f"\n[MCP PATH HINT] {path_hint}")        
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
