@@ -256,13 +256,13 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "read_odt_placeholders",
-      "description": "Read an ODT file and extract all unique placeholders of the form {{placeholder}}.",
+      "description": "Read an ODT template file and extract all unique placeholders of the form {{placeholder}}. MUST be called before modify_odt_file to discover actual placeholder names — do NOT guess them.",
       "parameters": {
         "type": "object",
         "properties": {
           "template_path": {
             "type": "string",
-            "description": "The absolute path of the ODT template file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt"
+            "description": "REQUIRED. The absolute path of the ODT template file starting with the active storage root (e.g. /beelink/Documents/Bineon_template.odt). Must end in .odt."
           }
         },
         "required": ["template_path"]
@@ -273,21 +273,21 @@ MCP_TOOLS = [
     "type": "function",
     "function": {
       "name": "modify_odt_file",
-      "description": "Create a new ODT document by copying a template ODT document and replacing specified placeholders or strings. All values are automatically XML-escaped.",
+      "description": "Create a new ODT document by copying a template ODT and substituting placeholders. Call ONLY after read_odt_placeholders has returned the actual placeholder list. All three parameters are REQUIRED.",
       "parameters": {
         "type": "object",
         "properties": {
           "template_path": {
             "type": "string",
-            "description": "The absolute path of the source template ODT file, e.g. /Linux-desktop/Private/Templates/contract.odt"
+            "description": "REQUIRED. The absolute path of the source ODT template file (same path used in read_odt_placeholders), e.g. /beelink/Documents/Bineon_template.odt"
           },
           "output_path": {
             "type": "string",
-            "description": "The absolute path of the new ODT file to be written, e.g. /Linux-desktop/Private/Contracts/contract_new.odt"
+            "description": "REQUIRED. The absolute path where the resulting ODT file will be saved, e.g. /beelink/Documents/greeting_letter_to_june.odt. Must include filename with .odt extension."
           },
           "replacements": {
             "type": "object",
-            "description": "A dictionary of key-value pairs to replace. Keys are target strings/placeholders, and values are the new texts.",
+            "description": "REQUIRED. A non-empty dictionary mapping each placeholder key (as returned by read_odt_placeholders, e.g. 'recipient_name') to its replacement string value (e.g. 'June'). Keys may be bare names or wrapped in {{}}.",
             "additionalProperties": {
               "type": "string"
             }
@@ -946,6 +946,9 @@ def extract_plan_steps(text: str) -> list:
         line_strip = line.strip()
         if not line_strip:
             continue
+        # Skip tags and formatting wrapper lines
+        if any(tag in line_strip.upper() for tag in ["[/PLAN]", "[THOUGHT]", "[/THOUGHT]", "<THOUGHT>", "</THOUGHT>", "[CHECKLIST]", "[/CHECKLIST]"]):
+            continue
         if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
             in_plan = True
             continue
@@ -969,6 +972,9 @@ def extract_plan_steps(text: str) -> list:
     if not steps:
         for line in lines:
             line_strip = line.strip()
+            # Skip tags and formatting wrapper lines
+            if any(tag in line_strip.upper() for tag in ["[/PLAN]", "[THOUGHT]", "[/THOUGHT]", "<THOUGHT>", "</THOUGHT>", "[CHECKLIST]", "[/CHECKLIST]"]):
+                continue
             match = re.match(r'^(?:Step\s*\d+\s*:\s*|\d+\.\s+)(.*)', line_strip, re.IGNORECASE)
             if match:
                 content = match.group(1).strip()
@@ -986,6 +992,9 @@ def get_non_plan_reasoning(text: str) -> str:
         line_strip = line.strip()
         if not line_strip:
             non_plan_lines.append("")
+            continue
+        # Skip tags and formatting wrapper lines entirely from reasoning
+        if any(tag in line_strip.upper() for tag in ["[PLAN]", "[/PLAN]", "[THOUGHT]", "[/THOUGHT]", "<THOUGHT>", "</THOUGHT>", "[CHECKLIST]", "[/CHECKLIST]"]):
             continue
         if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
             in_plan = True
@@ -1707,61 +1716,79 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                      except Exception as e:
                          res = f"Error saving memory: {e}"
              elif name == "read_odt_placeholders":
-                 path_arg = (args.get("template_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
-                 res = await read_odt_placeholders(ctx, path_arg)
+                  path_arg = (args.get("template_path") or args.get("odt_file_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
+                  if not path_arg:
+                      res = "Error: Missing required parameter 'template_path'. You must specify the absolute path to the ODT template file (e.g., '/beelink/Documents/Bineon_template.odt')."
+                  else:
+                      res = await read_odt_placeholders(ctx, path_arg)
              elif name == "modify_odt_file":
-                   template_path = (args.get("template_path") or args.get("path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
-                   
-                   # Proactive template path recovery/healing: find verified path from previous read_odt_placeholders call
-                   discovered_template = ""
-                   for call in list(call_history):
-                       if "read_odt_placeholders" in call:
-                           try:
-                               args_str = call.split(":", 1)[1]
-                               args_parsed = json.loads(args_str)
-                               path_val = (args_parsed.get("template_path") or args_parsed.get("path") or "").strip()
-                               if path_val:
-                                   discovered_template = path_val
-                                   break
-                           except:
-                               pass
+                    template_path = (args.get("template_path") or args.get("path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
+                    
+                    # Proactive template path recovery/healing: find verified path from previous read_odt_placeholders call
+                    discovered_template = ""
+                    for call in list(call_history):
+                        if "read_odt_placeholders" in call:
+                            try:
+                                args_str = call.split(":", 1)[1]
+                                args_parsed = json.loads(args_str)
+                                path_val = (args_parsed.get("template_path") or args_parsed.get("path") or "").strip()
+                                if path_val:
+                                    discovered_template = path_val
+                                    break
+                            except:
+                                pass
+                                 
+                    if discovered_template and (not template_path or template_path != discovered_template or "template.odt" in template_path.lower()):
+                        logging.info(f"[MCP HEALER] Auto-corrected template_path from '{template_path}' to verified path '{discovered_template}'")
+                        template_path = discovered_template
+                         
+                    if not template_path and potential_paths:
+                        odt_files = [p for p in potential_paths if p.lower().endswith(".odt")]
+                        if odt_files:
+                            template_path = odt_files[0]
+                            logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
+                    
+                    # --- Fail-fast: required parameter checks before any path validation ---
+                    storage_root = f"/{ctx.storage.strip('/').split('/')[0]}" if ctx.storage else "your active storage root"
+                    if not template_path:
+                        res = (f"Error: Missing required parameter 'template_path' in modify_odt_file call. "
+                               f"You must supply the absolute path to the source ODT template "
+                               f"(e.g. modify_odt_file(template_path='{storage_root}/Documents/Bineon_template.odt', "
+                               f"output_path='{storage_root}/Documents/result.odt', replacements={{...}})). "
+                               f"Use the same path you passed to read_odt_placeholders.")
+                    else:
+                        output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
+                        if not output_path:
+                            res = (f"Error: Missing required parameter 'output_path' in modify_odt_file call. "
+                                   f"You must supply the absolute path for the resulting ODT file "
+                                   f"(e.g. output_path='{storage_root}/Documents/result.odt'). "
+                                   f"Must include a filename ending in .odt.")
+                        else:
+                            replacements = args.get("replacements")
+                            if not isinstance(replacements, dict):
+                                replacements = {}
+                                 
+                            # Proactive ODT replacements healer: catch flattened custom arguments and move them to replacements
+                            excluded_keys = {
+                                "template_path", "path", "template_file_path", "templatepath", "template",
+                                "output_path", "output_file_path", "outputpath", "output", "replacements"
+                            }
+                            for k, v in args.items():
+                                if k.lower() not in excluded_keys and v is not None:
+                                    # Clean the key to map output_content -> content, output_title -> title
+                                    clean_k = k
+                                    if k.lower().startswith("output_"):
+                                        clean_k = k[7:]
+                                    elif k.lower().startswith("output"):
+                                        clean_k = k[6:]
+                                    replacements[clean_k] = v
+                                    
+                            if replacements and not args.get("replacements"):
+                                logging.info(f"[MCP HEALER] Auto-reconstructed replacements from flattened top-level arguments: {replacements}")
                                 
-                   if discovered_template and (not template_path or template_path != discovered_template or "template.odt" in template_path.lower()):
-                       logging.info(f"[MCP HEALER] Auto-corrected template_path from '{template_path}' to verified path '{discovered_template}'")
-                       template_path = discovered_template
-                        
-                   if not template_path and potential_paths:
-                       odt_files = [p for p in potential_paths if p.lower().endswith(".odt")]
-                       if odt_files:
-                           template_path = odt_files[0]
-                           logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
-                           
-                   output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
-                   replacements = args.get("replacements")
-                   if not isinstance(replacements, dict):
-                       replacements = {}
-                        
-                   # Proactive ODT replacements healer: catch flattened custom arguments and move them to replacements
-                   excluded_keys = {
-                       "template_path", "path", "template_file_path", "templatepath", "template",
-                       "output_path", "output_file_path", "outputpath", "output", "replacements"
-                   }
-                   for k, v in args.items():
-                       if k.lower() not in excluded_keys and v is not None:
-                           # Clean the key to map output_content -> content, output_title -> title
-                           clean_k = k
-                           if k.lower().startswith("output_"):
-                               clean_k = k[7:]
-                           elif k.lower().startswith("output"):
-                               clean_k = k[6:]
-                           replacements[clean_k] = v
-                           
-                   if replacements and not args.get("replacements"):
-                       logging.info(f"[MCP HEALER] Auto-reconstructed replacements from flattened top-level arguments: {replacements}")
-                       
-                   res = await modify_odt_file(ctx, template_path, output_path, replacements)
-                   if not res.startswith("Error") and not res.startswith("Exception"):
-                       changed_files.append(output_path)
+                            res = await modify_odt_file(ctx, template_path, output_path, replacements)
+                            if not res.startswith("Error") and not res.startswith("Exception"):
+                                changed_files.append(output_path)
              else:
                    supported_names = [t["function"]["name"] for t in MCP_TOOLS]
                    res = f"Error: Tool '{name}' is not supported. Supported tools are: {supported_names}. Please only call supported tools."
