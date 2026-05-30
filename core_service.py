@@ -568,24 +568,22 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                       .replace("'", "&apos;")
             )
             
-        # Proactive ODT replacements key healer/mapper
+        # Proactive ODT replacements key healer/mapper (strictly generic, no hardcoded template words)
         if actual_placeholders and not any(k in replacements for k in actual_placeholders):
             # If none of the keys in replacements match the actual placeholders,
-            # we check if "content" is an actual placeholder and map everything to it
+            # we check if "content" is an actual placeholder and map everything to it generically
             if "content" in actual_placeholders:
-                prose = "Dear Employees,\n\nDetails of the upcoming event:\n\n"
+                prose = ""
                 for k, v in replacements.items():
-                    clean_k = str(k).replace("_", " ").title()
-                    prose += f"- {clean_k}: {v}\n"
+                    clean_k = str(k).replace("_", " ").strip().title()
+                    prose += f"{clean_k}: {v}\n"
                 
-                prose += "\nWe look forward to seeing you there!\n"
-                
-                healed_replacements = {"content": prose}
+                healed_replacements = {"content": prose.strip()}
                 if "title" in actual_placeholders:
-                    healed_replacements["title"] = f"{replacements.get('event_name', 'Event')} Invitation"
+                    healed_replacements["title"] = os.path.splitext(os.path.basename(output_path))[0].replace("_", " ").title()
                 
                 replacements = healed_replacements
-                logging.info(f"[ODT HEALER] Auto-mapped hallucinated replacements keys to 'content' and 'title': {replacements}")
+                logging.info(f"[ODT HEALER] Auto-mapped hallucinated replacements keys generically: {replacements}")
                 
         # Perform replacements on main files
         xml_names = ["content.xml", "styles.xml", "meta.xml"]
