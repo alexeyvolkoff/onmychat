@@ -1323,7 +1323,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         is_modifying_now = any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in tool_calls) if tool_calls else False
         
         # Determine if the user request actually intends/plans to modify the document
-        import re
         clean_user_msg = re.sub(r'/[^\s]+', '', clean_message)
         clean_user_msg = re.sub(r'[^\s]+\.(odt|docx|pdf|txt|xlsx|csv)', '', clean_user_msg).lower()
         modification_words = ["create", "modify", "generate", "write", "save", "fill", "replace", "make",
