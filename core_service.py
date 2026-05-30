@@ -368,7 +368,7 @@ async def download_omd_file(ctx: UserContext, path: str) -> bytes:
         url_path = f"{storage_id}/{clean_path}"
         
     url = f"{base_url}/{url_path}"
-    headers = {"Authorization": f"Bearer {ctx.omd_key}"}
+    headers = {"Authorization": f"token:{ctx.omd_key}"}
     
     logging.info(f"Downloading raw binary file from OMD URL: {url}")
     
