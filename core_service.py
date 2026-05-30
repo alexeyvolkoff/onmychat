@@ -1102,6 +1102,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     todos = []
     has_initialized_todos = False
     changed_files = []
+    success = True
+    tool_error_msg = ""
     # 1. Path Extraction Heuristic (Help the model find the path)
     raw_paths = re.findall(r"(\/[\w\-\.\/]+)", clean_message)
     potential_paths = []
@@ -1679,8 +1681,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             messages.append(msg_entry)
 
         # Yield completion of the tool call part
-        tool_status = "error" if (not res or str(res).startswith("Error") or str(res).startswith("Exception") or "security error" in str(res).lower()) else "success"
-        clean_output = str(res) if res else "Error: Tool returned no result."
+        res_str = str(res).strip() if res else ""
+        is_err = (
+            not res_str or
+            res_str.lower().startswith(("error", "exception", "failed")) or
+            "security error" in res_str.lower() or
+            "critical error" in res_str.lower() or
+            res_str.startswith("CRITICAL MISMATCH")
+        )
+        tool_status = "error" if is_err else "success"
+        clean_output = res_str if res_str else "Error: Tool returned no result."
         if len(clean_output) > 2000:
             clean_output = clean_output[:2000] + "\n... [Output truncated for length] ..."
             
@@ -1689,12 +1699,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             "type": "tool",
             "state": {
                 "status": tool_status,
+                "success": (tool_status == "success"),
                 "tool": name,
                 "input": args,
                 "output": clean_output
             },
+            "success": (tool_status == "success"),
             "action": "part_update"
         }
+
+        if tool_status == "error":
+             success = False
+             tool_error_msg = clean_output
+             break
 
         if not found_new_info:
             break
@@ -1736,58 +1753,45 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
              "action": "part_update"
          }
          
-    # Clean the final assistant message
-    final_output = clean_assistant_response(last_content)
+    # Always generate the final human response dynamically via the LLM based on actual execution results,
+    # ensuring zero hardcoded templates or concrete conversational Russian phrases are baked into the Python code.
+    error_context = f"\nCRITICAL: The operation failed with the following error:\n- {tool_error_msg}" if not success else ""
+    files_context = f"\nModified/Created files saved in OnMyDisk storage: {', '.join(changed_files)}" if changed_files else ""
     
-    # Check for any tool execution errors in the session
-    tool_errors = []
-    has_errors = False
-    for msg_item in messages:
-        if msg_item.get("role") == "tool":
-            content_str = str(msg_item.get("content", ""))
-            if "error" in content_str.lower() or "exception" in content_str.lower() or "failed" in content_str.lower():
-                tool_errors.append(content_str)
-                has_errors = True
-                
-    # If the final output is empty, or if errors occurred (to prevent falsely reporting success), regenerate summary
-    if not final_output or has_errors:
-        error_context = ""
-        if tool_errors:
-            error_context = f"\nCRITICAL: The following errors occurred during tool execution:\n" + "\n".join(f"- {err}" for err in tool_errors)
-            
-        summary_prompt = (
-            "You are a helpful file system assistant. The requested file system operations have finished.\n"
-            f"User's request was: '{clean_message}'\n"
-            f"Files modified/created: {changed_files}\n"
-            f"Active storage root: '{ctx.storage if ctx else ''}'\n"
-            f"{error_context}\n"
-            "Write a short, friendly, and natural conversational response in Russian.\n"
-            "INSTRUCTIONS:\n"
-            "1. If any errors occurred during tool execution, you MUST clearly, politely, and explicitly explain the error to the user in Russian, state exactly what went wrong (e.g., that a tool returned an error or a path was invalid), and ask how they want to proceed. Do NOT claim success under any circumstances!\n"
-            "2. If everything was successful and no errors occurred, summarize the actions you performed (in details) and tell the user that everything is successfully saved in their storage."
-        )
-        payload = {
-            "model": MCP_MODEL,
-            "messages": [
-                {"role": "system", "content": summary_prompt}
-            ],
-            "stream": False,
-            "options": {"temperature": 0.5}
-        }
-        logging.info("[MCP] Generating dynamic human response via LLM...")
-        summary_data = await llm_request(payload)
-        if summary_data and "message" in summary_data:
-            final_output = summary_data["message"]["content"].strip()
-            
-        # Safe fallback if API request failed
-        if not final_output:
-            if tool_errors:
-                final_output = f"Произошла ошибка при выполнении операции:\n" + "\n".join(f"- {err}" for err in tool_errors)
-            elif changed_files:
-                files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
-                final_output = f"Операция завершена. Изменённые файлы: {files_str}."
-            else:
-                final_output = "Операция завершена."
+    summary_prompt = (
+        "You are a helpful file system assistant. The requested file system operations have finished.\n"
+        f"User's request was: '{clean_message}'\n"
+        f"Execution status: {'SUCCESS' if success else 'FAILED'}\n"
+        f"{error_context}\n"
+        f"{files_context}\n\n"
+        "Write a short, friendly, and natural conversational response in Russian.\n"
+        "INSTRUCTIONS:\n"
+        "1. If the execution failed (FAILED status), you MUST clearly, politely, and explicitly explain the error to the user in Russian, state exactly what went wrong, and ask how they want to proceed. Do NOT claim success under any circumstances!\n"
+        "2. If everything was successful (SUCCESS status), summarize the actions you performed (in detail) and tell the user that everything is successfully saved in their storage.\n"
+        "3. NEVER use generic templates or hardcoded phrases. Make the response highly context-specific, warm, and professional."
+    )
+    payload = {
+        "model": MCP_MODEL,
+        "messages": [
+            {"role": "system", "content": summary_prompt}
+        ],
+        "stream": False,
+        "options": {"temperature": 0.5}
+    }
+    logging.info("[MCP] Generating dynamic human response via LLM...")
+    final_output = ""
+    summary_data = await llm_request(payload)
+    if summary_data and "message" in summary_data:
+        final_output = summary_data["message"]["content"].strip()
+        
+    # Safe technical fallback (strictly minimal and technical, no hardcoded conversational Russian text!)
+    if not final_output:
+        if not success:
+            final_output = f"Error: {tool_error_msg}"
+        elif changed_files:
+            final_output = f"Success. Modified files: {changed_files}"
+        else:
+            final_output = "Completed successfully."
 
     # Build changed files objects
     changed_objects = []
