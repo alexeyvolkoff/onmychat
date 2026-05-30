@@ -574,13 +574,14 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
         def escape_xml(s) -> str:
             if s is None:
                 return ""
-            return (
+            escaped = (
                 str(s).replace("&", "&amp;")
                       .replace("<", "&lt;")
                       .replace(">", "&gt;")
                       .replace('"', "&quot;")
                       .replace("'", "&apos;")
             )
+            return escaped.replace("\n", "<text:line-break/>")
             
         
         # Perform replacements on main files
@@ -629,13 +630,23 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                         f_xml.write(content)
                         
         # Repack everything securely into a new ODT zip container
+        # Note: According to ODF specifications, the 'mimetype' file MUST be the first file in the ZIP archive
+        # and MUST be stored uncompressed (ZIP_STORED) to ensure office suites recognize it and load native styling.
         output_local_odt = os.path.join(temp_dir, "temp_out.odt")
-        with zipfile.ZipFile(output_local_odt, 'w', zipfile.ZIP_DEFLATED) as z_out:
+        with zipfile.ZipFile(output_local_odt, 'w') as z_out:
+            # 1. mimetype MUST be the very first file and stored uncompressed
+            mimetype_path = os.path.join(extract_dir, "mimetype")
+            if os.path.exists(mimetype_path):
+                z_out.write(mimetype_path, "mimetype", compress_type=zipfile.ZIP_STORED)
+                
+            # 2. All other files compressed
             for root, _, files in os.walk(extract_dir):
                 for file in files:
                     full_filepath = os.path.join(root, file)
                     relative_path = os.path.relpath(full_filepath, extract_dir)
-                    z_out.write(full_filepath, relative_path)
+                    if relative_path == "mimetype":
+                        continue
+                    z_out.write(full_filepath, relative_path, compress_type=zipfile.ZIP_DEFLATED)
                     
         # Read the generated modified ODT raw bytes
         with open(output_local_odt, "rb") as f_out:
