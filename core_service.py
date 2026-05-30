@@ -1228,6 +1228,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     for turn in range(max_turns):
         # Keep status as 'performing' throughout the turns
         yield {"type": "status", "content": "performing"}
+        logging.info(f"[DEBUG check_and_execute_mcp] Start Turn {turn}. Todos count: {len(todos)}")
         
         # Determine if reading is required dynamically based on the agent's own planned checklist steps (fully multilingual)
         requires_read = any("read_omd_file" in str(t.get("content", "")) or "read_odt_placeholders" in str(t.get("content", "")) for t in todos) if todos else False
@@ -1300,6 +1301,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             }
         }
         
+        logging.info(f"[DEBUG check_and_execute_mcp] About to call llm_request for Turn {turn}. Model: {MCP_MODEL}")
         response_data = await llm_request(payload)
         if not response_data or "message" not in response_data:
             break
