@@ -478,7 +478,10 @@ async def read_odt_placeholders(ctx: UserContext, path: str) -> str:
                         content = f_xml.read()
                         found = re.findall(r"\{\{([^}]+)\}\}", content)
                         for item in found:
-                            placeholders.add(item.strip())
+                            # Strip formatting XML tags inside the placeholder to get a clean name
+                            clean_item = re.sub(r'<[^>]+>', '', item).strip()
+                            if clean_item:
+                                placeholders.add(clean_item)
                             
         # Clean up temporary directory
         if os.path.exists(temp_dir):
@@ -537,6 +540,7 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
             secure_extract_zip(z, extract_dir)
             
         # Validate replacements keys against actual placeholders
+        # Validate replacements keys against actual placeholders (warning/logging only to allow custom replacements)
         actual_placeholders = set()
         for xml_name in ["content.xml", "styles.xml", "meta.xml"]:
             xml_path = os.path.join(extract_dir, xml_name)
@@ -545,24 +549,12 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                     xml_content = f_xml.read()
                     found = re.findall(r"\{\{([^}]+)\}\}", xml_content)
                     for item in found:
-                        actual_placeholders.add(item.strip())
-                        
+                        clean_item = re.sub(r'<[^>]+>', '', item).strip()
+                        if clean_item:
+                            actual_placeholders.add(clean_item)
+                            
         if actual_placeholders:
-            invalid_keys = []
-            for key in replacements.keys():
-                k_str = str(key).strip()
-                if k_str.startswith("{{") and k_str.endswith("}}"):
-                    clean_key = k_str[2:-2].strip()
-                else:
-                    clean_key = k_str
-                
-                if clean_key not in actual_placeholders:
-                    invalid_keys.append(k_str)
-                    
-            if invalid_keys:
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                return f"Error: The replacements dictionary contains keys that do not exist in the template placeholders: {invalid_keys}. Available placeholders in this template are: {sorted(list(actual_placeholders))}. You are strictly forbidden from inventing replacement keys. Only use placeholders returned by read_odt_placeholders."
+            logging.info(f"[ODT] Discovered placeholders in template: {sorted(list(actual_placeholders))}")
             
         # XML-escape helpers to avoid breaking target XML markup (equivalent to invoice.py)
         def escape_xml(s) -> str:
@@ -595,14 +587,24 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                     else:
                         clean_key = k_str
                         
-                    # Try to replace as a braced placeholder: {{clean_key}} or {{ clean_key }}
-                    placeholder_pattern = r"\{\{\s*" + re.escape(clean_key) + r"\s*\}\}"
-                    new_content, count = re.subn(placeholder_pattern, escaped_val, content)
-                    if count > 0:
+                    # Advanced Formatting-Tolerant braced replacement:
+                    # We find all occurrences of {{...}} and match their text contents.
+                    # We then strip any XML formatting/styling tags inside to check if it matches clean_key.
+                    # If it matches, we substitute the entire {{...}} block (including formatting) with our value.
+                    def replace_braced(match):
+                        raw_block = match.group(0) # e.g. {{<text:span>customer_name</text:span>}}
+                        inner_content = match.group(1) # e.g. <text:span>customer_name</text:span>
+                        clean_inner = re.sub(r'<[^>]+>', '', inner_content).strip()
+                        if clean_inner == clean_key:
+                            return escaped_val
+                        return raw_block
+                        
+                    new_content = re.sub(r'\{\{([^}]+)\}\}', replace_braced, content)
+                    if new_content != content:
                         content = new_content
                         modified = True
                     else:
-                        # Fallback: Literal search-and-replace of the original key
+                        # Fallback: Literal search-and-replace of the original key string
                         if k_str in content:
                             content = content.replace(k_str, escaped_val)
                             modified = True
