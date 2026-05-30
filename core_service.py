@@ -1006,6 +1006,56 @@ def clean_final_content(text: str) -> str:
     
     return text.strip()
 
+def clean_mimetype(filename: str, raw_mimetype: str = None) -> str:
+    """
+    Cleans and formats mimetype to be strictly compatible with the OnMyDisk frontend flat-file icon assets.
+    Replaces '/' with '-' and applies correct custom mappings for common formats.
+    """
+    import mimetypes
+    
+    # If raw_mimetype is a valid specific type, normalize it
+    if raw_mimetype and raw_mimetype not in ['unknown', 'application/octet-stream', 'application/x-zerosize', '']:
+        return str(raw_mimetype).replace('/', '-')
+        
+    ext = os.path.splitext(filename)[1].lstrip('.').lower()
+    
+    # Try guessing with Python's library first
+    mime_type, _ = mimetypes.guess_type(filename)
+    if not mime_type:
+        # Fallback map for common file types that might not be registered in system's mimetypes
+        fallback_map = {
+            'odt': 'application-vnd.oasis.opendocument.text',
+            'ods': 'application-vnd.oasis.opendocument.spreadsheet',
+            'odp': 'application-vnd.oasis.opendocument.presentation',
+            'md': 'text-x-markdown',
+            'sql': 'application-sql',
+            'xml': 'application-xml',
+            'json': 'application-json',
+            'php': 'application-x-php',
+            'py': 'application-x-python',
+            'js': 'application-x-javascript',
+            'css': 'text-css',
+            'txt': 'text-plain',
+            'pdf': 'application-pdf',
+            'docx': 'application-vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xlsx': 'application-vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'pptx': 'application-vnd.openxmlformats-officedocument.presentationml.presentation',
+        }
+        mime_type = fallback_map.get(ext, 'unknown')
+        
+    return mime_type.replace('/', '-') if mime_type else 'unknown'
+
+def clean_assistant_response(text: str) -> str:
+    """
+    Cleans final assistant message without stripping numbered lists, bullet points, or steps.
+    """
+    if not text:
+        return ""
+    # Remove any debug/agent labels
+    text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
+    return text.strip()
+
 async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history: list|None = None) -> AsyncGenerator[dict, None]:
     if ctx.settings.get("nsfw", False):
         return
@@ -1648,49 +1698,43 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
          }
          
     # Clean the final assistant message
-    final_output = clean_final_content(last_content)
+    final_output = clean_assistant_response(last_content)
     if not final_output:
-        if changed_files:
-            files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
-            final_output = f"Готово! Я успешно выполнил операцию и сохранил изменённый документ {files_str} в вашем хранилище OnMyDisk."
-        elif not has_read_file and requires_read:
-            final_output = "Я смог определить путь к файлу, но столкнулся с трудностью при чтении его содержимого. Пожалуйста, убедитесь, что файл доступен и у меня есть к нему права доступа."
-        else:
-            final_output = "Я успешно завершил все запланированные действия с файлами по вашему запросу."
+        # Let the LLM generate a natural, conversational response based on what was achieved!
+        summary_prompt = (
+            "You are a helpful file system assistant. The requested file system operations have finished.\n"
+            f"User's request was: '{clean_message}'\n"
+            f"Files modified/created: {changed_files}\n"
+            f"Active storage root: '{ctx.storage if ctx else ''}'\n"
+            "Write a short, friendly, and natural conversational response in Russian "
+            "summarizing the actions you performed (in details) and telling the user that everything is successfully saved in their storage."
+        )
+        payload = {
+            "model": MCP_MODEL,
+            "messages": [
+                {"role": "system", "content": summary_prompt}
+            ],
+            "stream": False,
+            "options": {"temperature": 0.5}
+        }
+        logging.info("[MCP] Generating dynamic human response via LLM...")
+        summary_data = await llm_request(payload)
+        if summary_data and "message" in summary_data:
+            final_output = summary_data["message"]["content"].strip()
+            
+        # Safe fallback if API request failed
+        if not final_output:
+            if changed_files:
+                files_str = ", ".join(f"'{os.path.basename(f)}'" for f in changed_files)
+                final_output = f"Готово! Я успешно выполнил операцию и сохранил изменённый документ {files_str} в вашем хранилище OnMyDisk."
+            else:
+                final_output = "Я успешно завершил все запланированные действия с файлами по вашему запросу."
 
     # Build changed files objects
     changed_objects = []
-    import mimetypes
     for path in changed_files:
         filename = os.path.basename(path)
-        ext = os.path.splitext(path)[1].lstrip('.').lower()
-        
-        # Determine the real mimetype accepted by the OnMyDisk frontend
-        mime_type, _ = mimetypes.guess_type(filename)
-        if not mime_type:
-            # Fallback map for common file types
-            fallback_map = {
-                'odt': 'application-vnd.oasis.opendocument.text',
-                'ods': 'application-vnd.oasis.opendocument.spreadsheet',
-                'odp': 'application-vnd.oasis.opendocument.presentation',
-                'md': 'text-x-markdown',
-                'sql': 'application-sql',
-                'xml': 'application-xml',
-                'json': 'application-json',
-                'php': 'application-x-php',
-                'py': 'application-x-python',
-                'js': 'application-x-javascript',
-                'css': 'text-css',
-                'txt': 'text-plain',
-                'pdf': 'application-pdf',
-                'docx': 'application-vnd.openxmlformats-officedocument.wordprocessingml.document',
-                'xlsx': 'application-vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'pptx': 'application-vnd.openxmlformats-officedocument.presentationml.presentation',
-            }
-            mime_type = fallback_map.get(ext, 'unknown')
-            
-        # Slashes are replaced with dashes in the OnMyDisk frontend to match flat icon assets
-        mimetype = mime_type.replace('/', '-') if mime_type else 'unknown'
+        mimetype = clean_mimetype(filename)
         
         changed_objects.append({
             "title": filename,
@@ -2118,7 +2162,7 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                         mimetype = result.get("mimetype") or data.get("mimetype")
                         
                         if success and mimetype:
-                            metadata["mimetype"] = mimetype
+                            metadata["mimetype"] = clean_mimetype(item_path, mimetype)
                             metadata["clickable"] = True
                             return metadata
             except Exception as e:
@@ -2142,7 +2186,7 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                     mimetype = result.get("mimetype") or data.get("mimetype")
                     
                     if success and mimetype:
-                        metadata["mimetype"] = mimetype
+                        metadata["mimetype"] = clean_mimetype(item_path, mimetype)
                         metadata["clickable"] = True
                         return metadata
         except Exception as e:
