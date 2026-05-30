@@ -2531,21 +2531,47 @@ async def llm_request_stream(payload: dict, headers: dict = None):
 
 
 async def llm_request(payload: dict, headers: dict = None):
+    model = payload.get("model", "unknown")
+    messages = payload.get("messages", [])
+    tools = [t.get("function", {}).get("name") for t in payload.get("tools", [])] if payload.get("tools") else []
+    
+    last_msg = messages[-1].get("content", "") if messages else ""
+    if len(last_msg) > 300:
+        last_msg = last_msg[:300] + "..."
+        
+    logging.info(f"\n[LLM REQUEST START] Model: '{model}' | Messages: {len(messages)} | Tools: {tools}\nLast Message Content:\n{last_msg}\n")
+    
+    start_time = time.time()
     try:
-        async with aiohttp.ClientSession() as session:
+        # 120-second safety timeout to prevent infinite client hangs if Ollama freezes
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"{OLLAMA_URL}/api/chat",
                 headers=headers or {"Content-Type": "application/json"},
                 json=payload
             ) as resp:
+                duration = time.time() - start_time
+                logging.info(f"[LLM REQUEST RESPONDED] Status: {resp.status} | Time Taken: {duration:.2f}s")
+                
                 if "application/json" in resp.headers.get("Content-Type", "").lower():
-                    return await resp.json()
+                    result = await resp.json()
+                    msg = result.get("message", {})
+                    response_text = msg.get("content", "").strip()
+                    tool_calls = msg.get("tool_calls", [])
+                    
+                    log_res = f"Text: {response_text[:300]}..." if response_text else ""
+                    if tool_calls:
+                        log_res += f" | Tool Calls: {tool_calls}"
+                    logging.info(f"[LLM REQUEST SUCCESS] Response: {log_res}")
+                    return result
                 else:
                     text = await resp.text()
                     logging.error(f"LLM error: Unexpected content type {resp.headers.get('Content-Type')}. Body: {text[:200]}")
                     return None
     except Exception as e:
-        logging.error(f"LLM request exception: {e}")
+        duration = time.time() - start_time
+        logging.error(f"LLM request exception after {duration:.2f}s: {e}")
         return None
 
 
