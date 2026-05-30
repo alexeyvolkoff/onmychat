@@ -468,7 +468,7 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
         ):
             logging.info(f"loading memories from OMD {ctx.storage}")
             url = f"{GATEWAY_URL}/{ctx.storage}/memory.jsonl?nocache={int(time.time())}"
-            headers = {"Authorization": f"Bearer {ctx.omd_key}"}
+            headers = {"Authorization": f"token:{ctx.omd_key}"}
             resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200 and resp.content.strip():
                 text = resp.content.decode("utf-8")
@@ -582,7 +582,7 @@ async def fetch_document_text(url: str, token: str = None) -> str:
     # Token via Authorization header only — never append to URL
     req_headers = {}
     if token:
-        req_headers["Authorization"] = f"Bearer {token}"
+        req_headers["Authorization"] = f"token:{token}"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=req_headers, timeout=15) as resp:
