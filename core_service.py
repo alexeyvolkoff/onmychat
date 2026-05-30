@@ -495,6 +495,16 @@ async def read_odt_placeholders(ctx: UserContext, path: str) -> str:
     except PermissionError as se:
         logging.error(f"Security error in read_odt_placeholders: {se}")
         return f"Security Error: {se}"
+    except zipfile.BadZipFile:
+        logging.error(f"read_odt_placeholders: BadZipFile for path '{path}' — server returned non-ODT content (possibly 404 HTML).")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return (
+            f"Error: The file at '{path}' could not be opened as an ODT document (it is not a valid ZIP/ODT file). "
+            f"This usually means the file does not exist at that path, or the path is wrong. "
+            f"Check that the path exactly matches what the user specified and that the file exists in their storage. "
+            f"Do NOT retry with a guessed or modified filename."
+        )
     except Exception as e:
         logging.error(f"Error in read_odt_placeholders: {e}", exc_info=True)
         return f"Error reading placeholders: {e}"
@@ -1165,7 +1175,22 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         # Check if any path looks like a specific file with an extension
         files = [p for p in potential_paths if any(p.lower().endswith(ext) for ext in [".odt", ".pdf", ".txt", ".docx", ".csv", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".html", ".css", ".js", ".cpp", ".py"])]
         if files:
-            path_hint = f"\nSYSTEM HINT: Detected exact file paths: {', '.join(files)}. \nSTRATEGY: Access/read these files directly using appropriate tools (e.g. `read_odt_placeholders` or `read_omd_file`). Do NOT use `list_omd_files` if you already know the exact file path."
+            odt_files = [f for f in files if f.lower().endswith(".odt")]
+            other_files = [f for f in files if not f.lower().endswith(".odt")]
+            
+            if odt_files:
+                # ODT paths are MANDATORY — model must not invent or alter them
+                mandatory_block = (
+                    f"\n\nMANDATORY PATH LOCK: The user explicitly provided the following ODT file path(s) in their request: "
+                    f"{', '.join(odt_files)}. "
+                    f"You MUST use EXACTLY these path(s) character-by-character. "
+                    f"Do NOT invent, guess, abbreviate, or modify the filename in any way. "
+                    f"Passing any other path to read_odt_placeholders or modify_odt_file is strictly forbidden."
+                )
+                path_hint += mandatory_block
+            
+            if other_files:
+                path_hint += f"\nSYSTEM HINT: Detected exact file paths: {', '.join(other_files)}. Access/read these files directly using appropriate tools. Do NOT use `list_omd_files` if you already know the exact file path."
         else:
             path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
 
@@ -1915,7 +1940,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             {"role": "system", "content": f"{BASE_SYSTEM_PROMPT}\n\n{summary_prompt}"}
         ],
         "stream": False,
-        "options": {"temperature": 0.7}
+        "options": {"temperature": 0.5}
     }
     logging.info("[MCP] Generating dynamic human response via LLM...")
     final_output = ""
