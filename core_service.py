@@ -1192,8 +1192,24 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
         # Determine if reading is required dynamically based on the agent's own planned checklist steps (fully multilingual)
         requires_read = any("read_omd_file" in str(t.get("content", "")) or "read_odt_placeholders" in str(t.get("content", "")) for t in todos) if todos else False
 
+        # Check if read_odt_placeholders was successfully called and extract its output
+        discovered_placeholders_str = ""
+        for m in reversed(messages):
+            if m.get("role") == "tool":
+                content_str = m.get("content", "").strip()
+                if content_str.startswith("[") and content_str.endswith("]"):
+                    try:
+                        parsed = json.loads(content_str)
+                        if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                            discovered_placeholders_str = ", ".join(f"'{x}'" for x in parsed)
+                            break
+                    except Exception:
+                        pass
+
         # [TURN-SPECIFIC GUIDANCE]
         guidance = "You are an autonomous agent. "
+        if discovered_placeholders_str:
+             guidance += f"CRITICAL ODT TEMPLATE REMINDER: The template you are modifying has EXACTLY these placeholders: [{discovered_placeholders_str}]. Your `replacements` dictionary for `modify_odt_file` MUST ONLY use keys from this list. Do NOT use any other keys under any circumstances. Map all required document content specifically into these placeholders! "
         # [PROACTIVE DISCOVERY GATE]
         # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
         available_tools = MCP_TOOLS
