@@ -1439,16 +1439,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             # [STUCK/EMPTY RESPONSE RECOVERY FOR ODT]
             # If we successfully read placeholders but have not called modify_odt_file yet, 
             # and the model is stuck/returned an empty response, we force it to proceed.
-            has_read_placeholders = any(
-                "read_odt_placeholders" in str(m.get("content", "")) or 
-                (isinstance(m.get("tool_calls"), list) and any(tc.get("function", {}).get("name") == "read_odt_placeholders" for tc in m["tool_calls"]))
-                for m in messages
-            )
-            has_modified_odt = any(
-                "modify_odt_file" in str(m.get("content", "")) or 
-                (isinstance(m.get("tool_calls"), list) and any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in m["tool_calls"]))
-                for m in messages
-            )
+            has_read_placeholders = "Tool Output (read_odt_placeholders):" in all_tool_results
+            has_modified_odt = "Tool Output (modify_odt_file):" in all_tool_results
             
             if has_read_placeholders and not has_modified_odt and turn < max_turns - 1:
                 p_list_str = discovered_placeholders_str if discovered_placeholders_str else "content, title"
