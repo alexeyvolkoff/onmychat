@@ -1265,6 +1265,27 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                        else:
                             logging.info("[MCP] Agent PLAN does NOT include data tool (user intent will override if needed).")
 
+             # [ODT WORKFLOW NUDGE]
+             # If we have run read_odt_placeholders but have not yet run modify_odt_file,
+             # we MUST ensure the model proceeds to modify the document and does not prematurely stop or output text.
+             has_read_placeholders = "read_odt_placeholders" in all_tool_results
+             has_modified_odt = "modify_odt_file" in all_tool_results
+             is_modifying_now = any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in tool_calls) if tool_calls else False
+             
+             if has_read_placeholders and not has_modified_odt and not is_modifying_now:
+                  messages.append({
+                      "role": "user", 
+                      "content": (
+                          "Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet! "
+                          "You MUST now calculate the required replacement values and execute `modify_odt_file` to generate the final document. "
+                          "Do NOT output markdown invoice templates, text representations, or explanations. You MUST call `modify_odt_file` to save the document."
+                      )
+                  })
+                  logging.warning(f"[MCP][Turn {turn+1}] Placeholders read but modify_odt_file not called. Injecting ODT Workflow Nudge.")
+                  tool_calls = []
+                  msg["tool_calls"] = []
+                  continue
+
              # [CONTINUITY NUDGE]
              # Fire if discovery tools were used but read wasn't, and USER'S request implies reading.
              has_discovered = "list_omd_files" in all_tool_results or "find_omd_file" in all_tool_results
