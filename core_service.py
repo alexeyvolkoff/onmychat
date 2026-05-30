@@ -1885,10 +1885,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     payload = {
         "model": MCP_MODEL,
         "messages": [
-            {"role": "system", "content": summary_prompt}
+            {"role": "system", "content": f"{BASE_SYSTEM_PROMPT}\n\n{summary_prompt}"}
         ],
         "stream": False,
-        "options": {"temperature": 0.5}
+        "options": {"temperature": 0.7}
     }
     logging.info("[MCP] Generating dynamic human response via LLM...")
     final_output = ""
