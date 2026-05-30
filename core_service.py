@@ -1327,7 +1327,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
             for m in messages
         )
         
-        if not already_nudged and has_read_placeholders and not has_modified_odt and not is_modifying_now:
+        # Determine if the user request actually intends/plans to modify the document based on the planner's todos
+        was_write_planned = any("modify_odt_file" in str(t.get("content", "")) or "write_omd_file" in str(t.get("content", "")) for t in todos) if todos else False
+        
+        if was_write_planned and not already_nudged and has_read_placeholders and not has_modified_odt and not is_modifying_now:
               messages.append({
                   "role": "user", 
                   "content": (
