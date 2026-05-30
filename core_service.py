@@ -1424,13 +1424,29 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
              # The user's intent (set at the start) is the source of truth.
              if turn == 0:
                   # [PLANNING GATE]
-                  # If Turn 0 has a tool call but MISSES the [PLAN] checklist, we intercept.
-                  if tool_calls and ("[PLAN]" not in agent_text and "checklist" not in agent_text.lower()):
-                       logging.warning("[MCP] Turn 0: Model skipped [PLAN]. Intercepting tool call.")
-                       messages.append({"role": "user", "content": "Wait! You MUST provide a detailed `[PLAN]` checklist in and call your first tool Turn 0. Redo your response with a [PLAN]."})
-                       # Forget the tool calls for this turn
+                  # Enforce that a detailed [PLAN] is created and tools are called in Turn 0
+                  has_plan_text = "[PLAN]" in agent_text or "checklist" in agent_text.lower() or len(todos) > 0
+                  
+                  if not has_plan_text or not tool_calls:
+                       logging.warning(f"[MCP] Turn 0 PLANNING GATE trigger: has_plan={has_plan_text}, has_tool_calls={bool(tool_calls)}. Intercepting.")
+                       
+                       if not has_plan_text and not tool_calls:
+                            refusal_msg = (
+                                 "Wait! You did NOT provide a detailed `[PLAN]` checklist or call any tools! "
+                                 "To fulfill the request, you MUST start your response with a detailed `[PLAN]` checklist "
+                                 "describing each step (using tool_name in parentheses) and execute the first tool call "
+                                 "(e.g., `read_odt_placeholders` or `list_omd_files`) immediately in Turn 0. "
+                                 "Do NOT output raw JSON data, markdown templates, or conversational text. Redo your response now."
+                            )
+                       elif not has_plan_text:
+                            refusal_msg = "Wait! You called a tool but skipped the mandatory `[PLAN]` checklist in Turn 0. Redo your response including a detailed `[PLAN]` checklist."
+                       else:
+                            refusal_msg = "Wait! You provided a plan but did NOT call your first tool in Turn 0. You MUST execute the first tool call of your plan immediately in Turn 0."
+                            
+                       messages.append({"role": "user", "content": refusal_msg})
                        tool_calls = []
                        msg["tool_calls"] = []
+                       continue
                   else:
                        # Log whether the agent's plan includes read tools (for debugging)
                        data_tools = ["read_omd_file", "search_memory", "search_web"]
