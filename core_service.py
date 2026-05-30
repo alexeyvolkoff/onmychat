@@ -300,6 +300,28 @@ MCP_TOOLS = [
 ]
 
 # === MCP TOOLS ===
+def validate_omd_path(ctx: UserContext, path: str):
+    from typing import Optional
+    if not ctx or not ctx.storage:
+        return None
+        
+    storage_id = ctx.storage.strip("/")
+    if not storage_id:
+        return None
+        
+    storage_root = storage_id.split("/")[0] if "/" in storage_id else storage_id
+    storage_root_with_slash = "/" + storage_root
+    
+    path_str = str(path).strip()
+    if not path_str.startswith("/"):
+        path_str = "/" + path_str
+        
+    # Check prefix
+    if path_str == storage_root_with_slash or path_str.startswith(storage_root_with_slash + "/"):
+        return None
+        
+    return f"Error: Path '{path}' must start with your active storage root: '{storage_root_with_slash}'."
+
 async def find_omd_file(ctx: UserContext, root_directory: str, condition: str) -> str:
     # 1. List files
     listing = await list_omd_files(ctx, root_directory)
@@ -422,6 +444,10 @@ async def read_odt_placeholders(ctx: UserContext, path: str) -> str:
     if not ctx.omd_key or not ctx.storage:
         return "Error: OMD storage not linked."
         
+    path_err = validate_omd_path(ctx, path)
+    if path_err:
+        return path_err
+        
     try:
         file_bytes = await download_omd_file(ctx, path)
         
@@ -481,6 +507,14 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
     if not replacements:
         return "Error: Replacements dictionary is empty."
         
+    path_err1 = validate_omd_path(ctx, template_path)
+    if path_err1:
+        return path_err1
+        
+    path_err2 = validate_omd_path(ctx, output_path)
+    if path_err2:
+        return path_err2
+        
     try:
         file_bytes = await download_omd_file(ctx, template_path)
         
@@ -501,6 +535,34 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
         with zipfile.ZipFile(local_odt_path, 'r') as z:
             # Secure unzipping with Zip Slip defense
             secure_extract_zip(z, extract_dir)
+            
+        # Validate replacements keys against actual placeholders
+        actual_placeholders = set()
+        for xml_name in ["content.xml", "styles.xml", "meta.xml"]:
+            xml_path = os.path.join(extract_dir, xml_name)
+            if os.path.exists(xml_path):
+                with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
+                    xml_content = f_xml.read()
+                    found = re.findall(r"\{\{([^}]+)\}\}", xml_content)
+                    for item in found:
+                        actual_placeholders.add(item.strip())
+                        
+        if actual_placeholders:
+            invalid_keys = []
+            for key in replacements.keys():
+                k_str = str(key).strip()
+                if k_str.startswith("{{") and k_str.endswith("}}"):
+                    clean_key = k_str[2:-2].strip()
+                else:
+                    clean_key = k_str
+                
+                if clean_key not in actual_placeholders:
+                    invalid_keys.append(k_str)
+                    
+            if invalid_keys:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                return f"Error: The replacements dictionary contains keys that do not exist in the template placeholders: {invalid_keys}. Available placeholders in this template are: {sorted(list(actual_placeholders))}. You are strictly forbidden from inventing replacement keys. Only use placeholders returned by read_odt_placeholders."
             
         # XML-escape helpers to avoid breaking target XML markup (equivalent to invoice.py)
         def escape_xml(s) -> str:
@@ -590,6 +652,10 @@ async def list_supported_tools(ctx: UserContext) -> str:
 async def list_omd_files(ctx: UserContext, path: str) -> str:
     if not ctx.omd_key or not ctx.storage:
         return "Error: OMD storage not linked."
+        
+    path_err = validate_omd_path(ctx, path)
+    if path_err:
+        return path_err
     
     try:
         storage_id = ctx.storage.strip("/")
@@ -687,6 +753,10 @@ async def list_omd_files(ctx: UserContext, path: str) -> str:
 async def read_omd_file(ctx: UserContext, path: str) -> str:
     if not ctx.omd_key or not ctx.storage:
         return "Error: OMD storage not linked."
+        
+    path_err = validate_omd_path(ctx, path)
+    if path_err:
+        return path_err
 
     try:
         storage_id = ctx.storage.strip("/")
@@ -759,6 +829,10 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
 async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
     if not ctx.omd_key or not ctx.storage:
         return "Error: OMD storage not linked."
+        
+    path_err = validate_omd_path(ctx, path)
+    if path_err:
+        return path_err
 
     try:
         from utils import upload_data_to_storage
@@ -936,11 +1010,35 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
     if ctx.settings.get("nsfw", False):
         return
         
+    # Clean the routing prefix / slash command from the beginning of the message to prevent LLM confusion
+    clean_message = message.strip()
+    for cmd in ["/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", "/chat", "/code", "/import"]:
+        if clean_message.lower().startswith(cmd) and (len(clean_message) == len(cmd) or clean_message[len(cmd)].isspace()):
+            clean_message = clean_message[len(cmd):].strip()
+            break
+            
     todos = []
     has_initialized_todos = False
     changed_files = []
     # 1. Path Extraction Heuristic (Help the model find the path)
-    potential_paths = re.findall(r"(\/[\w\-\.\/]+)", message)
+    raw_paths = re.findall(r"(\/[\w\-\.\/]+)", clean_message)
+    potential_paths = []
+    
+    # List of known slash commands to exclude from path detection
+    slash_commands = {
+        "/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", 
+        "/chat", "/code", "/import", "/show", "/view", "/imagine", "/learn", 
+        "/recognize", "/detect", "/think", "/explain", "/search", "/nsfw", "/tools"
+    }
+    
+    for p in raw_paths:
+        p_clean = p.strip()
+        if p_clean.lower() in slash_commands:
+            continue
+        if p_clean.count("/") == 1 and clean_message.strip().startswith(p_clean):
+            continue
+        potential_paths.append(p_clean)
+        
     path_hint = ""
     
     if potential_paths:
@@ -953,12 +1051,17 @@ async def check_and_execute_mcp(ctx: UserContext, message: str) -> AsyncGenerato
 
     # 2. Native Tool Call Loop (Multi-Turn)
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
+    if ctx and ctx.storage:
+        storage_id = ctx.storage.strip("/")
+        if storage_id:
+            storage_root = "/" + storage_id.split("/")[0] if "/" in storage_id else "/" + storage_id
+            system_instruction += f"\n\n- ACTIVE SESSION STORAGE ROOT: '{storage_root}'. All absolute paths you access, list, search inside, or write to MUST start with this root directory. Do NOT guess or use fake directories like '/OnMyDisk' or '/Linux-desktop'."
 
     # Initial Turn: Mandatory [PLAN] Phase
     # We use a more permissive system prompt for the planning turn.
     messages = [
         {"role": "system", "content": system_instruction},
-        {"role": "user", "content": f"User Request: {message}\n{path_hint}"}
+        {"role": "user", "content": f"User Request: {clean_message}\n{path_hint}"}
     ]
     
     all_tool_results = ""
