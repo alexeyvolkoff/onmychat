@@ -1737,7 +1737,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                   if not path_arg:
                       res = "Error: Missing required parameter 'template_path'. You must specify the absolute path to the ODT template file (e.g., '/MyDevice/Documents/my_template.odt')."
                   else:
+                      # [PATH HEALER] If the model hallucinated a path that doesn't match any ODT
+                      # explicitly provided in the user's prompt, auto-correct to the known template.
+                      # We only override if potential_paths has ODT files AND the model's path is NOT
+                      # one of them (i.e. the model invented something).
+                      known_odt_paths = [p for p in potential_paths if p.lower().endswith(".odt")]
+                      if known_odt_paths and path_arg not in known_odt_paths:
+                          # Prefer paths that look like templates (not output paths from the prompt)
+                          # Heuristic: output path usually ends with a user-named result file,
+                          # template path was explicitly quoted as the source in the user message
+                          corrected = known_odt_paths[0]
+                          logging.warning(
+                              f"[MCP PATH HEALER] read_odt_placeholders: model used hallucinated path "
+                              f"'{path_arg}' — auto-correcting to user-specified path '{corrected}'"
+                          )
+                          path_arg = corrected
                       res = await read_odt_placeholders(ctx, path_arg)
+
              elif name == "modify_odt_file":
                     template_path = (args.get("template_path") or args.get("path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
                     
