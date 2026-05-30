@@ -620,9 +620,10 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                         content = new_content
                         modified = True
                     else:
-                        # Fallback: Literal search-and-replace of the original key string
-                        if k_str in content:
-                            content = content.replace(k_str, escaped_val)
+                        # Fallback: Literal search-and-replace of the original key string wrapped in braces
+                        braced_key = k_str if (k_str.startswith("{{") and k_str.endswith("}}")) else f"{{{{{k_str}}}}}"
+                        if braced_key in content:
+                            content = content.replace(braced_key, escaped_val)
                             modified = True
                         
                 if modified:
