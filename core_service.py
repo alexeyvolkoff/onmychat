@@ -568,23 +568,7 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
                       .replace("'", "&apos;")
             )
             
-        # Proactive ODT replacements key healer/mapper (strictly generic, no hardcoded template words)
-        if actual_placeholders and not any(k in replacements for k in actual_placeholders):
-            # If none of the keys in replacements match the actual placeholders,
-            # we check if "content" is an actual placeholder and map everything to it generically
-            if "content" in actual_placeholders:
-                prose = ""
-                for k, v in replacements.items():
-                    clean_k = str(k).replace("_", " ").strip().title()
-                    prose += f"{clean_k}: {v}\n"
-                
-                healed_replacements = {"content": prose.strip()}
-                if "title" in actual_placeholders:
-                    healed_replacements["title"] = os.path.splitext(os.path.basename(output_path))[0].replace("_", " ").title()
-                
-                replacements = healed_replacements
-                logging.info(f"[ODT HEALER] Auto-mapped hallucinated replacements keys generically: {replacements}")
-                
+        
         # Perform replacements on main files
         xml_names = ["content.xml", "styles.xml", "meta.xml"]
         for name in xml_names:
@@ -1690,19 +1674,6 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
                            
                    output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
                    replacements = args.get("replacements", {})
-                   
-                   # Healer for replacements
-                   if not replacements:
-                        for call in list(call_history):
-                            if "read_odt_placeholders" in call:
-                                try:
-                                    args_str = call.split(":", 1)[1]
-                                    args_parsed = json.loads(args_str)
-                                    # Hypothetical: if we previously read keys, we might have them in memory
-                                    # This is a placeholder for logic that might exist in a more advanced healer
-                                    pass
-                                except:
-                                    pass
                    
                    res = await modify_odt_file(ctx, template_path, output_path, replacements)
                    if not res.startswith("Error") and not res.startswith("Exception"):
