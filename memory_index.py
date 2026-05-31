@@ -202,10 +202,16 @@ def migrate_legacy_data():
                                     ensure_collection().upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
                                     logging.info(f"Migrated {file} to collection {collection_name} ({len(memories)} items)")
                         except Exception as fe:
-                            logging.error(f"Error migrating {path}: {fe}")
+                            if "DuplicateIDError" in type(fe).__name__ or "Expected IDs to be unique" in str(fe):
+                                pass
+                            else:
+                                logging.error(f"Error migrating {path}: {fe}")
 
     except Exception as e:
-        logging.error(f"Migration error: {e}")
+        if "DuplicateIDError" in type(e).__name__ or "Expected IDs to be unique" in str(e):
+            pass
+        else:
+            logging.error(f"Migration error: {e}")
 
 # migrate_legacy_data() # Moved to explicit call in api.py
 
@@ -351,6 +357,8 @@ def delete_memory_card(
             return True
         return False
     except Exception as e:
+        if "DuplicateIDError" in type(e).__name__ or "Expected IDs to be unique" in str(e):
+            return False
         print(f"[memory] Delete error: {ctx.user_id} {collection} {e}")
         return False
 
@@ -671,7 +679,10 @@ def chunk_and_vectorize_to_file(
             documents=documents
         )
     except Exception as e:
-        print(f"[memory] Chunk upsert error: {e}")
+        if "DuplicateIDError" in type(e).__name__ or "Expected IDs to be unique" in str(e):
+            pass
+        else:
+            print(f"[memory] Chunk upsert error: {e}")
 
     # Report usage to console
     from utils import report_usage

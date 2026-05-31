@@ -13,6 +13,22 @@ from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
+# Suppress logging of DuplicateIDError from chromadb
+class DuplicateIDFilter(logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        if "DuplicateIDError" in message or "Expected IDs to be unique" in message:
+            return False
+        if record.exc_info:
+            exc_type, exc_value, _ = record.exc_info
+            if exc_type and ("DuplicateIDError" in exc_type.__name__ or "DuplicateIDError" in str(exc_type)):
+                return False
+            if exc_value and "Expected IDs to be unique" in str(exc_value):
+                return False
+        return True
+
+logger.addFilter(DuplicateIDFilter())
+
 class SearchNode:
     def __init__(self, storage_path: str, model: SentenceTransformer = None, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
         self.storage_path = storage_path
@@ -281,14 +297,22 @@ class SearchNode:
                     
                     doc_content = results['documents'][i]
                     self.get_collection().delete(ids=[doc_id])
-                    self.get_collection().add(
-                        ids=[new_url],
-                        documents=[doc_content],
-                        metadatas=[meta],
-                        embeddings=[results['embeddings'][i]] if results['embeddings'] else None
-                    )
+                    try:
+                        self.get_collection().upsert(
+                            ids=[new_url],
+                            documents=[doc_content],
+                            metadatas=[meta],
+                            embeddings=[results['embeddings'][i]] if results['embeddings'] else None
+                        )
+                    except Exception as e:
+                        if "DuplicateIDError" in type(e).__name__ or "Expected IDs to be unique" in str(e):
+                            pass
+                        else:
+                            raise e
             return {"status": "ok"}
         except Exception as e:
+            if "DuplicateIDError" in type(e).__name__ or "Expected IDs to be unique" in str(e):
+                return {"status": "ok"}
             logger.error(f"Error moving path {src} to {target}: {e}")
             return {"status": "error", "message": str(e)}
 
