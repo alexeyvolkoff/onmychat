@@ -1532,8 +1532,12 @@ def resolve_session_directory(directory: str) -> str:
     return os.path.join(home_dir, relative_path)
 
 @app.get("/code/sessions")
-async def proxy_opencode_sessions_list(request: Request):
+async def proxy_opencode_sessions_list(request: Request, directory: str = Query(None)):
     target_url = f"{core_service.CODE_BASE_URL}/session"
+    if directory:
+        import urllib.parse
+        query = urllib.parse.urlencode({"directory": directory})
+        target_url += f"?{query}"
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -1544,6 +1548,20 @@ async def proxy_opencode_sessions_list(request: Request):
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Error listing sessions: {e}")
         return {"sessions": []}
+
+@app.get("/code/projects")
+async def proxy_opencode_projects_list(request: Request):
+    target_url = f"{core_service.CODE_BASE_URL}/project"
+    session = await get_proxy_session()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    try:
+        async with session.get(target_url, headers=headers) as resp:
+            data = await resp.json()
+            return {"projects": data}
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error listing projects: {e}")
+        return {"projects": []}
 
 @app.post("/code/sessions")
 async def proxy_opencode_sessions_create(request: Request):
