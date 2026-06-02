@@ -617,6 +617,13 @@ async def cancel_session_task(session_id: str):
         if not task.done():
             task.cancel()
             logging.info(f"[OpenCode Proxy] Task for session {session_id} CANCELLED by user.")
+            # Give the task a moment to process cancellation
+            try:
+                await asyncio.wait_for(task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            return {"status": "cancelled"}
+        if task.cancelled():
             return {"status": "cancelled"}
         del active_tasks[session_id]
     return {"status": "no_active_task"}
@@ -1827,16 +1834,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         active_tool_parts = set()
                         
                         while True:
-                            # Break conditions:
-                            if post_task.done() and post_task.exception():
-                                logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
-                                break
-                                
                             now = asyncio.get_event_loop().time()
                             idle_time = now - last_event_time
                             
                             # CRITICAL: We trust the background POST task as the definitive signal for termination.
                             if post_task.done():
+                                if post_task.cancelled():
+                                    logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
+                                    break
                                 if post_task.exception():
                                     logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
                                     break
@@ -2083,7 +2088,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     except asyncio.CancelledError:
                         pass
                 if str(session_id) in active_tasks:
-                    del active_tasks[str(session_id)]
+                    task = active_tasks.pop(str(session_id), None)
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
                 # Clean up any pending question entry for this session
                 _pending_questions.pop(str(session_id), None)
         
