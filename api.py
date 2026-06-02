@@ -22,10 +22,13 @@ import user_context
 # Create a global session for proxying to avoid socket exhaustion
 _proxy_session = None
 
-# Track pending questions per OpenCode session: session_id -> requestID
+# Track pending questions per OpenCode session.
 # Populated when a question.asked SSE event arrives; consumed when the
-# user's answer hits proxy_opencode_prompt as a duplicate POST.
-_pending_questions: dict[str, str] = {}
+# user's answer arrives via a separate POST. The SSE loop itself picks up
+# the answer and proxies it to /question/{requestID}/reply, keeping the
+# original SSE stream alive throughout.
+# Structure: { session_id: { "requestID": str, "answer": str | None } }
+_pending_questions: dict[str, dict] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -1659,25 +1662,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         session = await get_proxy_session()
         
         # PENDING QUESTION CHECK: If there is a question awaiting an answer for
-        # this session, redirect the answer POST to /question/{requestID}/reply
-        # instead of creating a duplicate session message.
-        pending_rid = _pending_questions.get(str(session_id))
-        if pending_rid:
+        # this session, place the answer in the shared dict so the SSE loop
+        # (which is still alive for the original prompt) can pick it up and
+        # proxy it to /question/{requestID}/reply.
+        pending_entry = _pending_questions.get(str(session_id))
+        if pending_entry:
             answer = prompt_text.strip()
             if answer:
-                reply_url = f"{core_service.CODE_BASE_URL}/question/{pending_rid}/reply"
-                logging.info(f"[OpenCode Proxy] Redirecting answer to {reply_url}: {answer[:80]}")
-                async with session.post(reply_url, json={"answer": answer}) as resp:
-                    if resp.status != 200:
-                        err_text = await resp.text()
-                        logging.error(f"[OpenCode Proxy] Question reply failed: {err_text}")
-                        raise HTTPException(status_code=500, detail=f"Question reply failed: {resp.status}")
-                    result = await resp.json()
-                    logging.info(f"[OpenCode Proxy] Question replied successfully: {result}")
-                _pending_questions.pop(str(session_id), None)
-            else:
-                # Empty answer — just clean up
-                _pending_questions.pop(str(session_id), None)
+                pending_entry["answer"] = answer
+                logging.info(f"[OpenCode Proxy] Answer queued for session {session_id}: {answer[:80]}")
             # Return a minimal SSE stream that immediately completes so the
             # frontend's chatStream promise resolves cleanly.
             async def _question_done():
@@ -1892,26 +1885,33 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         
                                         # QUESTION EVENTS (global bus, no sessionID — handle before the authorized_sids gate)
                                         if event_type == "question.asked":
-                                            req_id = props.get("requestID")
+                                            req_id = props.get("id")
                                             if req_id:
-                                                _pending_questions[str(session_id)] = req_id
-                                                logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: requestID={req_id}")
-                                                q_text = props.get("question", "")
-                                                q_opts = props.get("options", [])
+                                                _pending_questions[str(session_id)] = {
+                                                    "requestID": req_id,
+                                                    "answer": None,
+                                                }
+                                                logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}")
+                                                questions_arr = props.get("questions", [])
+                                                first = questions_arr[0] if questions_arr else {}
+                                                q_text = first.get("question", "")
+                                                q_opts = first.get("options", [])
                                                 yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
                                                 terminal_event_received = False
                                             continue
                                         
                                         if event_type == "question.replied":
                                             req_id = props.get("requestID")
-                                            if req_id and _pending_questions.get(str(session_id)) == req_id:
+                                            entry = _pending_questions.get(str(session_id))
+                                            if entry and entry.get("requestID") == req_id:
                                                 _pending_questions.pop(str(session_id), None)
                                                 logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
                                             continue
                                         
                                         if event_type == "question.rejected":
                                             req_id = props.get("requestID")
-                                            if req_id and _pending_questions.get(str(session_id)) == req_id:
+                                            entry = _pending_questions.get(str(session_id))
+                                            if entry and entry.get("requestID") == req_id:
                                                 _pending_questions.pop(str(session_id), None)
                                                 logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
                                             continue
@@ -2043,6 +2043,32 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 logging.error(f"[OpenCode Proxy] Error in event loop: {loop_e}")
                                 break
 
+                            # CHECK FOR QUEUED QUESTION ANSWER
+                            # If the user answered via a separate POST while the
+                            # SSE loop was idle, the answer sits in
+                            # _pending_questions. Pick it up here and proxy to
+                            # /question/{requestID}/reply.
+                            pq_entry = _pending_questions.get(str(session_id))
+                            if pq_entry and pq_entry.get("answer") is not None:
+                                ans = pq_entry["answer"]
+                                pq_entry["answer"] = None  # prevent re-send
+                                rid = pq_entry["requestID"]
+                                q_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
+                                try:
+                                    async with session.post(q_url, json={"answers": [[ans]]}) as q_resp:
+                                        if q_resp.status == 200:
+                                            logging.info(f"[OpenCode Proxy] Queued answer sent to OpenCode: {rid}")
+                                        else:
+                                            err_body = await q_resp.text()
+                                            logging.error(f"[OpenCode Proxy] Queued answer failed ({q_resp.status}): {err_body}")
+                                except Exception as q_err:
+                                    logging.error(f"[OpenCode Proxy] Queued answer exception: {q_err}")
+                                _pending_questions.pop(str(session_id), None)
+                                # Mark the question as handled to keep the
+                                # stream alive; subsequent events will flow
+                                # normally.
+                                terminal_event_received = False
+
                             await asyncio.sleep(0.01) 
                         
                         # 4. Final cleanup
@@ -2063,6 +2089,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         pass
                 if str(session_id) in active_tasks:
                     del active_tasks[str(session_id)]
+                # Clean up any pending question entry for this session
+                _pending_questions.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
