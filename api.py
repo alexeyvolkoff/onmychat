@@ -610,23 +610,90 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/code/sessions/{session_id}/cancel")
-async def cancel_session_task(session_id: str):
-    if session_id in active_tasks:
-        task = active_tasks[session_id]
-        if not task.done():
+async def _force_kill_session(session_id: str) -> str:
+    """
+    Forcefully kills all tasks and connections for a session.
+    Returns status string: 'killed', 'no_active_task'
+    """
+    sid = str(session_id)
+    had_work = False
+    
+    # 1. Cancel the POST task
+    if sid in active_tasks:
+        had_work = True
+        task = active_tasks.pop(sid, None)
+        if task and not task.done():
             task.cancel()
-            logging.info(f"[OpenCode Proxy] Task for session {session_id} CANCELLED by user.")
-            # Give the task a moment to process cancellation
             try:
-                await asyncio.wait_for(task, timeout=3.0)
+                await asyncio.wait_for(task, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            return {"status": "cancelled"}
-        if task.cancelled():
-            return {"status": "cancelled"}
-        del active_tasks[session_id]
-    return {"status": "no_active_task"}
+    
+    # 2. Cancel the SSE read task and close its session
+    if sid in session_tasks:
+        had_work = True
+        info = session_tasks.pop(sid, None)
+        if info:
+            read_task = info.get("read_task")
+            if read_task and not read_task.done():
+                read_task.cancel()
+                try:
+                    await asyncio.wait_for(read_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            # Force-close the SSE session to break any stuck connection
+            sse_session = info.get("sse_session")
+            if sse_session and not sse_session.closed:
+                try:
+                    await sse_session.close()
+                except Exception:
+                    pass
+    
+    # 3. Clean up pending questions
+    _pending_questions.pop(sid, None)
+    
+    # 4. Reset the global proxy session to break all lingering HTTP connections
+    global _proxy_session
+    if _proxy_session and not _proxy_session.closed:
+        try:
+            await _proxy_session.close()
+        except Exception:
+            pass
+        _proxy_session = None  # Will be recreated on next get_proxy_session() call
+        logging.info(f"[OpenCode Proxy] Global proxy session forcefully reset for session {sid}")
+    
+    # 5. Try to abort on the OpenCode side too
+    try:
+        async with aiohttp.ClientSession() as cleanup_session:
+            abort_url = f"{core_service.CODE_BASE_URL}/session/{sid}/abort"
+            try:
+                await cleanup_session.post(abort_url, timeout=aiohttp.ClientTimeout(total=2))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    
+    return "killed" if had_work else "no_active_task"
+
+
+@app.post("/code/sessions/{session_id}/cancel")
+async def cancel_session_task(session_id: str):
+    """
+    Cancels an active OpenCode session task.
+    Also resets the global proxy session to break any stuck connections.
+    """
+    return {"status": await _force_kill_session(session_id)}
+
+
+@app.post("/code/sessions/{session_id}/kill")
+async def kill_session_task(session_id: str):
+    """
+    Forcefully kills an OpenCode session.
+    More aggressive than /cancel: cancels all tasks, closes SSE connections,
+    resets the global proxy session, and attempts OpenCode-side cleanup.
+    """
+    status = await _force_kill_session(session_id)
+    return {"status": status}
 
 @app.get("/assistant/loras")
 async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
@@ -1518,6 +1585,10 @@ async def proxy_request(url: str, request: Request, method: str = "POST"):
 
 active_tasks = {}
 
+# Track per-session read tasks and SSE sessions for reliable force-kill
+# Structure: { session_id: {"read_task": task, "sse_session": session} }
+session_tasks: dict[str, dict] = {}
+
 def resolve_session_directory(directory: str) -> str:
     if not directory:
         return directory
@@ -1817,6 +1888,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                         # 3. Start the event stream reader task first to establish the socket connection
                         read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
+                        session_tasks[str(session_id)] = {
+                            "read_task": read_task,
+                            "sse_session": sse_session
+                        }
                         
                         # Wait a brief moment to allow OpenCode to register the SSE event subscription
                         await asyncio.sleep(0.2)
@@ -2097,6 +2172,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             pass
                 # Clean up any pending question entry for this session
                 _pending_questions.pop(str(session_id), None)
+                session_tasks.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
