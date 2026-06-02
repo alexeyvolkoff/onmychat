@@ -15,6 +15,8 @@ import requests
 import aiohttp
 import asyncio
 import json
+import numpy as np
+from typing import List, Optional
 
 import core_service
 import user_context
@@ -45,6 +47,7 @@ from config import BASE_INDEX_DIR
 from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
+QA_INDEX_DIR = os.path.join(BASE_INDEX_DIR, "qa_index")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -269,6 +272,20 @@ async def search(
 
 @app.on_event("startup")
 async def startup_event():
+    qa_json = os.path.join(QA_INDEX_DIR, "questions.json")
+    qa_answ = os.path.join(QA_INDEX_DIR, "answers.json")
+    qa_npy = os.path.join(QA_INDEX_DIR, "embeddings.npy")
+    if os.path.exists(qa_json) and os.path.exists(qa_answ) and os.path.exists(qa_npy):
+        with open(qa_json) as f:
+            app.state.qa_questions = json.load(f)
+        with open(qa_answ) as f:
+            app.state.qa_answers = json.load(f)
+        app.state.qa_embeddings = np.load(qa_npy)
+        logging.info(f"[api] Loaded {len(app.state.qa_questions)} QA pairs from disk")
+    else:
+        app.state.qa_questions: List[str] = []
+        app.state.qa_answers: List[str] = []
+        app.state.qa_embeddings: Optional[np.ndarray] = None
     logging.info("[api] Startup complete")
 
 # ==== Модели ввода ====
@@ -2793,3 +2810,49 @@ async def ollama_show(request: Request):
     """
     target_url = f"{core_service.OLLAMA_URL}/api/show"
     return await proxy_request(target_url, request, method="POST")
+
+
+# --- Q&A Matching Endpoints ---
+
+@app.post("/qa/load")
+async def qa_load(data: dict):
+    entries = data.get("entries", [])
+    questions = [e["question"] for e in entries]
+    answers = [e["answer"] for e in entries]
+    if questions:
+        app.state.qa_embeddings = memory_index.get_model().encode(
+            questions, convert_to_numpy=True, normalize_embeddings=True
+        ).astype(np.float32)
+    else:
+        app.state.qa_embeddings = None
+    app.state.qa_questions = questions
+    app.state.qa_answers = answers
+    os.makedirs(QA_INDEX_DIR, exist_ok=True)
+    with open(os.path.join(QA_INDEX_DIR, "questions.json"), "w") as f:
+        json.dump(questions, f)
+    with open(os.path.join(QA_INDEX_DIR, "answers.json"), "w") as f:
+        json.dump(answers, f)
+    if app.state.qa_embeddings is not None:
+        np.save(os.path.join(QA_INDEX_DIR, "embeddings.npy"), app.state.qa_embeddings)
+    else:
+        npy_path = os.path.join(QA_INDEX_DIR, "embeddings.npy")
+        if os.path.exists(npy_path):
+            os.remove(npy_path)
+    return {"ok": True, "count": len(questions)}
+
+@app.post("/qa/search")
+async def qa_search(data: dict):
+    question = data.get("question", "")
+    min_score = data.get("min_score", 0.8)
+    emb = app.state.qa_embeddings
+    if emb is None or not app.state.qa_questions:
+        return {"answer": None, "score": 0.0}
+    vec = memory_index.get_model().encode(
+        [question], convert_to_numpy=True, normalize_embeddings=True
+    )[0].astype(np.float32)
+    scores = emb @ vec
+    idx = int(np.argmax(scores))
+    score = float(scores[idx])
+    if score >= min_score:
+        return {"answer": app.state.qa_answers[idx], "score": score}
+    return {"answer": None, "score": score}
