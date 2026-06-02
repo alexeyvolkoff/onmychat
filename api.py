@@ -1863,6 +1863,27 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 # We no longer time out on silence while generating.
                                 pass
 
+                            # CHECK FOR QUEUED QUESTION ANSWER before reading next event.
+                            # This must run on EVERY loop iteration — the continue-on-timeout below
+                            # would otherwise skip a check placed after the try block.
+                            pq_entry = _pending_questions.get(str(session_id))
+                            if pq_entry and pq_entry.get("answer") is not None:
+                                ans = pq_entry["answer"]
+                                pq_entry["answer"] = None
+                                rid = pq_entry["requestID"]
+                                q_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
+                                try:
+                                    async with session.post(q_url, json={"answers": [[ans]]}) as q_resp:
+                                        if q_resp.status == 200:
+                                            logging.info(f"[OpenCode Proxy] Queued answer sent to OpenCode: {rid}")
+                                        else:
+                                            err_body = await q_resp.text()
+                                            logging.error(f"[OpenCode Proxy] Queued answer failed ({q_resp.status}): {err_body}")
+                                except Exception as q_err:
+                                    logging.error(f"[OpenCode Proxy] Queued answer exception: {q_err}")
+                                _pending_questions.pop(str(session_id), None)
+                                terminal_event_received = False
+
                             try:
                                 try:
                                     line = await asyncio.wait_for(event_queue.get(), timeout=0.2)
@@ -2042,32 +2063,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             except Exception as loop_e:
                                 logging.error(f"[OpenCode Proxy] Error in event loop: {loop_e}")
                                 break
-
-                            # CHECK FOR QUEUED QUESTION ANSWER
-                            # If the user answered via a separate POST while the
-                            # SSE loop was idle, the answer sits in
-                            # _pending_questions. Pick it up here and proxy to
-                            # /question/{requestID}/reply.
-                            pq_entry = _pending_questions.get(str(session_id))
-                            if pq_entry and pq_entry.get("answer") is not None:
-                                ans = pq_entry["answer"]
-                                pq_entry["answer"] = None  # prevent re-send
-                                rid = pq_entry["requestID"]
-                                q_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
-                                try:
-                                    async with session.post(q_url, json={"answers": [[ans]]}) as q_resp:
-                                        if q_resp.status == 200:
-                                            logging.info(f"[OpenCode Proxy] Queued answer sent to OpenCode: {rid}")
-                                        else:
-                                            err_body = await q_resp.text()
-                                            logging.error(f"[OpenCode Proxy] Queued answer failed ({q_resp.status}): {err_body}")
-                                except Exception as q_err:
-                                    logging.error(f"[OpenCode Proxy] Queued answer exception: {q_err}")
-                                _pending_questions.pop(str(session_id), None)
-                                # Mark the question as handled to keep the
-                                # stream alive; subsequent events will flow
-                                # normally.
-                                terminal_event_received = False
 
                             await asyncio.sleep(0.01) 
                         
