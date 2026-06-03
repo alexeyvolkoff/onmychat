@@ -1752,69 +1752,61 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         session = await get_proxy_session()
         
         # PENDING QUESTION CHECK: If there is a question awaiting an answer for
-        # this session, place the answer in the shared dict so the SSE loop
-        # (which is still alive for the original prompt) can pick it up and
-        # proxy it to /question/{requestID}/reply.
-        pending_entry = _pending_questions.get(str(session_id))
+        # this session, we reply to the question directly and then start the SSE stream.
+        is_question_reply = False
+        pending_entry = _pending_questions.pop(str(session_id), None)
         if pending_entry:
+            is_question_reply = True
             answer = prompt_text.strip()
-            if answer:
-                pending_entry["answer"] = answer
-                logging.info(f"[OpenCode Proxy] Answer queued for session {session_id}: {answer[:80]}")
-            # Return a minimal SSE stream that immediately completes so the
-            # frontend's chatStream promise resolves cleanly.
-            async def _question_done():
-                yield b"data: {\"done\": true}\n\n"
-            return StreamingResponse(
-                _question_done(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-            )
-        
-        opencode_payload = {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": prompt_text
-                }
-            ]
-        }
-        if agent:
-            opencode_payload["agent"] = agent
-        
-        # Inject custom assistant personality & settings directly into OpenCode's system parameters
-        settings = omd_payload.get("settings", {})
-        if settings:
-            system_instructions = []
-            
-            # Map standard OMD settings into OpenCode context guidelines
-            assistant_name = settings.get("assistant_name", "").strip()
-            if assistant_name:
-                system_instructions.append(f"Your name is {assistant_name}.")
-                
-            user_name = settings.get("name", "").strip()
-            if user_name:
-                system_instructions.append(f"The user's name is {user_name}.")
-                
-            personality = settings.get("system_prompt", "").strip()
-            if personality:
-                system_instructions.append(f"Personality & Instructions:\n{personality}")
-                
-            if system_instructions:
-                opencode_payload["system"] = "\n\n".join(system_instructions)
-                
-        # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
-        code_model = core_service.CODE_MODEL
-        if "/" in code_model:
-            provider_id, model_id = code_model.split("/", 1)
+            rid = pending_entry["requestID"]
+            logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
+            target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
+            opencode_payload = {"answers": [[answer]]}
         else:
-            provider_id = "ollama"
-            model_id = code_model
+            opencode_payload = {
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": prompt_text
+                    }
+                ]
+            }
+            if agent:
+                opencode_payload["agent"] = agent
+            
+            # Inject custom assistant personality & settings directly into OpenCode's system parameters
+            settings = omd_payload.get("settings", {})
+            if settings:
+                system_instructions = []
+                
+                # Map standard OMD settings into OpenCode context guidelines
+                assistant_name = settings.get("assistant_name", "").strip()
+                if assistant_name:
+                    system_instructions.append(f"Your name is {assistant_name}.")
+                    
+                user_name = settings.get("name", "").strip()
+                if user_name:
+                    system_instructions.append(f"The user's name is {user_name}.")
+                    
+                personality = settings.get("system_prompt", "").strip()
+                if personality:
+                    system_instructions.append(f"Personality & Instructions:\n{personality}")
+                    
+                if system_instructions:
+                    opencode_payload["system"] = "\n\n".join(system_instructions)
+                    
+            # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
+            code_model = core_service.CODE_MODEL
+            if "/" in code_model:
+                provider_id, model_id = code_model.split("/", 1)
+            else:
+                provider_id = "ollama"
+                model_id = code_model
 
-        opencode_payload["model"] = {
-            "providerID": provider_id,
-            "modelID": model_id
-        }
+            opencode_payload["model"] = {
+                "providerID": provider_id,
+                "modelID": model_id
+            }
         
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -1833,6 +1825,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         
         async def stream_generator():
             read_task = None
+            event_stream_closed = False
             try:
                 # 0. Yield initial status to inform UI immediately
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
@@ -1866,7 +1859,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         error_text = await resp.text()
                                         logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
                                         return {"error": f"Backend error: {resp.status}"}
-                                    return await resp.json()
+                                    res = await resp.json()
+                                    if is_question_reply:
+                                        # Wait until execution is finished to keep post_task alive
+                                        while not terminal_event_received and not event_stream_closed:
+                                            await asyncio.sleep(0.1)
+                                    return res
                             except asyncio.TimeoutError:
                                 logging.error(f"[OpenCode Proxy] POST Task timed out for {session_id}")
                                 return {"error": "Request timed out"}
@@ -1876,6 +1874,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                         event_queue = asyncio.Queue()
                         async def read_events(content_reader, queue):
+                            nonlocal event_stream_closed
                             try:
                                 logging.debug("[OpenCode Proxy] read_events started")
                                 buffer = b""
@@ -1896,6 +1895,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
                             finally:
                                 logging.debug("[OpenCode Proxy] read_events finished")
+                                event_stream_closed = True
                                 await queue.put(None)
                         
                         # 3. Start the event stream reader task first to establish the socket connection
