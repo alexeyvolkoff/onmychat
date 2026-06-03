@@ -1843,8 +1843,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 if resolved_dir:
                     import urllib.parse
                     event_url += f"&directory={urllib.parse.quote(resolved_dir)}"
+                class _AsyncNull:
+                    async def __aenter__(self): return self
+                    async def __aexit__(self, *args): pass
                 async with aiohttp.ClientSession() as sse_session:
-                    async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
+                    async with _AsyncNull() as _:
+                        event_resp = await sse_session.get(event_url, headers={"Accept": "text/event-stream"})
                         if event_resp.status != 200:
                             logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
                             # Fallback: Just fire and return
@@ -1984,8 +1988,41 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     continue
 
                                 if line is None:
-                                    logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF).")
-                                    break
+                                    if post_task.done():
+                                        logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF) and post_task is done. Closing stream.")
+                                        break
+                                    else:
+                                        logging.info(f"[OpenCode Proxy] SSE Connection closed (EOF) but post_task is still running. Reconnecting to SSE stream...")
+                                        if read_task and not read_task.done():
+                                            read_task.cancel()
+                                            try:
+                                                await read_task
+                                            except Exception:
+                                                pass
+                                        try:
+                                            event_resp.close()
+                                        except Exception:
+                                            pass
+                                        try:
+                                            event_resp = await sse_session.get(event_url, headers={"Accept": "text/event-stream"})
+                                            if event_resp.status == 200:
+                                                logging.info(f"[OpenCode Proxy] SSE Reconnected successfully.")
+                                                read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
+                                                session_tasks[str(session_id)] = {
+                                                    "read_task": read_task,
+                                                    "sse_session": sse_session
+                                                }
+                                                continue
+                                            else:
+                                                logging.error(f"[OpenCode Proxy] SSE Reconnect failed with status {event_resp.status}. Waiting before retry.")
+                                                await asyncio.sleep(1.0)
+                                                await event_queue.put(None)
+                                                continue
+                                        except Exception as recon_err:
+                                            logging.error(f"[OpenCode Proxy] SSE Reconnect exception: {recon_err}. Waiting before retry.")
+                                            await asyncio.sleep(1.0)
+                                            await event_queue.put(None)
+                                            continue
                                     
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith("data: "):
@@ -2168,6 +2205,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
             finally:
+                if 'event_resp' in locals() and event_resp:
+                    try:
+                        event_resp.close()
+                    except Exception:
+                        pass
                 if read_task and not read_task.done():
                     read_task.cancel()
                     try:
