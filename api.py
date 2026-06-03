@@ -32,6 +32,7 @@ _proxy_session = None
 # Structure: { session_id: { "requestID": str, "answer": str | None } }
 _pending_questions: dict[str, dict] = {}
 _pending_questions_metadata: dict[str, dict] = {}
+_active_session_directories: dict[str, str] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -625,6 +626,9 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     sid = str(session_id)
     had_work = False
     
+    if not directory:
+        directory = _active_session_directories.get(sid)
+        
     # 1. Cancel the POST task
     if sid in active_tasks:
         had_work = True
@@ -656,8 +660,16 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
                 except Exception:
                     pass
     
-    # 3. Clean up pending questions
-    _pending_questions.pop(sid, None)
+    # 3. Clean up pending questions & session directories
+    pq = _pending_questions.pop(sid, None)
+    if pq and pq.get("requestID"):
+        _pending_questions_metadata.pop(str(pq["requestID"]), None)
+        
+    to_remove = [req_id for req_id, meta in _pending_questions_metadata.items() if meta.get("session_id") == sid]
+    for req_id in to_remove:
+        _pending_questions_metadata.pop(req_id, None)
+        
+    _active_session_directories.pop(sid, None)
     
     # 4. Reset the global proxy session to break all lingering HTTP connections
     global _proxy_session
@@ -1914,6 +1926,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             resolved_dir = resolve_session_directory(directory)
             target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
             logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
+            
+        if resolved_dir:
+            _active_session_directories[str(session_id)] = resolved_dir
         
         async def stream_generator():
             read_task = None
