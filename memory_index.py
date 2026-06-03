@@ -119,7 +119,9 @@ def qa_load_entries(entries: list[dict]) -> int:
     answers = [e["answer"] for e in entries]
     coll = ensure_qa_collection()
 
-    coll.delete(where={})
+    existing = coll.get(include=[])
+    if existing["ids"]:
+        coll.delete(ids=existing["ids"])
 
     if not questions:
         return 0
