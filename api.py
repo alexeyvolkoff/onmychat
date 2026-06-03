@@ -2011,10 +2011,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
                                         
-                                        # QUESTION EVENTS (filtered by authorized_sids to prevent cross-session pollution)
+                                        # QUESTION EVENTS (filtered by authorized_sids if present, otherwise fallback to current session)
                                         if event_type.startswith("question."):
-                                            if event_sid in authorized_sids:
+                                            is_authorized = (event_sid in authorized_sids) or (event_sid == "None") or (not event_sid)
+                                            if is_authorized:
                                                 if event_type == "question.asked":
+                                                    logging.info(f"[OpenCode Proxy] question.asked event received. event_sid={event_sid}, props={props}")
                                                     req_id = props.get("id")
                                                     if req_id:
                                                         _pending_questions[str(session_id)] = {
