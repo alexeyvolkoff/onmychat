@@ -1859,11 +1859,24 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 # Set infinity timeout for agentic tasks
                                 timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=None)
                                 async with session.post(target_url, json=opencode_payload, timeout=timeout) as resp:
-                                    if resp.status != 200:
+                                    if resp.status not in [200, 201, 204]:
                                         error_text = await resp.text()
                                         logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
                                         return {"error": f"Backend error: {resp.status}"}
-                                    res = await resp.json()
+                                    
+                                    # Handle empty or non-JSON responses safely
+                                    res = {}
+                                    if resp.status != 204:
+                                        try:
+                                            res = await resp.json()
+                                        except Exception:
+                                            try:
+                                                text = await resp.text()
+                                                if text:
+                                                    res = {"result": text}
+                                            except Exception:
+                                                pass
+                                                
                                     if is_question_reply:
                                         # Wait until execution is finished to keep post_task alive
                                         while not terminal_event_received and not event_stream_closed:
