@@ -91,6 +91,68 @@ def ensure_search_collection():
         _search_chroma_client = chromadb.PersistentClient(path=SEARCH_DB_DIR)
         return _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
 
+QA_CHROMA_DIR = os.path.join(BASE_INDEX_DIR, "chroma_qa")
+os.makedirs(QA_CHROMA_DIR, exist_ok=True)
+
+_qa_chroma_client = chromadb.PersistentClient(path=QA_CHROMA_DIR)
+
+def ensure_qa_collection():
+    global _qa_chroma_client
+    try:
+        col = _qa_chroma_client.get_or_create_collection(
+            name="qa_index",
+            metadata={"hnsw:space": "cosine"}
+        )
+        col.count()
+        return col
+    except Exception as e:
+        logging.warning(f"QA ChromaDB re-initializing: {e}")
+        _qa_chroma_client = chromadb.PersistentClient(path=QA_CHROMA_DIR)
+        return _qa_chroma_client.get_or_create_collection(
+            name="qa_index",
+            metadata={"hnsw:space": "cosine"}
+        )
+
+def qa_load_entries(entries: list[dict]) -> int:
+    model = get_model()
+    questions = [e["question"] for e in entries]
+    answers = [e["answer"] for e in entries]
+    coll = ensure_qa_collection()
+
+    coll.delete(where={})
+
+    if not questions:
+        return 0
+
+    ids = [f"qa:{i}" for i in range(len(questions))]
+    embeddings = model.encode(questions, show_progress_bar=False).tolist()
+    metadatas = [{"answer": a} for a in answers]
+
+    coll.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=questions)
+    return len(questions)
+
+def qa_match_query(question: str, min_score: float = 0.8) -> dict:
+    model = get_model()
+    coll = ensure_qa_collection()
+
+    if coll.count() == 0:
+        return {"answer": None, "score": 0.0}
+
+    query_emb = model.encode([question], show_progress_bar=False).tolist()
+    results = coll.query(query_embeddings=query_emb, n_results=1)
+
+    if not results["ids"] or not results["ids"][0]:
+        return {"answer": None, "score": 0.0}
+
+    distance = results["distances"][0][0]
+    score = 1.0 - distance  # cosine distance → similarity
+    if score >= min_score:
+        return {
+            "answer": results["metadatas"][0][0]["answer"],
+            "score": round(score, 4)
+        }
+    return {"answer": None, "score": round(score, 4)}
+
 def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: str = "") -> list[dict]:
     """
     Search in the omd_search collection (indexed files).
