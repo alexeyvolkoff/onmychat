@@ -31,6 +31,7 @@ _proxy_session = None
 # original SSE stream alive throughout.
 # Structure: { session_id: { "requestID": str, "answer": str | None } }
 _pending_questions: dict[str, dict] = {}
+_pending_questions_metadata: dict[str, dict] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -1744,10 +1745,19 @@ async def proxy_opencode_question_reply(request: Request, request_id: str):
         logging.info(f"[OpenCode Proxy] Forwarding question reply for {request_id}: {payload}")
         
         query_params = dict(request.query_params)
+        directory = query_params.get("directory")
+        if not directory:
+            q_meta = _pending_questions_metadata.get(str(request_id))
+            if q_meta:
+                directory = q_meta.get("directory")
+        
         q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reply"
-        if query_params:
+        url_params = {}
+        if directory:
+            url_params["directory"] = directory
+        if url_params:
             import urllib.parse
-            q_url += "?" + urllib.parse.urlencode(query_params)
+            q_url += "?" + urllib.parse.urlencode(url_params)
             
         session = await get_proxy_session()
         async with session.post(q_url, json=payload) as q_resp:
@@ -1780,10 +1790,19 @@ async def proxy_opencode_question_reject(request: Request, request_id: str):
         logging.info(f"[OpenCode Proxy] Forwarding question reject for {request_id}")
         
         query_params = dict(request.query_params)
+        directory = query_params.get("directory")
+        if not directory:
+            q_meta = _pending_questions_metadata.get(str(request_id))
+            if q_meta:
+                directory = q_meta.get("directory")
+                
         q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reject"
-        if query_params:
+        url_params = {}
+        if directory:
+            url_params["directory"] = directory
+        if url_params:
             import urllib.parse
-            q_url += "?" + urllib.parse.urlencode(query_params)
+            q_url += "?" + urllib.parse.urlencode(url_params)
             
         session = await get_proxy_session()
         async with session.post(q_url) as q_resp:
@@ -2131,7 +2150,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             "requestID": req_id,
                                                             "answer": None,
                                                         }
-                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}")
+                                                        _pending_questions_metadata[str(req_id)] = {
+                                                            "session_id": str(session_id),
+                                                            "directory": resolved_dir
+                                                        }
+                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
                                                         questions_arr = props.get("questions", [])
                                                         first = questions_arr[0] if questions_arr else {}
                                                         q_text = first.get("question", "")
@@ -2140,12 +2163,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         terminal_event_received = False
                                                 elif event_type == "question.replied":
                                                     req_id = props.get("requestID")
+                                                    _pending_questions_metadata.pop(str(req_id), None)
                                                     entry = _pending_questions.get(str(session_id))
                                                     if entry and entry.get("requestID") == req_id:
                                                         _pending_questions.pop(str(session_id), None)
                                                         logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
                                                 elif event_type == "question.rejected":
                                                     req_id = props.get("requestID")
+                                                    _pending_questions_metadata.pop(str(req_id), None)
                                                     entry = _pending_questions.get(str(session_id))
                                                     if entry and entry.get("requestID") == req_id:
                                                         _pending_questions.pop(str(session_id), None)
@@ -2311,7 +2336,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         except asyncio.CancelledError:
                             pass
                 # Clean up any pending question entry for this session
-                _pending_questions.pop(str(session_id), None)
+                pq = _pending_questions.pop(str(session_id), None)
+                if pq and pq.get("requestID"):
+                    _pending_questions_metadata.pop(str(pq["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
         
         return StreamingResponse(
