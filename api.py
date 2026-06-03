@@ -348,6 +348,10 @@ class GenerateInput(BaseModel):
     prompt_id: str | None = None
 
 
+class SessionKillInput(BaseModel):
+    directory: str | None = None
+
+
 class UpdateAssistantInput(BaseModel):
     omd_key: str
     nsfw: bool | None = None
@@ -627,7 +631,7 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def _force_kill_session(session_id: str) -> str:
+async def _force_kill_session(session_id: str, directory: str | None = None) -> str:
     """
     Forcefully kills all tasks and connections for a session.
     Returns status string: 'killed', 'no_active_task'
@@ -683,6 +687,10 @@ async def _force_kill_session(session_id: str) -> str:
     try:
         async with aiohttp.ClientSession() as cleanup_session:
             abort_url = f"{core_service.CODE_BASE_URL}/session/{sid}/abort"
+            if directory:
+                import urllib.parse
+                resolved_dir = resolve_session_directory(directory)
+                abort_url += f"?directory={urllib.parse.quote(resolved_dir)}"
             try:
                 await cleanup_session.post(abort_url, timeout=aiohttp.ClientTimeout(total=2))
             except Exception:
@@ -694,22 +702,24 @@ async def _force_kill_session(session_id: str) -> str:
 
 
 @app.post("/code/sessions/{session_id}/cancel")
-async def cancel_session_task(session_id: str):
+async def cancel_session_task(session_id: str, payload: SessionKillInput | None = None):
     """
     Cancels an active OpenCode session task.
     Also resets the global proxy session to break any stuck connections.
     """
-    return {"status": await _force_kill_session(session_id)}
+    directory = payload.directory if payload else None
+    return {"status": await _force_kill_session(session_id, directory=directory)}
 
 
 @app.post("/code/sessions/{session_id}/kill")
-async def kill_session_task(session_id: str):
+async def kill_session_task(session_id: str, payload: SessionKillInput | None = None):
     """
     Forcefully kills an OpenCode session.
     More aggressive than /cancel: cancels all tasks, closes SSE connections,
     resets the global proxy session, and attempts OpenCode-side cleanup.
     """
-    status = await _force_kill_session(session_id)
+    directory = payload.directory if payload else None
+    status = await _force_kill_session(session_id, directory=directory)
     return {"status": status}
 
 @app.get("/assistant/loras")
@@ -2001,37 +2011,35 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
                                         
-                                        # QUESTION EVENTS (global bus, no sessionID — handle before the authorized_sids gate)
-                                        if event_type == "question.asked":
-                                            req_id = props.get("id")
-                                            if req_id:
-                                                _pending_questions[str(session_id)] = {
-                                                    "requestID": req_id,
-                                                    "answer": None,
-                                                }
-                                                logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}")
-                                                questions_arr = props.get("questions", [])
-                                                first = questions_arr[0] if questions_arr else {}
-                                                q_text = first.get("question", "")
-                                                q_opts = first.get("options", [])
-                                                yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
-                                                terminal_event_received = False
-                                            continue
-                                        
-                                        if event_type == "question.replied":
-                                            req_id = props.get("requestID")
-                                            entry = _pending_questions.get(str(session_id))
-                                            if entry and entry.get("requestID") == req_id:
-                                                _pending_questions.pop(str(session_id), None)
-                                                logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
-                                            continue
-                                        
-                                        if event_type == "question.rejected":
-                                            req_id = props.get("requestID")
-                                            entry = _pending_questions.get(str(session_id))
-                                            if entry and entry.get("requestID") == req_id:
-                                                _pending_questions.pop(str(session_id), None)
-                                                logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
+                                        # QUESTION EVENTS (filtered by authorized_sids to prevent cross-session pollution)
+                                        if event_type.startswith("question."):
+                                            if event_sid in authorized_sids:
+                                                if event_type == "question.asked":
+                                                    req_id = props.get("id")
+                                                    if req_id:
+                                                        _pending_questions[str(session_id)] = {
+                                                            "requestID": req_id,
+                                                            "answer": None,
+                                                        }
+                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}")
+                                                        questions_arr = props.get("questions", [])
+                                                        first = questions_arr[0] if questions_arr else {}
+                                                        q_text = first.get("question", "")
+                                                        q_opts = first.get("options", [])
+                                                        yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
+                                                        terminal_event_received = False
+                                                elif event_type == "question.replied":
+                                                    req_id = props.get("requestID")
+                                                    entry = _pending_questions.get(str(session_id))
+                                                    if entry and entry.get("requestID") == req_id:
+                                                        _pending_questions.pop(str(session_id), None)
+                                                        logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
+                                                elif event_type == "question.rejected":
+                                                    req_id = props.get("requestID")
+                                                    entry = _pending_questions.get(str(session_id))
+                                                    if entry and entry.get("requestID") == req_id:
+                                                        _pending_questions.pop(str(session_id), None)
+                                                        logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
                                             continue
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
