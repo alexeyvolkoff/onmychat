@@ -1737,6 +1737,79 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
             
     return await proxy_request(target_url, request, method=request.method)
 
+@app.post("/code/question/{request_id}/reply")
+async def proxy_opencode_question_reply(request: Request, request_id: str):
+    try:
+        payload = await request.json()
+        logging.info(f"[OpenCode Proxy] Forwarding question reply for {request_id}: {payload}")
+        
+        query_params = dict(request.query_params)
+        q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reply"
+        if query_params:
+            import urllib.parse
+            q_url += "?" + urllib.parse.urlencode(query_params)
+            
+        session = await get_proxy_session()
+        async with session.post(q_url, json=payload) as q_resp:
+            if q_resp.status not in [200, 201, 204]:
+                err_body = await q_resp.text()
+                logging.error(f"[OpenCode Proxy] Question reply failed ({q_resp.status}): {err_body}")
+                raise HTTPException(status_code=q_resp.status, detail=err_body)
+            
+            res = {}
+            if q_resp.status != 204:
+                try:
+                    res = await q_resp.json()
+                except Exception:
+                    try:
+                        text = await q_resp.text()
+                        if text:
+                            res = {"result": text}
+                    except Exception:
+                        pass
+            return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in question reply proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/code/question/{request_id}/reject")
+async def proxy_opencode_question_reject(request: Request, request_id: str):
+    try:
+        logging.info(f"[OpenCode Proxy] Forwarding question reject for {request_id}")
+        
+        query_params = dict(request.query_params)
+        q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reject"
+        if query_params:
+            import urllib.parse
+            q_url += "?" + urllib.parse.urlencode(query_params)
+            
+        session = await get_proxy_session()
+        async with session.post(q_url) as q_resp:
+            if q_resp.status not in [200, 201, 204]:
+                err_body = await q_resp.text()
+                logging.error(f"[OpenCode Proxy] Question reject failed ({q_resp.status}): {err_body}")
+                raise HTTPException(status_code=q_resp.status, detail=err_body)
+            
+            res = {}
+            if q_resp.status != 204:
+                try:
+                    res = await q_resp.json()
+                except Exception:
+                    try:
+                        text = await q_resp.text()
+                        if text:
+                            res = {"result": text}
+                    except Exception:
+                        pass
+            return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in question reject proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.api_route("/code/sessions/{session_id}/message", methods=["POST"])
 async def proxy_opencode_prompt(request: Request, session_id: str):
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
