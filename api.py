@@ -341,7 +341,6 @@ class SessionKillInput(BaseModel):
 
 class UpdateAssistantInput(BaseModel):
     omd_key: str
-    nsfw: bool | None = None
     style: str | None = None
     system_prompt: str | None = None
     assistant_name: str | None = None
@@ -373,7 +372,6 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "system_prompt": ctx.settings.get("system_prompt", ""),
             "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
             "style": ctx.settings.get("style", ""),
-            "nsfw": ctx.settings.get("nsfw", False),
             "assistant_model": ctx.settings.get("assistant_model", "Domi"),
             "defaultStorage": ctx.settings.get("defaultStorage", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
@@ -400,8 +398,6 @@ async def update_assistant(request: Request):
     ctx = get_ctx(data.omd_key)
     try:
         # Update settings with provided values
-        if data.nsfw is not None:
-            ctx.settings["nsfw"] = data.nsfw
         if data.style is not None:
             ctx.settings["style"] = data.style
         if data.system_prompt is not None:
@@ -721,9 +717,9 @@ async def kill_session_task(session_id: str, payload: SessionKillInput | None = 
     return {"status": status}
 
 @app.get("/assistant/loras")
-async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
+async def get_loras(mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    return core_service.get_available_loras(ctx, nsfw=nsfw)
+    return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
 async def model_avatar(
@@ -934,33 +930,29 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
 
 
             # perform commands
-            if prompt.startswith("/nsfw"):
-                args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
-                nsfw_enabled = False
+            if prompt.startswith("/mode"):
+                args = prompt[len("/mode"):].strip().split(maxsplit=1)
+                new_mode = "work"
 
                 if args:
-                    if args[0].lower() == "on":
-                        if token_balance <= 0:
-                            yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                            return
-                        nsfw_enabled = True
-                    elif args[0].lower() == "off":
-                        nsfw_enabled = False
+                    if args[0].lower() == "fun":
+                        new_mode = "fun"
+                    elif args[0].lower() == "work":
+                        new_mode = "work"
 
-                llm_message = "get ready to play" if nsfw_enabled else "calm down for now"
+                llm_message = "get ready to play" if new_mode == "fun" else "calm down for now"
 
                 if len(args) > 1:
                     llm_message = args[1].strip()
             
 
-                ctx.settings["nsfw"] = nsfw_enabled
-                logging.info(f"User: {ctx.user_id} swithed NSFW mode to {nsfw_enabled}")
+                ctx.settings["content_mode"] = new_mode
+                logging.info(f"User: {ctx.user_id} switched mode to {new_mode}")
                 user_context.save_user_settings(ctx)
                 instruction = (
-                    "User has switched NSFW mode '{}'.\nPlease, act accordingly."
-                ).format(nsfw_enabled)
+                    "User has switched mode to '{}'.\nPlease, act accordingly."
+                ).format(new_mode)
                 
-                # yield f"data: {json.dumps({'event': 'reload_chats'})}\n\n"
                 event = 'reload_chats'
             else:
                 # 1. Broad Intent Detection First
@@ -1048,13 +1040,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 elif prompt.startswith("/generate"):
                     intent = "generate"
                     img_prompt = prompt[len("/generate"):].strip()
-                    if not ctx.settings.get("nsfw", False):
+                    if ctx.settings.get("content_mode", "work") == "work":
                         logging.info(f"Checking image generation safety: {img_prompt}")
                         safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                         if safety_result != "SAFE":
                             logging.info(f"Image generation safety check failed: {safety_result}")
                             
-                            warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
+                            warning = "I can not generate this in work mode. Switch to fun mode with /mode fun"
                             if token_balance <= 0:
                                  warning = "I can not generate this until you prove your age by subscribing for Premium plan"
 
@@ -1064,7 +1056,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     intent = "view"
                 elif prompt.startswith("/tools"):
                     # Provide an immediate, reliable list of tools
-                    tools_list = await core_service.list_supported_tools(ctx)
+                    mode = ctx.settings.get("content_mode", "work")
+                    tools_list = await core_service.list_supported_tools(ctx, mode=mode)
 
                     # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
 
@@ -1093,8 +1086,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             # Check primary intent or prefixed intent (e.g. import:url)
             check_intent = intent.split(":")[0] if ":" in intent else intent
 
-            if ctx.settings.get("nsfw", False) and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
-                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in NSFW mode.', 'role': 'assistant', 'done': True})}\n\n"
+            if ctx.settings.get("content_mode", "work") == "fun" and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
+                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in fun mode.', 'role': 'assistant', 'done': True})}\n\n"
                  return
             
             logging.info(f"Token Balance: {token_balance}")
@@ -1285,7 +1278,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 await asyncio.sleep(0.1)
                 
-                async for chunk in core_service.check_and_execute_mcp(ctx, prompt, provided_history=provided_history):
+                mode = ctx.settings.get("content_mode", "work")
+                async for chunk in core_service.check_and_execute_mcp(ctx, prompt, mode=mode, provided_history=provided_history):
                     if isinstance(chunk, dict):
                         # Support direct forwarding of rich OpenCode-like events
                         if any(k in chunk for k in ["id", "action", "state", "delta", "thought_delta", "tool_call_delta", "tool_result_delta"]):
@@ -1480,8 +1474,6 @@ async def update_assistant(request: Request):
     ctx = get_ctx(data.omd_key)
     try:
         # Update settings with provided values
-        if data.nsfw is not None:
-            ctx.settings["nsfw"] = data.nsfw
         if data.style is not None:
             ctx.settings["style"] = data.style
         if data.system_prompt is not None:
