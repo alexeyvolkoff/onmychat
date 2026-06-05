@@ -2068,6 +2068,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     logging.info(f"[OpenCode Proxy] Stream rename event received: {title}")
                                                     yield f"data: {json.dumps({'action': 'rename', 'title': title})}\n\n".encode('utf-8')
                                             
+                                            elif event_type == "permission.updated":
+                                                logging.info(f"[OpenCode Proxy] permission.updated event received. event_sid={event_sid}, props={props}")
+                                                permission_id = props.get("id")
+                                                if permission_id:
+                                                    yield f"data: {json.dumps({'type': 'permission.asked', 'permissionID': permission_id, 'permission': props})}\n\n".encode('utf-8')
+                                                    terminal_event_received = False
+                                            
                                             elif event_type == "session.diff":
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
                                             
