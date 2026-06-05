@@ -31,6 +31,8 @@ _proxy_session = None
 # original SSE stream alive throughout.
 # Structure: { session_id: { "requestID": str, "answer": str | None } }
 _pending_questions: dict[str, dict] = {}
+_pending_questions_metadata: dict[str, dict] = {}
+_active_session_directories: dict[str, str] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -47,7 +49,6 @@ from config import BASE_INDEX_DIR
 from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
-QA_INDEX_DIR = os.path.join(BASE_INDEX_DIR, "qa_index")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -272,20 +273,6 @@ async def search(
 
 @app.on_event("startup")
 async def startup_event():
-    qa_json = os.path.join(QA_INDEX_DIR, "questions.json")
-    qa_answ = os.path.join(QA_INDEX_DIR, "answers.json")
-    qa_npy = os.path.join(QA_INDEX_DIR, "embeddings.npy")
-    if os.path.exists(qa_json) and os.path.exists(qa_answ) and os.path.exists(qa_npy):
-        with open(qa_json) as f:
-            app.state.qa_questions = json.load(f)
-        with open(qa_answ) as f:
-            app.state.qa_answers = json.load(f)
-        app.state.qa_embeddings = np.load(qa_npy)
-        logging.info(f"[api] Loaded {len(app.state.qa_questions)} QA pairs from disk")
-    else:
-        app.state.qa_questions: List[str] = []
-        app.state.qa_answers: List[str] = []
-        app.state.qa_embeddings: Optional[np.ndarray] = None
     logging.info("[api] Startup complete")
 
 # ==== Модели ввода ====
@@ -354,7 +341,6 @@ class SessionKillInput(BaseModel):
 
 class UpdateAssistantInput(BaseModel):
     omd_key: str
-    nsfw: bool | None = None
     style: str | None = None
     system_prompt: str | None = None
     assistant_name: str | None = None
@@ -386,7 +372,6 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "system_prompt": ctx.settings.get("system_prompt", ""),
             "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),
             "style": ctx.settings.get("style", ""),
-            "nsfw": ctx.settings.get("nsfw", False),
             "assistant_model": ctx.settings.get("assistant_model", "Domi"),
             "defaultStorage": ctx.settings.get("defaultStorage", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
@@ -413,8 +398,6 @@ async def update_assistant(request: Request):
     ctx = get_ctx(data.omd_key)
     try:
         # Update settings with provided values
-        if data.nsfw is not None:
-            ctx.settings["nsfw"] = data.nsfw
         if data.style is not None:
             ctx.settings["style"] = data.style
         if data.system_prompt is not None:
@@ -639,6 +622,9 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     sid = str(session_id)
     had_work = False
     
+    if not directory:
+        directory = _active_session_directories.get(sid)
+        
     # 1. Cancel the POST task
     if sid in active_tasks:
         had_work = True
@@ -670,8 +656,16 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
                 except Exception:
                     pass
     
-    # 3. Clean up pending questions
-    _pending_questions.pop(sid, None)
+    # 3. Clean up pending questions & session directories
+    pq = _pending_questions.pop(sid, None)
+    if pq and pq.get("requestID"):
+        _pending_questions_metadata.pop(str(pq["requestID"]), None)
+        
+    to_remove = [req_id for req_id, meta in _pending_questions_metadata.items() if meta.get("session_id") == sid]
+    for req_id in to_remove:
+        _pending_questions_metadata.pop(req_id, None)
+        
+    _active_session_directories.pop(sid, None)
     
     # 4. Reset the global proxy session to break all lingering HTTP connections
     global _proxy_session
@@ -723,9 +717,9 @@ async def kill_session_task(session_id: str, payload: SessionKillInput | None = 
     return {"status": status}
 
 @app.get("/assistant/loras")
-async def get_loras(nsfw: bool | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
+async def get_loras(mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    return core_service.get_available_loras(ctx, nsfw=nsfw)
+    return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
 async def model_avatar(
@@ -936,33 +930,29 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
 
 
             # perform commands
-            if prompt.startswith("/nsfw"):
-                args = prompt[len("/nsfw"):].strip().split(maxsplit=1)
-                nsfw_enabled = False
+            if prompt.startswith("/mode"):
+                args = prompt[len("/mode"):].strip().split(maxsplit=1)
+                new_mode = "work"
 
                 if args:
-                    if args[0].lower() == "on":
-                        if token_balance <= 0:
-                            yield f"data: {json.dumps({'delta': 'NSFW mode is available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                            return
-                        nsfw_enabled = True
-                    elif args[0].lower() == "off":
-                        nsfw_enabled = False
+                    if args[0].lower() == "fun":
+                        new_mode = "fun"
+                    elif args[0].lower() == "work":
+                        new_mode = "work"
 
-                llm_message = "get ready to play" if nsfw_enabled else "calm down for now"
+                llm_message = "get ready to play" if new_mode == "fun" else "calm down for now"
 
                 if len(args) > 1:
                     llm_message = args[1].strip()
             
 
-                ctx.settings["nsfw"] = nsfw_enabled
-                logging.info(f"User: {ctx.user_id} swithed NSFW mode to {nsfw_enabled}")
+                ctx.settings["content_mode"] = new_mode
+                logging.info(f"User: {ctx.user_id} switched mode to {new_mode}")
                 user_context.save_user_settings(ctx)
                 instruction = (
-                    "User has switched NSFW mode '{}'.\nPlease, act accordingly."
-                ).format(nsfw_enabled)
+                    "User has switched mode to '{}'.\nPlease, act accordingly."
+                ).format(new_mode)
                 
-                # yield f"data: {json.dumps({'event': 'reload_chats'})}\n\n"
                 event = 'reload_chats'
             else:
                 # 1. Broad Intent Detection First
@@ -1050,13 +1040,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 elif prompt.startswith("/generate"):
                     intent = "generate"
                     img_prompt = prompt[len("/generate"):].strip()
-                    if not ctx.settings.get("nsfw", False):
+                    if ctx.settings.get("content_mode", "work") == "work":
                         logging.info(f"Checking image generation safety: {img_prompt}")
                         safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                         if safety_result != "SAFE":
                             logging.info(f"Image generation safety check failed: {safety_result}")
                             
-                            warning = "I can not generate this in safe mode. Switch to unsafe mode with /nsfw on"
+                            warning = "I can not generate this in work mode. Switch to fun mode with /mode fun"
                             if token_balance <= 0:
                                  warning = "I can not generate this until you prove your age by subscribing for Premium plan"
 
@@ -1066,7 +1056,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     intent = "view"
                 elif prompt.startswith("/tools"):
                     # Provide an immediate, reliable list of tools
-                    tools_list = await core_service.list_supported_tools(ctx)
+                    mode = ctx.settings.get("content_mode", "work")
+                    tools_list = await core_service.list_supported_tools(ctx, mode=mode)
 
                     # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
 
@@ -1095,8 +1086,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             # Check primary intent or prefixed intent (e.g. import:url)
             check_intent = intent.split(":")[0] if ":" in intent else intent
 
-            if ctx.settings.get("nsfw", False) and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
-                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in NSFW mode.', 'role': 'assistant', 'done': True})}\n\n"
+            if ctx.settings.get("content_mode", "work") == "fun" and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
+                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in fun mode.', 'role': 'assistant', 'done': True})}\n\n"
                  return
             
             logging.info(f"Token Balance: {token_balance}")
@@ -1287,7 +1278,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 await asyncio.sleep(0.1)
                 
-                async for chunk in core_service.check_and_execute_mcp(ctx, prompt, provided_history=provided_history):
+                mode = ctx.settings.get("content_mode", "work")
+                async for chunk in core_service.check_and_execute_mcp(ctx, prompt, mode=mode, provided_history=provided_history):
                     if isinstance(chunk, dict):
                         # Support direct forwarding of rich OpenCode-like events
                         if any(k in chunk for k in ["id", "action", "state", "delta", "thought_delta", "tool_call_delta", "tool_result_delta"]):
@@ -1482,8 +1474,6 @@ async def update_assistant(request: Request):
     ctx = get_ctx(data.omd_key)
     try:
         # Update settings with provided values
-        if data.nsfw is not None:
-            ctx.settings["nsfw"] = data.nsfw
         if data.style is not None:
             ctx.settings["style"] = data.style
         if data.system_prompt is not None:
@@ -1752,6 +1742,97 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
             
     return await proxy_request(target_url, request, method=request.method)
 
+@app.post("/code/question/{request_id}/reply")
+async def proxy_opencode_question_reply(request: Request, request_id: str):
+    try:
+        payload = await request.json()
+        logging.info(f"[OpenCode Proxy] Forwarding question reply for {request_id}: {payload}")
+        
+        query_params = dict(request.query_params)
+        directory = query_params.get("directory")
+        if not directory:
+            q_meta = _pending_questions_metadata.get(str(request_id))
+            if q_meta:
+                directory = q_meta.get("directory")
+        
+        q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reply"
+        url_params = {}
+        if directory:
+            url_params["directory"] = directory
+        if url_params:
+            import urllib.parse
+            q_url += "?" + urllib.parse.urlencode(url_params)
+            
+        session = await get_proxy_session()
+        async with session.post(q_url, json=payload) as q_resp:
+            if q_resp.status not in [200, 201, 204]:
+                err_body = await q_resp.text()
+                logging.error(f"[OpenCode Proxy] Question reply failed ({q_resp.status}): {err_body}")
+                raise HTTPException(status_code=q_resp.status, detail=err_body)
+            
+            res = {}
+            if q_resp.status != 204:
+                try:
+                    res = await q_resp.json()
+                except Exception:
+                    try:
+                        text = await q_resp.text()
+                        if text:
+                            res = {"result": text}
+                    except Exception:
+                        pass
+            return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in question reply proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/code/question/{request_id}/reject")
+async def proxy_opencode_question_reject(request: Request, request_id: str):
+    try:
+        logging.info(f"[OpenCode Proxy] Forwarding question reject for {request_id}")
+        
+        query_params = dict(request.query_params)
+        directory = query_params.get("directory")
+        if not directory:
+            q_meta = _pending_questions_metadata.get(str(request_id))
+            if q_meta:
+                directory = q_meta.get("directory")
+                
+        q_url = f"{core_service.CODE_BASE_URL}/question/{request_id}/reject"
+        url_params = {}
+        if directory:
+            url_params["directory"] = directory
+        if url_params:
+            import urllib.parse
+            q_url += "?" + urllib.parse.urlencode(url_params)
+            
+        session = await get_proxy_session()
+        async with session.post(q_url) as q_resp:
+            if q_resp.status not in [200, 201, 204]:
+                err_body = await q_resp.text()
+                logging.error(f"[OpenCode Proxy] Question reject failed ({q_resp.status}): {err_body}")
+                raise HTTPException(status_code=q_resp.status, detail=err_body)
+            
+            res = {}
+            if q_resp.status != 204:
+                try:
+                    res = await q_resp.json()
+                except Exception:
+                    try:
+                        text = await q_resp.text()
+                        if text:
+                            res = {"result": text}
+                    except Exception:
+                        pass
+            return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in question reject proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.api_route("/code/sessions/{session_id}/message", methods=["POST"])
 async def proxy_opencode_prompt(request: Request, session_id: str):
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message"
@@ -1767,69 +1848,61 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         session = await get_proxy_session()
         
         # PENDING QUESTION CHECK: If there is a question awaiting an answer for
-        # this session, place the answer in the shared dict so the SSE loop
-        # (which is still alive for the original prompt) can pick it up and
-        # proxy it to /question/{requestID}/reply.
-        pending_entry = _pending_questions.get(str(session_id))
+        # this session, we reply to the question directly and then start the SSE stream.
+        is_question_reply = False
+        pending_entry = _pending_questions.pop(str(session_id), None)
         if pending_entry:
+            is_question_reply = True
             answer = prompt_text.strip()
-            if answer:
-                pending_entry["answer"] = answer
-                logging.info(f"[OpenCode Proxy] Answer queued for session {session_id}: {answer[:80]}")
-            # Return a minimal SSE stream that immediately completes so the
-            # frontend's chatStream promise resolves cleanly.
-            async def _question_done():
-                yield b"data: {\"done\": true}\n\n"
-            return StreamingResponse(
-                _question_done(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-            )
-        
-        opencode_payload = {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": prompt_text
-                }
-            ]
-        }
-        if agent:
-            opencode_payload["agent"] = agent
-        
-        # Inject custom assistant personality & settings directly into OpenCode's system parameters
-        settings = omd_payload.get("settings", {})
-        if settings:
-            system_instructions = []
-            
-            # Map standard OMD settings into OpenCode context guidelines
-            assistant_name = settings.get("assistant_name", "").strip()
-            if assistant_name:
-                system_instructions.append(f"Your name is {assistant_name}.")
-                
-            user_name = settings.get("name", "").strip()
-            if user_name:
-                system_instructions.append(f"The user's name is {user_name}.")
-                
-            personality = settings.get("system_prompt", "").strip()
-            if personality:
-                system_instructions.append(f"Personality & Instructions:\n{personality}")
-                
-            if system_instructions:
-                opencode_payload["system"] = "\n\n".join(system_instructions)
-                
-        # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
-        code_model = core_service.CODE_MODEL
-        if "/" in code_model:
-            provider_id, model_id = code_model.split("/", 1)
+            rid = pending_entry["requestID"]
+            logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
+            target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
+            opencode_payload = {"answers": [[answer]]}
         else:
-            provider_id = "ollama"
-            model_id = code_model
+            opencode_payload = {
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": prompt_text
+                    }
+                ]
+            }
+            if agent:
+                opencode_payload["agent"] = agent
+            
+            # Inject custom assistant personality & settings directly into OpenCode's system parameters
+            settings = omd_payload.get("settings", {})
+            if settings:
+                system_instructions = []
+                
+                # Map standard OMD settings into OpenCode context guidelines
+                assistant_name = settings.get("assistant_name", "").strip()
+                if assistant_name:
+                    system_instructions.append(f"Your name is {assistant_name}.")
+                    
+                user_name = settings.get("name", "").strip()
+                if user_name:
+                    system_instructions.append(f"The user's name is {user_name}.")
+                    
+                personality = settings.get("system_prompt", "").strip()
+                if personality:
+                    system_instructions.append(f"Personality & Instructions:\n{personality}")
+                    
+                if system_instructions:
+                    opencode_payload["system"] = "\n\n".join(system_instructions)
+                    
+            # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
+            code_model = core_service.CODE_MODEL
+            if "/" in code_model:
+                provider_id, model_id = code_model.split("/", 1)
+            else:
+                provider_id = "ollama"
+                model_id = code_model
 
-        opencode_payload["model"] = {
-            "providerID": provider_id,
-            "modelID": model_id
-        }
+            opencode_payload["model"] = {
+                "providerID": provider_id,
+                "modelID": model_id
+            }
         
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -1845,9 +1918,13 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             resolved_dir = resolve_session_directory(directory)
             target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
             logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
+            
+        if resolved_dir:
+            _active_session_directories[str(session_id)] = resolved_dir
         
         async def stream_generator():
             read_task = None
+            event_stream_closed = False
             try:
                 # 0. Yield initial status to inform UI immediately
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
@@ -1858,8 +1935,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 if resolved_dir:
                     import urllib.parse
                     event_url += f"&directory={urllib.parse.quote(resolved_dir)}"
+                class _AsyncNull:
+                    async def __aenter__(self): return self
+                    async def __aexit__(self, *args): pass
                 async with aiohttp.ClientSession() as sse_session:
-                    async with sse_session.get(event_url, headers={"Accept": "text/event-stream"}) as event_resp:
+                    async with _AsyncNull() as _:
+                        event_resp = await sse_session.get(event_url, headers={"Accept": "text/event-stream"})
                         if event_resp.status != 200:
                             logging.error(f"[OpenCode Proxy] Failed to connect to event stream: {event_resp.status}")
                             # Fallback: Just fire and return
@@ -1877,11 +1958,29 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 # Set infinity timeout for agentic tasks
                                 timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=None)
                                 async with session.post(target_url, json=opencode_payload, timeout=timeout) as resp:
-                                    if resp.status != 200:
+                                    if resp.status not in [200, 201, 204]:
                                         error_text = await resp.text()
                                         logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
                                         return {"error": f"Backend error: {resp.status}"}
-                                    return await resp.json()
+                                    
+                                    # Handle empty or non-JSON responses safely
+                                    res = {}
+                                    if resp.status != 204:
+                                        try:
+                                            res = await resp.json()
+                                        except Exception:
+                                            try:
+                                                text = await resp.text()
+                                                if text:
+                                                    res = {"result": text}
+                                            except Exception:
+                                                pass
+                                                
+                                    if is_question_reply:
+                                        # Wait until execution is finished to keep post_task alive
+                                        while not terminal_event_received and not event_stream_closed:
+                                            await asyncio.sleep(0.1)
+                                    return res
                             except asyncio.TimeoutError:
                                 logging.error(f"[OpenCode Proxy] POST Task timed out for {session_id}")
                                 return {"error": "Request timed out"}
@@ -1891,6 +1990,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                         event_queue = asyncio.Queue()
                         async def read_events(content_reader, queue):
+                            nonlocal event_stream_closed
                             try:
                                 logging.debug("[OpenCode Proxy] read_events started")
                                 buffer = b""
@@ -1911,6 +2011,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
                             finally:
                                 logging.debug("[OpenCode Proxy] read_events finished")
+                                event_stream_closed = True
                                 await queue.put(None)
                         
                         # 3. Start the event stream reader task first to establish the socket connection
@@ -1999,8 +2100,41 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     continue
 
                                 if line is None:
-                                    logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF).")
-                                    break
+                                    if post_task.done():
+                                        logging.info(f"[OpenCode Proxy] SSE Connection closed by backend (EOF) and post_task is done. Closing stream.")
+                                        break
+                                    else:
+                                        logging.info(f"[OpenCode Proxy] SSE Connection closed (EOF) but post_task is still running. Reconnecting to SSE stream...")
+                                        if read_task and not read_task.done():
+                                            read_task.cancel()
+                                            try:
+                                                await read_task
+                                            except Exception:
+                                                pass
+                                        try:
+                                            event_resp.close()
+                                        except Exception:
+                                            pass
+                                        try:
+                                            event_resp = await sse_session.get(event_url, headers={"Accept": "text/event-stream"})
+                                            if event_resp.status == 200:
+                                                logging.info(f"[OpenCode Proxy] SSE Reconnected successfully.")
+                                                read_task = asyncio.create_task(read_events(event_resp.content, event_queue))
+                                                session_tasks[str(session_id)] = {
+                                                    "read_task": read_task,
+                                                    "sse_session": sse_session
+                                                }
+                                                continue
+                                            else:
+                                                logging.error(f"[OpenCode Proxy] SSE Reconnect failed with status {event_resp.status}. Waiting before retry.")
+                                                await asyncio.sleep(1.0)
+                                                await event_queue.put(None)
+                                                continue
+                                        except Exception as recon_err:
+                                            logging.error(f"[OpenCode Proxy] SSE Reconnect exception: {recon_err}. Waiting before retry.")
+                                            await asyncio.sleep(1.0)
+                                            await event_queue.put(None)
+                                            continue
                                     
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith("data: "):
@@ -2023,7 +2157,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             "requestID": req_id,
                                                             "answer": None,
                                                         }
-                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}")
+                                                        _pending_questions_metadata[str(req_id)] = {
+                                                            "session_id": str(session_id),
+                                                            "directory": resolved_dir
+                                                        }
+                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
                                                         questions_arr = props.get("questions", [])
                                                         first = questions_arr[0] if questions_arr else {}
                                                         q_text = first.get("question", "")
@@ -2032,12 +2170,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         terminal_event_received = False
                                                 elif event_type == "question.replied":
                                                     req_id = props.get("requestID")
+                                                    _pending_questions_metadata.pop(str(req_id), None)
                                                     entry = _pending_questions.get(str(session_id))
                                                     if entry and entry.get("requestID") == req_id:
                                                         _pending_questions.pop(str(session_id), None)
                                                         logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
                                                 elif event_type == "question.rejected":
                                                     req_id = props.get("requestID")
+                                                    _pending_questions_metadata.pop(str(req_id), None)
                                                     entry = _pending_questions.get(str(session_id))
                                                     if entry and entry.get("requestID") == req_id:
                                                         _pending_questions.pop(str(session_id), None)
@@ -2190,6 +2330,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 logging.error(f"[OpenCode Proxy] Stream error: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n".encode('utf-8')
             finally:
+                if 'event_resp' in locals() and event_resp:
+                    try:
+                        event_resp.close()
+                    except Exception:
+                        pass
                 if read_task and not read_task.done():
                     read_task.cancel()
                     try:
@@ -2205,7 +2350,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         except asyncio.CancelledError:
                             pass
                 # Clean up any pending question entry for this session
-                _pending_questions.pop(str(session_id), None)
+                pq = _pending_questions.pop(str(session_id), None)
+                if pq and pq.get("requestID"):
+                    _pending_questions_metadata.pop(str(pq["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
         
         return StreamingResponse(
@@ -2829,47 +2976,16 @@ async def ollama_show(request: Request):
     return await proxy_request(target_url, request, method="POST")
 
 
-# --- Q&A Matching Endpoints ---
+# --- Q&A Matching Endpoints (ChromaDB) ---
 
 @app.post("/qa/load")
 async def qa_load(data: dict):
     entries = data.get("entries", [])
-    questions = [e["question"] for e in entries]
-    answers = [e["answer"] for e in entries]
-    if questions:
-        app.state.qa_embeddings = memory_index.get_model().encode(
-            questions, convert_to_numpy=True, normalize_embeddings=True
-        ).astype(np.float32)
-    else:
-        app.state.qa_embeddings = None
-    app.state.qa_questions = questions
-    app.state.qa_answers = answers
-    os.makedirs(QA_INDEX_DIR, exist_ok=True)
-    with open(os.path.join(QA_INDEX_DIR, "questions.json"), "w") as f:
-        json.dump(questions, f)
-    with open(os.path.join(QA_INDEX_DIR, "answers.json"), "w") as f:
-        json.dump(answers, f)
-    if app.state.qa_embeddings is not None:
-        np.save(os.path.join(QA_INDEX_DIR, "embeddings.npy"), app.state.qa_embeddings)
-    else:
-        npy_path = os.path.join(QA_INDEX_DIR, "embeddings.npy")
-        if os.path.exists(npy_path):
-            os.remove(npy_path)
-    return {"ok": True, "count": len(questions)}
+    count = memory_index.qa_load_entries(entries)
+    return {"ok": True, "count": count}
 
-@app.post("/qa/search")
-async def qa_search(data: dict):
+@app.post("/qa/match")
+async def qa_match(data: dict):
     question = data.get("question", "")
     min_score = data.get("min_score", 0.8)
-    emb = app.state.qa_embeddings
-    if emb is None or not app.state.qa_questions:
-        return {"answer": None, "score": 0.0}
-    vec = memory_index.get_model().encode(
-        [question], convert_to_numpy=True, normalize_embeddings=True
-    )[0].astype(np.float32)
-    scores = emb @ vec
-    idx = int(np.argmax(scores))
-    score = float(scores[idx])
-    if score >= min_score:
-        return {"answer": app.state.qa_answers[idx], "score": score}
-    return {"answer": None, "score": score}
+    return memory_index.qa_match_query(question, min_score)

@@ -89,7 +89,7 @@
       },
       "lora_1": {
         "on": false,
-        "nsfw": true,
+        "mode": "fun",
         "name": "Busty",
         "type": "style",
         "lora": "Round_Breasts_XL_XV7-000038.safetensors",
@@ -97,7 +97,7 @@
       },
       "lora_2": {
         "on": false,
-        "nsfw": true,
+        "mode": "fun",
         "name": "Seductive",
         "type": "style",
         "lora": "Hot_Poses_beautiful_Expressions-000001.safetensors",
@@ -105,7 +105,7 @@
       },
       "lora_3": {
         "on": false,
-        "nsfw": false,
+        "mode": "work",
         "name": "Real Humans",
         "type": "style",
         "lora": "real-humans-PublicPrompts.safetensors",

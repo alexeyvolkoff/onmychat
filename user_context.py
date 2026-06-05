@@ -37,7 +37,6 @@ DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 def load_user_settings(**kwargs):
     """Возвращает базовые настройки. Все важное придет от клиента."""
     return {
-        "nsfw": False,
         "style": "realistic",
         "system_prompt": DEFAULT_USER_PROMPT,
         "assistant_name": DEFAULT_ASSISTANT_NAME,

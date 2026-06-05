@@ -42,15 +42,17 @@ DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
 CODE_BASE_URL = SETTINGS.get("CODE_BASE_URL", "http://localhost:4096")
 DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
-SFW_MODEL = SETTINGS.get("SFW_MODEL", DEFAULT_MODEL)
-NSFW_MODEL = SETTINGS.get("NSFW_MODEL", DEFAULT_MODEL)
+WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
+FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 CODE_MODEL = SETTINGS.get("CODE_MODEL", DEFAULT_MODEL)
 MCP_MODEL = DEFAULT_MODEL
 
-def get_llm_model(ctx: UserContext) -> str:
-    if ctx.settings.get("nsfw", False):
-        return NSFW_MODEL
-    return SFW_MODEL
+def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
+    if mode is None:
+        mode = ctx.settings.get("content_mode", "work")
+    if mode == "fun":
+        return FUN_MODEL
+    return WORK_MODEL
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -93,30 +95,24 @@ BASE_SYSTEM_PROMPT = get_prompt("base_system.txt")
 MEMORIZATION_PROMPT = get_prompt("memorization.txt")
 SYSTEM_INSTRUCTION_CHARACTER = get_prompt("instruction_character.txt")
 SYSTEM_INSTRUCTION_GENERAL = get_prompt("instruction_general.txt")
-IMAGE_PROMPT_NSFW = get_prompt("image_nsfw.txt")
+IMAGE_PROMPT_FUN = get_prompt("image_fun.txt")
 RAG_SYSTEM_PROMPT = get_prompt("rag_system.txt")
 IMPROVEMENT_PROMPT = get_prompt("improvement.txt")
 
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
-    "realistic_nsfw": SETTINGS["REALISTIC_MODEL_NSFW"],
     "realistic2": SETTINGS.get("REALISTIC2_MODEL", SETTINGS["REALISTIC_MODEL"]),
-    "realistic2_nsfw": SETTINGS.get("REALISTIC2_MODEL_NSFW", SETTINGS["REALISTIC_MODEL_NSFW"]),
     "perfect": SETTINGS["PERFECT_MODEL"],
-    "perfect_nsfw": SETTINGS["PERFECT_MODEL_NSFW"],
     "fantasy": SETTINGS["FANTASY_MODEL"],
-    "fantasy_nsfw": SETTINGS["FANTASY_MODEL_NSFW"],
     "tooned": SETTINGS["TOONED_MODEL"],
-    "tooned_nsfw": SETTINGS["TOONED_MODEL_NSFW"],
     "pleasure": SETTINGS["PLEASURE_MODEL"],
-    "pleasure_nsfw": SETTINGS["PLEASURE_MODEL_NSFW"],
 }
 
 NEGATIVE_PROMPTS = get_json_prompt("negative_prompts.json")
 INTENT_PROMPT = get_prompt("intent.txt")
-SAFETY_CHECK_PROMPT = get_prompt("safety_check.txt")
+CONTENT_FILTER_PROMPT = get_prompt("content_filter.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
-NSFW_PREPHASE = get_prompt("nsfw_prephase.txt")
+FUN_PREPHASE = get_prompt("fun_prephase.txt")
 DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
 IMAGE_NEUTRAL_DESC_PROMPT = get_prompt("image_neutral_desc.txt")
 
@@ -671,9 +667,9 @@ async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str
         logging.error(f"Error in modify_odt_file: {e}", exc_info=True)
         return f"Error modifying ODT file: {e}"
 
-async def list_supported_tools(ctx: UserContext) -> str:
-    if ctx.settings.get("nsfw", False):
-        return "No tools available in NSFW mode."
+async def list_supported_tools(ctx: UserContext, mode: str = "work") -> str:
+    if mode == "fun":
+        return "No tools available in fun mode."
     # Construct description from MCP_TOOLS to ensure it's always accurate
     output = "Currently supported System Tools:\n"
     for tool in MCP_TOOLS:
@@ -1126,8 +1122,8 @@ def clean_assistant_response(text: str) -> str:
         
     return "\n".join(cleaned_lines).strip()
 
-async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history: list|None = None) -> AsyncGenerator[dict, None]:
-    if ctx.settings.get("nsfw", False):
+async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "work", provided_history: list|None = None) -> AsyncGenerator[dict, None]:
+    if mode == "fun":
         return
         
     # Clean the routing prefix / slash command from the beginning of the message to prevent LLM confusion
@@ -1150,7 +1146,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, provided_history
     slash_commands = {
         "/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", 
         "/chat", "/code", "/import", "/show", "/view", "/imagine", "/learn", 
-        "/recognize", "/detect", "/think", "/explain", "/search", "/nsfw", "/tools"
+        "/recognize", "/detect", "/think", "/explain", "/search",     "/mode", "/tools"
     }
     
     for p in raw_paths:
@@ -2078,7 +2074,7 @@ def get_model_avatar_path(model_name: str) -> str:
     return avatar_path
 
 
-def get_available_loras(ctx: UserContext = None, nsfw: bool | None = None) -> list:
+def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> list:
     lora_file = os.path.join(os.path.dirname(__file__), "analog_character_lora.json")
     if os.path.exists(lora_file):
         try:
@@ -2094,18 +2090,19 @@ def get_available_loras(ctx: UserContext = None, nsfw: bool | None = None) -> li
                     for input_key, input_val in inputs.items():
                         if input_key.startswith("lora_") and isinstance(input_val, dict):
                             if "name" in input_val:
-                                # Prioritize explicit nsfw flag, then fallback to ctx
-                                if nsfw is not None:
-                                    user_nsfw = nsfw
+                                # Prioritize explicit mode flag, then fallback to ctx
+                                if mode is not None:
+                                    user_mode = mode
                                 elif ctx:
-                                    user_nsfw = ctx.settings.get("nsfw", False)
+                                    user_mode = ctx.settings.get("content_mode", "work")
                                 else:
-                                    user_nsfw = False
+                                    user_mode = "work"
                                     
-                                # Filter based on NSFW setting
-                                lora_nsfw = input_val.get("nsfw", False)
-                                # Skip NSFW loras if user has NSFW disabled
-                                if lora_nsfw and not user_nsfw:
+                                # Filter based on mode setting
+                                lora_mode = input_val.get("mode", input_val.get("nsfw", False))
+                                lora_mode_str = "fun" if lora_mode else "work"
+                                # Skip fun loras if user is in work mode
+                                if lora_mode_str == "fun" and user_mode == "work":
                                     continue
                                 
                                 loras.append({
@@ -2465,9 +2462,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     # Load RAG_TOP_K from SETTINGS
     rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
 
-    # Force skip_db if NSFW is enabled to exclude working knowledge base search and only use frontend-provided facts
-    if ctx.settings.get("nsfw", False):
-        logging.info("[memory] NSFW mode enabled: skipping working database and indexed files search, using provided knowledge only.")
+    # Force skip_db if fun mode is enabled to exclude working knowledge base search and only use frontend-provided facts
+    if ctx.settings.get("content_mode", "work") == "fun":
+        logging.info("[memory] Fun mode enabled: skipping working database and indexed files search, using provided knowledge only.")
         skip_db = True
 
     # Личные воспоминания (только если предоставлены фронтендом)
@@ -2585,8 +2582,9 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_history: list = None,
                          provided_knowledge: list = None) -> AsyncGenerator:
 
-    model = get_llm_model(ctx)
-    nsfw_enabled = ctx.settings.get("nsfw", False)
+    mode = ctx.settings.get("content_mode", "work")
+    model = get_llm_model(ctx, mode)
+    fun_mode = mode == "fun"
     b64_image = None
     
     # Internal flags
@@ -2664,8 +2662,8 @@ async def _perform_prompt_gen(ctx: UserContext,
         if strict_fact:
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
         
-    if nsfw_enabled:
-        system_prompt = f"{NSFW_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
+    if fun_mode:
+        system_prompt = f"{FUN_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
     else:  
         system_prompt = f"{BASE_SYSTEM_PROMPT}"
 
@@ -2687,7 +2685,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
     system_prompt += "\n\n*Appearance overrides:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
-    logging.info(f"Model: {model}\nNSFW: {nsfw_enabled}\nUser: {username}")
+    logging.info(f"Model: {model}\nMode: {mode}\nUser: {username}")
 
     # Факты
     if facts_text:
@@ -2701,14 +2699,14 @@ async def _perform_prompt_gen(ctx: UserContext,
     if user_lang:
         instruction_prompt += f"\nPrefer user's language ({user_lang}) for generating responses."
 
-    if not nsfw_enabled:
+    if not fun_mode:
         instruction_prompt += "\nThe conversation is continuous; avoid redundancy. Use the provided tool results as the absolute source of truth."
         
         # [HALLUCINATION SHIELD]
         instruction_prompt += "\nCRITICAL: NEVER generate fake tool results. Do NOT use `tool_code` or `*System Tool Output:\n*` blocks yourself. Only the system provides tool results. If tools find nothing, state that it was not found. Do NOT invent content. Do NOT pretend to run actions like saving files by inventing system logs."
 
-    if nsfw_enabled:
-        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, NSFW mode"
+    if fun_mode:
+        instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, fun mode"
 
     # === Gemma 4 Thinking Mode ===
     is_simple_chat = not chat.startswith("/code/")
@@ -3093,7 +3091,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
 
 
 async def check_prompt_safety(ctx: UserContext, prompt: str) -> str:
-    system_prompt = SAFETY_CHECK_PROMPT
+    system_prompt = CONTENT_FILTER_PROMPT
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
@@ -3129,16 +3127,16 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     clean_appearance_text = re.sub(r"<[^>]+>", "", appearance).strip()
 
     user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + clean_appearance_text
-    nsfw_enabled = ctx.settings.get("nsfw", False)
+    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
 
     # Clean prompt from slash commands
     clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', clean_prompt_text).strip()
     if not clean_prompt:
         clean_prompt = clean_prompt_text
 
-    if nsfw_enabled:
-        system_prompt = f"{NSFW_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_NSFW}\n{instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)}"
+    if fun_mode:
+        system_prompt = f"{FUN_PREPHASE}\n{user_prompt}"
+        image_instruction = f"{IMAGE_PROMPT_FUN}\n{instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)}"
     else:  
         system_prompt =  user_prompt
         image_instruction = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
@@ -3354,11 +3352,12 @@ async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
 async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
     """Generate a safe, neutral description for the image prompt."""
     
-    model = get_llm_model(ctx)
-    if ctx.settings.get("nsfw", False):
-         # In NSFW mode, we must prime the model to accept the input prompt
+    mode = ctx.settings.get("content_mode", "work")
+    model = get_llm_model(ctx, mode)
+    if mode == "fun":
+         # In fun mode, we must prime the model to accept the input prompt
          # but still instruct it to output a neutral, safe description.
-         instruction = NSFW_PREPHASE + "\n\n" + IMAGE_PROMPT_NSFW + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+         instruction = FUN_PREPHASE + "\n\n" + IMAGE_PROMPT_FUN + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
     else:
          instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
     
@@ -3405,11 +3404,11 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
 
     user_id = ctx.user_id
 
-    nsfw_enabled = ctx.settings.get("nsfw", False)
+    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
-    if nsfw_enabled:
-        negative_prompt = NEGATIVE_PROMPTS["nsfw"] + "," + negative_prompt
+    if fun_mode:
+        negative_prompt = NEGATIVE_PROMPTS["fun"] + "," + negative_prompt
 
 
     logging.info(f"Generating image for user: {user_id}")
@@ -3435,48 +3434,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         tag_lower = tag.lower()
         if tag_lower in STYLE_MODELS:
             style = tag_lower
-            # If nsfw is enabled and we picked a base style, switch to nsfw version if available
-            if nsfw_enabled and not style.endswith("_nsfw"):
-                 if f"{style}_nsfw" in STYLE_MODELS:
-                     style = f"{style}_nsfw"
-            # If nsfw is disabled and we picked an nsfw style, switch to base version if available
-            elif not nsfw_enabled and style.endswith("_nsfw"):
-                 base_style = style[:-5]
-                 if base_style in STYLE_MODELS:
-                     style = base_style
             break
-
-    # Apply NSFW suffix if not already present and using default setting logic (or if tag didn't handle it fully)
-    # Actually, let's simplify: if we didn't find a tag, we use settings.
-    # If we found a tag, we already tried to adjust it above.
-    # But if we are using settings, we need to apply nsfw logic.
-    
-    # Re-evaluating logic flow:
-    # 1. Default style from settings
-    # 2. Override with tag if found
-    # 3. Apply NSFW modifier based on nsfw_enabled flag
-    
-    style_from_tag = None
-    for tag in tags:
-        tag_lower = tag.lower()
-        # Check if it is a valid style key (ignoring nsfw suffix for matching purposes if possible, or just match exact keys)
-        # Let's match exact keys first, but also base keys.
-        if tag_lower in STYLE_MODELS:
-            style_from_tag = tag_lower
-            break
-            
-    if style_from_tag:
-        style = style_from_tag
-        
-    # Now ensure style matches nsfw setting
-    if nsfw_enabled:
-        if not style.endswith("_nsfw") and f"{style}_nsfw" in STYLE_MODELS:
-            style = f"{style}_nsfw"
-    else:
-        if style.endswith("_nsfw"):
-             base_style = style[:-5]
-             if base_style in STYLE_MODELS:
-                 style = base_style
 
     model = STYLE_MODELS.get(style, STYLE_MODELS["realistic"]) # Fallback just in case
     workflow_json["127"]["inputs"]["ckpt_name"] = model
@@ -3601,10 +3559,10 @@ async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
-    nsfw_enabled = ctx.settings.get("nsfw", False)
+    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
 
-    if nsfw_enabled:
-        system_prompt = NSFW_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
+    if fun_mode:
+        system_prompt = FUN_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
     else:
         system_prompt =  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
 
@@ -3986,13 +3944,6 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
         }
         backend_style = style_map.get(style, "realistic")
         
-        nsfw = ctx.settings.get("nsfw", False)
-        if nsfw:
-            backend_style_nsfw = backend_style + "_nsfw"
-            if backend_style_nsfw in STYLE_MODELS:
-                backend_style = backend_style_nsfw
-                
-        # STYLE_MODELS values are filenames (strings), not dicts
         ckpt_filename = STYLE_MODELS.get(backend_style, STYLE_MODELS["realistic"])
     
         # 3. Setup Workflow Parameters
@@ -4022,7 +3973,7 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
         prompt_set = False
         
         # Add appearance to prompt
-        negative_prompt = NEGATIVE_PROMPTS["nsfw"] + ", " + NEGATIVE_PROMPTS["base"]
+        negative_prompt = NEGATIVE_PROMPTS["fun"] + ", " + NEGATIVE_PROMPTS["base"]
         appearance = ctx.settings.get("assistant_appearance", "")
         full_prompt = f"{prompt} {appearance}"
         logging.info(f"Generating avatar with style={style}, character={character_lora} prompt={full_prompt}")
