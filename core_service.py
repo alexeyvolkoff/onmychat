@@ -1195,6 +1195,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     system_instruction += f"\n\n- USERNAME: '{username}'"
     system_instruction += f"\n- CURRENT DATE: {current_date} (ISO format: {current_date_iso})"
     
+    # Inject assistant personality settings
+    if ctx:
+        assistant_name = ctx.settings.get("assistant_name", "").strip()
+        if assistant_name:
+            system_instruction += f"\n- ASSISTANT NAME: '{assistant_name}'"
+            
+        personality = ctx.settings.get("system_prompt", "").strip()
+        if personality:
+            system_instruction += f"\n- PERSONALITY:\n{personality}"
+    
     if ctx and ctx.storage:
         storage_id = ctx.storage.strip("/")
         if storage_id:
