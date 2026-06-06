@@ -2925,44 +2925,6 @@ async def openai_chat_completions(request: Request):
 
     session = await get_proxy_session()
 
-    # Helper function to find JSON blocks in text.
-    # Returns (start_idx, end_idx, parsed_dict_if_tool_call, is_tool_call) or None if not balanced.
-    def find_json_block(text: str) -> tuple[int, int, dict | None, bool] | None:
-        start_idx = text.find("{")
-        if start_idx == -1:
-            return None
-        balance = 0
-        in_string = False
-        escape = False
-        for i in range(start_idx, len(text)):
-            char = text[i]
-            if escape:
-                escape = False
-                continue
-            if char == "\\":
-                escape = True
-                continue
-            if char == '"':
-                in_string = not in_string
-                continue
-            if not in_string:
-                if char == "{":
-                    balance += 1
-                elif char == "}":
-                    balance -= 1
-                    if balance == 0:
-                        candidate = text[start_idx:i+1]
-                        try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, dict) and "action" in parsed:
-                                return start_idx, i+1, parsed, True
-                            else:
-                                return start_idx, i+1, None, False
-                        except Exception:
-                            pass
-                        return start_idx, i+1, None, False
-        return None
-
     if stream:
         try:
             resp = await session.post(target_url, json=req_body, headers=headers)
@@ -2975,30 +2937,6 @@ async def openai_chat_completions(request: Request):
             accumulated_reasoning = ""
             has_tool_calls = False
             last_chunk_data = None
-            
-            content_buffer = ""
-
-            def create_modified_chunk(content_val: str = "", tool_call_obj: dict = None, finish_reason: str = None) -> bytes:
-                import uuid
-                chunk = {
-                    "id": last_chunk_data.get("id") if last_chunk_data else f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                    "object": "chat.completion.chunk",
-                    "created": last_chunk_data.get("created") if last_chunk_data else int(datetime.datetime.now().timestamp()),
-                    "model": model_name,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": finish_reason
-                    }]
-                }
-                delta = chunk["choices"][0]["delta"]
-                if content_val:
-                    delta["content"] = content_val
-                if tool_call_obj:
-                    delta["tool_calls"] = [tool_call_obj]
-                else:
-                    delta["role"] = "assistant"
-                return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
 
             try:
                 async for line in resp.content:
@@ -3008,17 +2946,6 @@ async def openai_chat_completions(request: Request):
                     if line_str.startswith("data:"):
                         raw_data = line_str[5:].strip()
                         if raw_data == "[DONE]":
-                            if content_buffer:
-                                flush_text = content_buffer.strip()
-                                for fence in ["```json", "```", "```\n", "\n```"]:
-                                    if flush_text.startswith(fence):
-                                        flush_text = flush_text[len(fence):].strip()
-                                    if flush_text.endswith(fence):
-                                        flush_text = flush_text[:-len(fence)].strip()
-                                if flush_text:
-                                    yield create_modified_chunk(content_val=flush_text)
-                                content_buffer = ""
-
                             if accumulated_reasoning and not accumulated_content and not has_tool_calls:
                                 logging.info("[OpenAI Proxy] Injecting spacer chunk to prevent validation error for empty content")
                                 spacer_data = {
@@ -3042,14 +2969,11 @@ async def openai_chat_completions(request: Request):
                             last_chunk_data = data
                             choices = data.get("choices", [])
                             
-                            yield_now = True
                             for choice in choices:
                                 delta = choice.get("delta", {})
                                 
                                 if delta.get("content"):
-                                    content_val = delta["content"]
-                                    yield_now = False
-                                    content_buffer += content_val
+                                    accumulated_content += delta["content"]
                                     
                                 if delta.get("tool_calls"):
                                     has_tool_calls = True
@@ -3059,100 +2983,7 @@ async def openai_chat_completions(request: Request):
                                     delta["reasoning_content"] = reasoning_val
                                     accumulated_reasoning += reasoning_val
 
-                            if yield_now:
-                                if content_buffer:
-                                    flush_text = content_buffer.strip()
-                                    for fence in ["```json", "```", "```\n", "\n```"]:
-                                        if flush_text.startswith(fence):
-                                            flush_text = flush_text[len(fence):].strip()
-                                        if flush_text.endswith(fence):
-                                            flush_text = flush_text[:-len(fence)].strip()
-                                    if flush_text:
-                                        accumulated_content += flush_text
-                                        yield create_modified_chunk(content_val=flush_text)
-                                    content_buffer = ""
-                                yield f"data: {json.dumps(data)}\n\n".encode("utf-8")
-                                continue
-
-                            # Process content buffer to extract JSON tool calls
-                            while True:
-                                first_brace = content_buffer.find("{")
-                                if first_brace == -1:
-                                    if len(content_buffer) > 40:
-                                        flush_len = len(content_buffer) - 10
-                                        flush_text = content_buffer[:flush_len]
-                                        content_buffer = content_buffer[flush_len:]
-                                        
-                                        clean_flush = flush_text
-                                        for fence in ["```json", "```"]:
-                                            if clean_flush.startswith(fence):
-                                                clean_flush = clean_flush[len(fence):]
-                                            if clean_flush.endswith(fence):
-                                                clean_flush = clean_flush[:-len(fence)]
-                                        if clean_flush:
-                                            accumulated_content += clean_flush
-                                            yield create_modified_chunk(content_val=clean_flush)
-                                    break
-                                else:
-                                    match = find_json_block(content_buffer)
-                                    if match:
-                                        start, end, parsed, is_tool = match
-                                        
-                                        prefix = content_buffer[:start]
-                                        clean_prefix = prefix
-                                        for fence in ["```json", "```", "```\n", "\n```"]:
-                                            if clean_prefix.endswith(fence):
-                                                clean_prefix = clean_prefix[:-len(fence)]
-                                            if clean_prefix.startswith(fence):
-                                                clean_prefix = clean_prefix[len(fence):]
-                                        clean_prefix = clean_prefix.strip()
-                                        if clean_prefix:
-                                            accumulated_content += clean_prefix
-                                            yield create_modified_chunk(content_val=clean_prefix)
-                                            
-                                        block_str = content_buffer[start:end]
-                                        if is_tool:
-                                            tool_action = parsed.get("action")
-                                            tool_input = parsed.get("action_input") or {}
-                                            logging.info(f"[OpenAI Proxy] Extracted JSON tool call: action={tool_action}, args={tool_input}")
-                                            
-                                            import uuid
-                                            call_id = "call_" + uuid.uuid4().hex[:8]
-                                            tool_call_obj = {
-                                                "id": call_id,
-                                                "index": 0,
-                                                "type": "function",
-                                                "function": {
-                                                    "name": tool_action,
-                                                    "arguments": json.dumps(tool_input)
-                                                }
-                                            }
-                                            has_tool_calls = True
-                                            yield create_modified_chunk(tool_call_obj=tool_call_obj, finish_reason="tool_calls")
-                                        else:
-                                            accumulated_content += block_str
-                                            yield create_modified_chunk(content_val=block_str)
-                                            
-                                        content_buffer = content_buffer[end:]
-                                        content_buffer = content_buffer.lstrip()
-                                        if content_buffer.startswith("```"):
-                                            content_buffer = content_buffer[3:].lstrip()
-                                        continue
-                                    else:
-                                        if len(content_buffer) > 1000:
-                                            flush_text = content_buffer[:500]
-                                            content_buffer = content_buffer[500:]
-                                            
-                                            clean_flush = flush_text
-                                            for fence in ["```json", "```"]:
-                                                if clean_flush.startswith(fence):
-                                                    clean_flush = clean_flush[len(fence):]
-                                                if clean_flush.endswith(fence):
-                                                    clean_flush = clean_flush[:-len(fence)]
-                                            if clean_flush:
-                                                accumulated_content += clean_flush
-                                                yield create_modified_chunk(content_val=clean_flush)
-                                        break
+                            yield f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
                         except Exception as parse_err:
                             logging.warning(f"[OpenAI Proxy] Error transforming line: {parse_err}")
@@ -3182,35 +3013,6 @@ async def openai_chat_completions(request: Request):
                         reasoning_val = msg.pop("reasoning", None) or msg.pop("thinking", None)
                         if reasoning_val is not None:
                             msg["reasoning_content"] = reasoning_val
-                            
-                        # Extract JSON tool calls from content if any
-                        content = msg.get("content", "")
-                        if content:
-                            match = find_json_block(content)
-                            if match:
-                                start, end, parsed, is_tool = match
-                                if is_tool:
-                                    tool_action = parsed.get("action")
-                                    tool_input = parsed.get("action_input") or {}
-                                    
-                                    prefix = content[:start].strip()
-                                    for fence in ["```json", "```"]:
-                                        if prefix.endswith(fence):
-                                            prefix = prefix[:-len(fence)].strip()
-                                    msg["content"] = prefix
-                                    
-                                    import uuid
-                                    call_id = "call_" + uuid.uuid4().hex[:8]
-                                    msg["tool_calls"] = [{
-                                        "id": call_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_action,
-                                            "arguments": json.dumps(tool_input)
-                                        }
-                                    }]
-                                    choice["finish_reason"] = "tool_calls"
-                                    logging.info(f"[OpenAI Proxy] Translated non-streaming JSON tool call: action={tool_action}")
                             
                         if reasoning_val and not msg.get("content") and not msg.get("tool_calls"):
                             msg["content"] = " "
