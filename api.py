@@ -2881,6 +2881,8 @@ async def opencode_proxy(request: Request, path: str):
     )
     
     if is_ollama:
+        if path.startswith("v1/chat/completions"):
+            return await openai_chat_completions(request)
         target_url = f"{core_service.OLLAMA_URL}/{path}"
     else:
         # Static assets and local OpenCode endpoints (including their own /api/ routes)
@@ -2895,9 +2897,130 @@ async def opencode_proxy(request: Request, path: str):
 async def openai_chat_completions(request: Request):
     """
     Proxies OpenAI-style chat completions to Ollama.
+    Intercepts the request/response to log and fix the reasoning fields,
+    preventing empty content/tool calls errors in the client SDK.
     """
     target_url = f"{core_service.OLLAMA_URL}/v1/chat/completions"
-    return await proxy_request(target_url, request, method="POST")
+    
+    try:
+        req_body = await request.json()
+    except Exception as e:
+        logging.warning(f"[OpenAI Proxy] Failed to parse request JSON: {e}")
+        return await proxy_request(target_url, request, method="POST")
+
+    model_name = req_body.get("model", "")
+    stream = req_body.get("stream", False)
+    messages = req_body.get("messages", [])
+    has_tools = "tools" in req_body
+
+    logging.info(f"[OpenAI Proxy] Request: model={model_name}, stream={stream}, messages={len(messages)}, has_tools={has_tools}")
+
+    # Prepare request headers
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("content-length", None)
+    headers.pop("connection", None)
+    headers.pop("accept-encoding", None)
+    headers["accept-encoding"] = "identity"
+
+    session = await get_proxy_session()
+
+    if stream:
+        try:
+            resp = await session.post(target_url, json=req_body, headers=headers)
+        except Exception as e:
+            logging.error(f"[OpenAI Proxy] Error starting stream to Ollama: {e}")
+            raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
+
+        async def stream_generator():
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            has_tool_calls = False
+            last_chunk_data = None
+            try:
+                async for line in resp.content:
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str:
+                        continue
+                    if line_str.startswith("data:"):
+                        raw_data = line_str[5:].strip()
+                        if raw_data == "[DONE]":
+                            if accumulated_reasoning and not accumulated_content and not has_tool_calls:
+                                logging.info("[OpenAI Proxy] Injecting spacer chunk to prevent validation error for empty content")
+                                spacer_data = {
+                                    "id": last_chunk_data.get("id") if last_chunk_data else "chatcmpl-spacer",
+                                    "object": "chat.completion.chunk",
+                                    "created": last_chunk_data.get("created") if last_chunk_data else int(datetime.datetime.now().timestamp()),
+                                    "model": model_name,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": " "},
+                                        "finish_reason": None
+                                    }]
+                                }
+                                yield f"data: {json.dumps(spacer_data)}\n\n".encode("utf-8")
+                            
+                            yield b"data: [DONE]\n\n"
+                            continue
+
+                        try:
+                            data = json.loads(raw_data)
+                            last_chunk_data = data
+                            choices = data.get("choices", [])
+                            for choice in choices:
+                                delta = choice.get("delta", {})
+                                
+                                if delta.get("content"):
+                                    accumulated_content += delta["content"]
+                                if delta.get("tool_calls"):
+                                    has_tool_calls = True
+                                    
+                                reasoning_val = delta.pop("reasoning", None) or delta.pop("thinking", None)
+                                if reasoning_val is not None:
+                                    delta["reasoning_content"] = reasoning_val
+                                    accumulated_reasoning += reasoning_val
+
+                            yield f"data: {json.dumps(data)}\n\n".encode("utf-8")
+                        except Exception as parse_err:
+                            logging.warning(f"[OpenAI Proxy] Error transforming line: {parse_err}")
+                            yield line + b"\n"
+                    else:
+                        yield line + b"\n"
+            finally:
+                resp.close()
+
+        response_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+        return StreamingResponse(stream_generator(), status_code=resp.status, headers=response_headers)
+
+    else:
+        try:
+            async with session.post(target_url, json=req_body, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    choices = data.get("choices", [])
+                    for choice in choices:
+                        msg = choice.get("message", {})
+                        
+                        reasoning_val = msg.pop("reasoning", None) or msg.pop("thinking", None)
+                        if reasoning_val is not None:
+                            msg["reasoning_content"] = reasoning_val
+                            
+                        if reasoning_val and not msg.get("content") and not msg.get("tool_calls"):
+                            msg["content"] = " "
+                            logging.info("[OpenAI Proxy] Injected spacer into message to prevent empty content error")
+                            
+                    return JSONResponse(status_code=200, content=data)
+                else:
+                    text = await resp.text()
+                    return Response(content=text, status_code=resp.status, media_type=resp.content_type)
+        except Exception as e:
+            logging.error(f"[OpenAI Proxy] Error during non-streaming completions: {e}")
+            raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
 
 @app.get("/v1/models")
 async def openai_models(request: Request):
