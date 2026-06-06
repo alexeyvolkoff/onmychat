@@ -2724,7 +2724,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
 
     if is_gemma4:
-        if is_simple_chat and intent in thinking_intents:
+        if (is_simple_chat and intent in thinking_intents) or not is_simple_chat:
             logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
             # Ollama API handles the reasoning start logic automatically when 'think': True
         else:
@@ -2778,7 +2778,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     }
 
     if is_gemma4:
-        if is_simple_chat and intent in thinking_intents:
+        if (is_simple_chat and intent in thinking_intents) or not is_simple_chat:
             main_payload["think"] = True
         else:
             main_payload["think"] = False
@@ -2840,10 +2840,85 @@ async def _perform_prompt_gen(ctx: UserContext,
                 yield {"facts": strict_fact, "done": False, "event": event}
             accumulated_response = ""
             accumulated_thinking = ""
-            thinking = False
+            
+            class StreamParser:
+                def __init__(self):
+                    self.buffer = ""
+                    self.thinking = False
+
+                def feed(self, delta: str) -> list[dict]:
+                    self.buffer += delta
+                    events = []
+                    OPEN_TAG = "<|channel>thought\n"
+                    CLOSE_TAG = "<channel|>"
+                    while True:
+                        if not self.thinking:
+                            idx = self.buffer.find(OPEN_TAG)
+                            if idx != -1:
+                                content = self.buffer[:idx]
+                                if content:
+                                    events.append({"type": "content", "text": content})
+                                self.thinking = True
+                                self.buffer = self.buffer[idx + len(OPEN_TAG):]
+                                continue
+                            else:
+                                longest_prefix = 0
+                                for i in range(1, len(OPEN_TAG)):
+                                    prefix = OPEN_TAG[:i]
+                                    if self.buffer.endswith(prefix):
+                                        longest_prefix = i
+                                safe_len = len(self.buffer) - longest_prefix
+                                if safe_len > 0:
+                                    content = self.buffer[:safe_len]
+                                    events.append({"type": "content", "text": content})
+                                    self.buffer = self.buffer[safe_len:]
+                                break
+                        else:
+                            idx = self.buffer.find(CLOSE_TAG)
+                            if idx != -1:
+                                thought = self.buffer[:idx]
+                                if thought:
+                                    events.append({"type": "thought", "text": thought})
+                                self.thinking = False
+                                self.buffer = self.buffer[idx + len(CLOSE_TAG):]
+                                continue
+                            else:
+                                longest_prefix = 0
+                                for i in range(1, len(CLOSE_TAG)):
+                                    prefix = CLOSE_TAG[:i]
+                                    if self.buffer.endswith(prefix):
+                                        longest_prefix = i
+                                safe_len = len(self.buffer) - longest_prefix
+                                if safe_len > 0:
+                                    thought = self.buffer[:safe_len]
+                                    events.append({"type": "thought", "text": thought})
+                                    self.buffer = self.buffer[safe_len:]
+                                break
+                    return events
+
+                def flush(self) -> list[dict]:
+                    events = []
+                    if self.buffer:
+                        if self.thinking:
+                            events.append({"type": "thought", "text": self.buffer})
+                        else:
+                            events.append({"type": "content", "text": self.buffer})
+                        self.buffer = ""
+                    return events
+
+            parser = StreamParser()
             logging.info(f"Requesting LLM {model}")
             async for data in llm_request_stream(main_payload):
                 if data.get("done"):  
+                    # flush remaining bytes in parser
+                    for ev in parser.flush():
+                        if ev["type"] == "content":
+                            accumulated_response += ev["text"]
+                            yield {"delta": ev["text"], "done": False}
+                        else:
+                            accumulated_thinking += ev["text"]
+                            yield {"thought_delta": ev["text"], "done": False}
+                            
                     # финал: собираем response на основе всего текста
                     full_data = {
                         "message": {
@@ -2868,38 +2943,24 @@ async def _perform_prompt_gen(ctx: UserContext,
                     if not delta:
                         continue
 
-                    # Gemma 4 Tag detection
-                    OPEN_TAG = "<|channel>thought\n"
-                    CLOSE_TAG = "<channel|>"
-
-                    if OPEN_TAG in delta:
-                        parts = delta.split(OPEN_TAG, 1)
-                        if parts[0]:
-                            yield {"delta": parts[0], "done": False}
-                            accumulated_response += parts[0]
-                        thinking = True
-                        delta = parts[1]
-
-                    if thinking and CLOSE_TAG in delta:
-                        parts = delta.split(CLOSE_TAG, 1)
-                        if parts[0]:
-                            yield {"thought_delta": parts[0], "done": False}
-                            accumulated_thinking += parts[0]
-                        thinking = False
-                        delta = parts[1]
-
-                    if delta:
-                        if thinking:
-                            yield {"thought_delta": delta, "done": False}
-                            accumulated_thinking += delta
+                    # Feed parser and process events
+                    suppress_stream = False
+                    for ev in parser.feed(delta):
+                        if ev["type"] == "content":
+                            accumulated_response += ev["text"]
+                            yield {"delta": ev["text"], "done": False}
+                            
+                            # Only check hallucination if NOT in thinking mode
+                            if re.search(r'(?i)\*?System Tool Output', accumulated_response):
+                                 logging.warning("Hallucinated Tool block encountered in stream, suppressing remainder.")
+                                 suppress_stream = True
+                                 break
                         else:
-                            yield {"delta": delta, "done": False}
-                            accumulated_response += delta
-                        
-                        # Only check hallucination if NOT in thinking mode
-                        if not thinking and re.search(r'(?i)\*?System Tool Output', accumulated_response):
-                             logging.warning("Hallucinated Tool block encountered in stream, suppressing remainder.")
-                             break
+                            accumulated_thinking += ev["text"]
+                            yield {"thought_delta": ev["text"], "done": False}
+                    
+                    if suppress_stream:
+                        break
                 elif data.get("error"):    
                     logging.warning(f"{data['error']}")
                     yield {"error": data["error"], "done": True, "event": event}
