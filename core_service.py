@@ -2781,6 +2781,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
             "frequency_penalty": 0.6,     # штраф за частое повторение слов
             "presence_penalty": 0.5,      # штраф за повторение идей/тем
+            "num_ctx": 32768,             # явно задаём контекст, иначе Ollama берёт дефолт 4096
         }
     }
 
