@@ -2914,6 +2914,9 @@ async def _perform_prompt_gen(ctx: UserContext,
             logging.info(f"Requesting LLM {model}")
             async for data in llm_request_stream(main_payload):
                 if data.get("done"):  
+                    done_reason = data.get("done_reason", "unknown")
+                    eval_count = data.get("eval_count", "?")
+                    logging.info(f"[stream] done_reason={done_reason}, eval_count={eval_count}, accumulated_len={len(accumulated_response)}")
                     # flush remaining bytes in parser
                     for ev in parser.flush():
                         if ev["type"] == "content":
