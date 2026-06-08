@@ -133,7 +133,7 @@ def qa_load_entries(entries: list[dict]) -> int:
     coll.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=questions)
     return len(questions)
 
-def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1) -> dict:
+def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1, include_score: bool = True) -> dict:
     model = get_model()
     coll = ensure_qa_collection()
 
@@ -157,11 +157,13 @@ def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1) -> dic
             distance = results["distances"][0][i]
             score = 1.0 - distance
             if score >= min_score:
-                matches.append({
+                entry = {
                     "question": results["documents"][0][i] if results.get("documents") else "",
                     "answer": results["metadatas"][0][i]["answer"],
-                    "score": round(score, 4),
-                })
+                }
+                if include_score:
+                    entry["score"] = round(score, 4)
+                matches.append(entry)
         return {"matches": matches}
     else:
         distance = results["distances"][0][0]

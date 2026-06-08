@@ -3116,4 +3116,5 @@ async def qa_match(data: dict):
     question = data.get("question", "")
     min_score = data.get("min_score", 0.8)
     top_k = data.get("top_k", 1)
-    return memory_index.qa_match_query(question, min_score, top_k)
+    include_score = data.get("include_score", True)
+    return memory_index.qa_match_query(question, min_score, top_k, include_score)
