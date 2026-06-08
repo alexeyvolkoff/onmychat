@@ -2535,7 +2535,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 # === Ollama запрос ===
 async def llm_request_stream(payload: dict, headers: dict = None):
     try:
-        async with aiohttp.ClientSession() as session:
+        # 300-second timeout for streaming (long responses from local LLM can take time)
+        timeout = aiohttp.ClientTimeout(total=300, sock_read=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"{OLLAMA_URL}/api/chat",
                 headers=headers or {"Content-Type": "application/json"},
@@ -2967,6 +2969,13 @@ async def _perform_prompt_gen(ctx: UserContext,
                             yield {"thought_delta": ev["text"], "done": False}
                     
                     if suppress_stream:
+                        # Send done so the client doesn't hang
+                        response = await process_response({
+                            "message": {"role": "assistant", "content": accumulated_response}
+                        })
+                        response["done"] = True
+                        response["event"] = event
+                        yield response
                         break
                 elif data.get("error"):    
                     logging.warning(f"{data['error']}")
