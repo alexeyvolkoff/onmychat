@@ -133,27 +133,45 @@ def qa_load_entries(entries: list[dict]) -> int:
     coll.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=questions)
     return len(questions)
 
-def qa_match_query(question: str, min_score: float = 0.8) -> dict:
+def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1) -> dict:
     model = get_model()
     coll = ensure_qa_collection()
 
     if coll.count() == 0:
+        if top_k > 1:
+            return {"matches": []}
         return {"answer": None, "score": 0.0}
 
+    n_results = top_k if top_k > 1 else 1
     query_emb = model.encode([question], show_progress_bar=False).tolist()
-    results = coll.query(query_embeddings=query_emb, n_results=1)
+    results = coll.query(query_embeddings=query_emb, n_results=n_results)
 
     if not results["ids"] or not results["ids"][0]:
+        if top_k > 1:
+            return {"matches": []}
         return {"answer": None, "score": 0.0}
 
-    distance = results["distances"][0][0]
-    score = 1.0 - distance  # cosine distance → similarity
-    if score >= min_score:
-        return {
-            "answer": results["metadatas"][0][0]["answer"],
-            "score": round(score, 4)
-        }
-    return {"answer": None, "score": round(score, 4)}
+    if top_k > 1:
+        matches = []
+        for i in range(len(results["ids"][0])):
+            distance = results["distances"][0][i]
+            score = 1.0 - distance
+            if score >= min_score:
+                matches.append({
+                    "question": results["documents"][0][i] if results.get("documents") else "",
+                    "answer": results["metadatas"][0][i]["answer"],
+                    "score": round(score, 4),
+                })
+        return {"matches": matches}
+    else:
+        distance = results["distances"][0][0]
+        score = 1.0 - distance
+        if score >= min_score:
+            return {
+                "answer": results["metadatas"][0][0]["answer"],
+                "score": round(score, 4)
+            }
+        return {"answer": None, "score": round(score, 4)}
 
 def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: str = "") -> list[dict]:
     """
