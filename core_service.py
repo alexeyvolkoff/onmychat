@@ -2663,6 +2663,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             "stream": False,
             "options": {
                "temperature": 0.1,
+               "num_ctx": 32768,
             }
         }
         data = await llm_request(prep_payload)
