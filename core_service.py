@@ -2625,6 +2625,10 @@ async def _perform_prompt_gen(ctx: UserContext,
                 pass
     elif intent == "show":
         facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
+    elif intent == "chat":
+        # Plain chat doesn't need RAG file search — it's overkill for "how are you?"
+        # Still inject provided_knowledge (personal facts from frontend) if any.
+        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
     else:
         facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
     
