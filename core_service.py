@@ -46,6 +46,7 @@ WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
 FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 CODE_MODEL = SETTINGS.get("CODE_MODEL", DEFAULT_MODEL)
 MCP_MODEL = DEFAULT_MODEL
+LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
 
 def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode is None:
@@ -2663,7 +2664,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             "stream": False,
             "options": {
                "temperature": 0.1,
-               "num_ctx": 32768,
+               "num_ctx": LLM_NUM_CTX,
             }
         }
         data = await llm_request(prep_payload)
@@ -2781,7 +2782,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
             "frequency_penalty": 0.6,     # штраф за частое повторение слов
             "presence_penalty": 0.5,      # штраф за повторение идей/тем
-            "num_ctx": 32768,             # явно задаём контекст, иначе Ollama берёт дефолт 4096
+            "num_ctx": LLM_NUM_CTX,             # из config.ini → LLM_NUM_CTX
         }
     }
 
