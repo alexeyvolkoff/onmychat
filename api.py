@@ -33,6 +33,9 @@ _proxy_session = None
 _pending_questions: dict[str, dict] = {}
 _pending_questions_metadata: dict[str, dict] = {}
 _active_session_directories: dict[str, str] = {}
+# Tracks already-processed question requestIDs per session to prevent duplicate
+# question.asked events when SSE reconnections replay history.
+_processed_question_ids: dict[str, set[str]] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -666,6 +669,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
         _pending_questions_metadata.pop(req_id, None)
         
     _active_session_directories.pop(sid, None)
+    _processed_question_ids.pop(sid, None)
     
     # 4. Reset the global proxy session to break all lingering HTTP connections
     global _proxy_session
@@ -2177,24 +2181,30 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             is_authorized = (event_sid in authorized_sids) or (event_sid == "None") or (not event_sid)
                                             if is_authorized:
                                                 if event_type == "question.asked":
-                                                    logging.info(f"[OpenCode Proxy] question.asked event received. event_sid={event_sid}, props={props}")
-                                                    req_id = props.get("id")
-                                                    if req_id:
-                                                        _pending_questions[str(session_id)] = {
-                                                            "requestID": req_id,
-                                                            "answer": None,
-                                                        }
-                                                        _pending_questions_metadata[str(req_id)] = {
-                                                            "session_id": str(session_id),
-                                                            "directory": resolved_dir
-                                                        }
-                                                        logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
-                                                        questions_arr = props.get("questions", [])
-                                                        first = questions_arr[0] if questions_arr else {}
-                                                        q_text = first.get("question", "")
-                                                        q_opts = first.get("options", [])
-                                                        yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
-                                                        terminal_event_received = False
+                                                     logging.info(f"[OpenCode Proxy] question.asked event received. event_sid={event_sid}, props={props}")
+                                                     req_id = props.get("id")
+                                                     if req_id:
+                                                         # Dedup: skip if we already processed this question requestID for this session
+                                                         session_processed = _processed_question_ids.setdefault(str(session_id), set())
+                                                         if req_id in session_processed:
+                                                             logging.info(f"[OpenCode Proxy] Skipping duplicate question.asked: {req_id}")
+                                                         else:
+                                                             session_processed.add(req_id)
+                                                             _pending_questions[str(session_id)] = {
+                                                                 "requestID": req_id,
+                                                                 "answer": None,
+                                                             }
+                                                             _pending_questions_metadata[str(req_id)] = {
+                                                                 "session_id": str(session_id),
+                                                                 "directory": resolved_dir
+                                                             }
+                                                             logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
+                                                             questions_arr = props.get("questions", [])
+                                                             first = questions_arr[0] if questions_arr else {}
+                                                             q_text = first.get("question", "")
+                                                             q_opts = first.get("options", [])
+                                                             yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
+                                                             terminal_event_received = False
                                                 elif event_type == "question.replied":
                                                     req_id = props.get("requestID")
                                                     _pending_questions_metadata.pop(str(req_id), None)
@@ -2381,6 +2391,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 if pq and pq.get("requestID"):
                     _pending_questions_metadata.pop(str(pq["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
+                _processed_question_ids.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
