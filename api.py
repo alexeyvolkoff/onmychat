@@ -659,7 +659,34 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
                 except Exception:
                     pass
     
-    # 3. Clean up pending questions & session directories
+    # 3.1. Cancel all subagent sessions spawned by this primary session
+    child_sids = agent_sessions.pop(sid, set())
+    for child_sid in child_sids:
+        logging.info(f"[OpenCode Proxy] Force-killing subagent session: {child_sid}")
+        child_task = active_tasks.pop(child_sid, None)
+        if child_task and not child_task.done():
+            child_task.cancel()
+            try:
+                await asyncio.wait_for(child_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        child_info = session_tasks.pop(child_sid, None)
+        if child_info:
+            child_read = child_info.get("read_task")
+            if child_read and not child_read.done():
+                child_read.cancel()
+                try:
+                    await asyncio.wait_for(child_read, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            child_sse = child_info.get("sse_session")
+            if child_sse and not child_sse.closed:
+                try:
+                    await child_sse.close()
+                except Exception:
+                    pass
+
+    # 4. Clean up pending questions & session directories
     pq = _pending_questions.pop(sid, None)
     if pq and pq.get("requestID"):
         _pending_questions_metadata.pop(str(pq["requestID"]), None)
@@ -1610,6 +1637,10 @@ active_tasks = {}
 # Structure: { session_id: {"read_task": task, "sse_session": session} }
 session_tasks: dict[str, dict] = {}
 
+# Track subagent (child) sessions spawned by primary sessions.
+# Structure: { primary_sid: set[child_sid] }
+agent_sessions: dict[str, set[str]] = {}
+
 def resolve_session_directory(directory: str) -> str:
     if not directory:
         return directory
@@ -2227,6 +2258,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             if event_sid not in authorized_sids:
                                                 logging.info(f"[OpenCode Proxy] AUTHORIZING SUBAGENT session: {event_sid} (Parent: {parent_sid})")
                                                 authorized_sids.add(event_sid)
+                                                # Register globally so _force_kill_session can find and cancel it
+                                                agent_sessions.setdefault(str(session_id), set()).add(event_sid)
 
                                         # Only process events for authorized sessions (Primary + Subagents)
                                         logging.debug(f"[OpenCode Proxy] Event: {event_type} | event_sid: {event_sid} | authorized: {event_sid in authorized_sids} | authorized_sids: {list(authorized_sids)}")
@@ -2392,6 +2425,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     _pending_questions_metadata.pop(str(pq["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
+                agent_sessions.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
