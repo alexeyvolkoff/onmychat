@@ -36,6 +36,10 @@ _active_session_directories: dict[str, str] = {}
 # Tracks already-processed question requestIDs per session to prevent duplicate
 # question.asked events when SSE reconnections replay history.
 _processed_question_ids: dict[str, set[str]] = {}
+# Tracks tool part IDs that are suppressed by question.asked events.
+# When a question.asked is yielded, the corresponding tool part display
+# is redundant and should be filtered out to avoid duplicate widgets.
+_question_suppressed_parts: dict[str, set[str]] = {}
 
 async def get_proxy_session():
     global _proxy_session
@@ -670,6 +674,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
         
     _active_session_directories.pop(sid, None)
     _processed_question_ids.pop(sid, None)
+    _question_suppressed_parts.pop(sid, None)
     
     # 4. Reset the global proxy session to break all lingering HTTP connections
     global _proxy_session
@@ -2199,6 +2204,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                                  "directory": resolved_dir
                                                              }
                                                              logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
+                                                             # Track the tool part ID that this question replaces (same as req_id in OpenCode)
+                                                             _question_suppressed_parts.setdefault(str(session_id), set()).add(req_id)
                                                              questions_arr = props.get("questions", [])
                                                              first = questions_arr[0] if questions_arr else {}
                                                              q_text = first.get("question", "")
@@ -2206,19 +2213,23 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                              yield f"data: {json.dumps({'type': 'question.asked', 'requestID': req_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
                                                              terminal_event_received = False
                                                 elif event_type == "question.replied":
-                                                    req_id = props.get("requestID")
-                                                    _pending_questions_metadata.pop(str(req_id), None)
-                                                    entry = _pending_questions.get(str(session_id))
-                                                    if entry and entry.get("requestID") == req_id:
-                                                        _pending_questions.pop(str(session_id), None)
-                                                        logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
+                                                     req_id = props.get("requestID")
+                                                     if req_id:
+                                                         _pending_questions_metadata.pop(str(req_id), None)
+                                                         entry = _pending_questions.get(str(session_id))
+                                                         if entry and entry.get("requestID") == req_id:
+                                                             _pending_questions.pop(str(session_id), None)
+                                                         _question_suppressed_parts.get(str(session_id), set()).discard(req_id)
+                                                         logging.info(f"[OpenCode Proxy] Question {req_id} replied, cleaned up")
                                                 elif event_type == "question.rejected":
-                                                    req_id = props.get("requestID")
-                                                    _pending_questions_metadata.pop(str(req_id), None)
-                                                    entry = _pending_questions.get(str(session_id))
-                                                    if entry and entry.get("requestID") == req_id:
-                                                        _pending_questions.pop(str(session_id), None)
-                                                        logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
+                                                     req_id = props.get("requestID")
+                                                     if req_id:
+                                                         _pending_questions_metadata.pop(str(req_id), None)
+                                                         entry = _pending_questions.get(str(session_id))
+                                                         if entry and entry.get("requestID") == req_id:
+                                                             _pending_questions.pop(str(session_id), None)
+                                                         _question_suppressed_parts.get(str(session_id), set()).discard(req_id)
+                                                         logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
                                             continue
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
@@ -2321,28 +2332,33 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 state_obj = part.get("state")
                                                 
                                                 if part_type == "tool" and part_id:
-                                                    if isinstance(state_obj, dict):
-                                                        status = state_obj.get("status")
-                                                        if status in ["success", "error", "finished"]:
-                                                            if part_id in active_tool_parts:
-                                                                logging.info(f"[OpenCode Proxy] Tool part {part_id} finished with status: {status}")
-                                                                active_tool_parts.remove(part_id)
-                                                        else:
-                                                            logging.info(f"[OpenCode Proxy] Tool part {part_id} is active (status: {status})")
-                                                            active_tool_parts.add(part_id)
-                                                            if event_sid == str(session_id):
-                                                                terminal_event_received = False
-                                                
+                                                     if isinstance(state_obj, dict):
+                                                         status = state_obj.get("status")
+                                                         if status in ["success", "error", "finished"]:
+                                                             if part_id in active_tool_parts:
+                                                                 logging.info(f"[OpenCode Proxy] Tool part {part_id} finished with status: {status}")
+                                                                 active_tool_parts.remove(part_id)
+                                                         else:
+                                                             logging.info(f"[OpenCode Proxy] Tool part {part_id} is active (status: {status})")
+                                                             active_tool_parts.add(part_id)
+                                                             if event_sid == str(session_id):
+                                                                 terminal_event_received = False
+                                                     # Skip yielding tool part updates that are already covered by question.asked
+                                                     suppressed = _question_suppressed_parts.get(str(session_id), set())
+                                                     if part_id in suppressed:
+                                                         logging.debug(f"[OpenCode Proxy] Skipping suppressed tool part {part_id} (covered by question.asked)")
+                                                         continue
+                                                 
                                                 if isinstance(state_obj, dict):
-                                                    state_copy = dict(state_obj); state_copy.pop("time", None)
-                                                    state_str = json.dumps(state_copy, sort_keys=True)
-                                                    if last_emitted_states.get(part_id) != state_str:
-                                                        last_emitted_states[part_id] = state_str
-                                                        chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
-                                                        yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                     state_copy = dict(state_obj); state_copy.pop("time", None)
+                                                     state_str = json.dumps(state_copy, sort_keys=True)
+                                                     if last_emitted_states.get(part_id) != state_str:
+                                                         last_emitted_states[part_id] = state_str
+                                                         chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
+                                                         yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 else:
-                                                    chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
-                                                    yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                     chunk = { "id": part_id, "type": part_type or part.get("type"), "state": state_obj, "action": "part_update" }
+                                                     yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
                                             elif event_type in ["task.finished", "task.error", "session.completed", "task.closed"]:
                                                 if event_sid == str(session_id):
@@ -2392,6 +2408,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     _pending_questions_metadata.pop(str(pq["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
+                _question_suppressed_parts.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
