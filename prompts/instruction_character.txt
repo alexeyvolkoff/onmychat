@@ -3,31 +3,34 @@ Return 'Image: prompt'.
 
 Craft a structured, tag-based prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
 
-**CRITICAL MANDATORY REQUIREMENT:**
-- DO NOT write full sentences, narrative text, or explanations.
-- DO NOT output bullet points, lists, markdown headers (like "### Key Details"), or comments.
-- ONLY output a single line starting with 'Image:' followed by the comma-separated tags.
-- You MUST strictly depict the assistant/character using this EXACT physical appearance and features. Do NOT use default or standard hair colors, eye colors, or other descriptions. You must merge these exact physical details into the prompt:
+**CRITICAL — You MUST follow ALL of these requirements. The image WILL FAIL if any are missing.**
+
+**1. SCENE CONTEXT (from conversation history) — REQUIRED:**
+Analyze the RECENT CONVERSATION HISTORY above. You MUST extract and include ALL of these:
+   — **Location:** Where is the character right now? (bedroom, garden, beach, specific room — be specific)
+   — **Outfit/Clothing:** What is the character CURRENTLY wearing according to the recent messages? Be detailed (e.g. "silk red dress, high heels" not just "dress")
+   — **Pose/Action:** What is the character doing or about to do?
+   — **Atmosphere:** Mood, lighting, time of day, weather
+
+WARNING: If you omit location, outfit, or atmosphere, the image will be GENERIC and WRONG. Every generated image MUST reflect the current scene from history.
+
+**2. CHARACTER APPEARANCE — MERGE INTO THE SCENE:**
+The character has this physical appearance — weave it naturally into the scene context above, do NOT just list it:
 {appearance}
 
-**Mandatory: Extract and incorporate the scene context from the history provided above:**
-1.  **Location**: Where are the characters right now? (e.g. bedroom, outdoors, specific room mentioned).
-2.  **Outfit**: What is the character currently wearing according to the recent messages?
-3.  **Pose/Action**: What is the character doing or about to do?
-4.  **Atmosphere**: What is the mood of the scene?
+**3. STYLE & FORMAT (Danbooru Tag Style):**
+   — Comma-separated tags only, lowercase, no full sentences
+   — Structure order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`
+   — Use parentheses for emphasis: `(keyword:1.2)` or `((keyword))`
+   — Avoid 'face covered in <>' — use '<>-covered face' instead
 
-Your goal is to depict the character performing the requested action with high fidelity, merging the scene description extracted from context/settings with character's appearance.
+**4. OUTPUT RULES:**
+   — ONLY output a single line: `Image:` followed by comma-separated tags
+   — NO full sentences, NO explanations, NO markdown, NO lists
+   — DO NOT use default hair/eye colors — always use the EXACT appearance from above
 
-**Style & Format (ComfyUI / Danbooru Tag Style):**
-1.  **Tags & Phrases Only**: Format the prompt strictly as comma-separated tags, keywords, and short descriptive phrases. Use lowercase tags and standard anime/concept art tags (e.g., `1girl, solo, looking at viewer, sitting on sofa, soft lighting, detailed clothing`). Do NOT write full sentences, narrative text, or verbs (like "she is posing"). Use short, clear, precise tags.
-2.  **Structure**: Follow this order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style/Quality Tags]`.
-3.  **Emphasis**: Use standard parentheses and weights for tag emphasis when appropriate, e.g., `(keyword:1.2)` or `((keyword))` to emphasize key tags. Highlight distinctive features from the description.
-4.  **Context**: Translate conversational context into visual details.
-5.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
-
-**Example Output:**
-Image: 1girl, solo, sitting by window, looking at viewer, (rainy night:1.2), wet glass, reflection, intricate black dress, cleavage, pale skin, (sorrowful expression), cinematic lighting, dark atmosphere, 8k, masterpiece
+**Example:**
+Image: 1girl, solo, leaning on balcony railing, (intricate black lace dress:1.2), strappy heels, long auburn hair flowing in wind, (night cityscape background:1.3), neon lights reflection, (pensive expression), cinematic lighting, moody atmosphere, wet pavement from rain, masterpiece
 
 **Result:**
-Format strictly as:
 Image: [Prompt string]

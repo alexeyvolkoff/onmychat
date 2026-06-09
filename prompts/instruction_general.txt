@@ -3,25 +3,33 @@ Return 'Title: short title' on the first line (3-4 words max), then 'Image: prom
 
 Create a high-quality SDXL prompt in ComfyUI / Danbooru tag style based on the conversation history and the requested object or scene: {prompt}
 
-**CRITICAL MANDATORY REQUIREMENT:**
-- DO NOT write full sentences, narrative text, or explanations.
-- DO NOT output bullet points, lists, markdown headers (like "### Key Details"), or comments.
-- ONLY output two lines: the "Title:" line and the "Image:" line.
+**CRITICAL — Follow ALL requirements:**
 
-**Guidelines:**
-1.  **Format (ComfyUI / Danbooru Tag Style)**: Use lowercase comma-separated tags, keywords, and short descriptive phrases (e.g., `futuristic city, neon signs, wet pavement, masterpiece, photorealistic`). Avoid natural language, long sentences, verbs like "is wearing", or narrative descriptions.
-2.  **Structure**: `[Main Subject], [Details/Pose], [Environment/Location], [Lighting], [Style/Quality Tags]`.
-3.  **Contextual Awareness**: Use the conversation history provided to determine the environment, lighting, and current situation.
-4.  **Perspective**: External observer view.
-5.  **Emphasis**: Use standard parentheses and weights for tag emphasis when appropriate, e.g., `(keyword:1.1)` or `((keyword))`.
-6.  **Phrasing**: Avoid 'face covered in <>'. Use compound adjectives like '<>-covered face' instead.
-7.  **CRITICAL - Assistant's Appearance**: If the requested scene or conversation context depicts or involves the assistant/companion, you MUST strictly incorporate the companion's EXACT physical appearance and features: {appearance}. Do NOT use default or standard hair colors, eye colors, or other descriptions.
+**1. SCENE CONTEXT (from conversation history) — REQUIRED:**
+Analyze the RECENT CONVERSATION HISTORY above. Extract and include the environment, lighting, and current situation. If the scene involves the assistant/companion character, you MUST incorporate their presence.
+
+WARNING: Do NOT generate a generic image. The image MUST reflect the specific scene, location, and details from the conversation history.
+
+**2. CHARACTER APPEARANCE — if character is in the scene:**
+If the conversation context or the requested scene involves the companion character, you MUST strictly use their EXACT physical appearance. Do NOT use default or generic descriptions:
+{appearance}
+
+**3. STYLE & FORMAT (Danbooru Tag Style):**
+   — Comma-separated tags only, lowercase, no full sentences
+   — Structure: `[Main Subject], [Details/Pose], [Environment/Location], [Lighting], [Style/Quality Tags]`
+   — Perspective: External observer view
+   — Use parentheses for emphasis: `(keyword:1.1)` or `((keyword))`
+   — Avoid 'face covered in <>' — use '<>-covered face' instead
+
+**4. OUTPUT RULES:**
+   — ONLY output TWO lines: `Title:` line first, then `Image:` line
+   — Title: 3-4 words max
+   — NO full sentences, NO explanations, NO markdown, NO lists
 
 **Example:**
-Title: Neon Cyberpunk Streets
-Image: futuristic city street, neon signs, wet pavement, reflection, crowd of people, cyborgs, (towering skyscrapers:1.2), drizzle, cyberpunk style, cyan and purple color palette, volumetric lighting, photorealistic
+Title: Rainy Night Balcony
+Image: 1girl, solo, leaning on balcony railing, (intricate black lace dress:1.2), long auburn hair flowing in wind, night cityscape background, neon lights reflection, pensive expression, cinematic lighting, wet pavement, moody atmosphere, photorealistic
 
 **Result:**
-Format strictly as:
 Title: [Title]
 Image: [Prompt string]

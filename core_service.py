@@ -3236,7 +3236,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     # Format history as a structured text block instead of active chat messages to prevent model roleplay priming
     history_text = ""
     if history:
-        history_text = "\n\n=== RECENT CONVERSATION HISTORY (for context: location, outfit, scene) ===\n"
+        history_text = "\n\n=== RECENT CONVERSATION HISTORY (extract from this: location, outfit, pose/action, atmosphere, objects) ===\n"
         for msg in history[-15:]:
             role = msg.get("role", "user")
             content = msg.get("content", "")
