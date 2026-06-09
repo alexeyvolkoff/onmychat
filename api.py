@@ -1930,6 +1930,33 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
                 await asyncio.sleep(0.05) # Force flush
 
+                # 0.5. Cancel any existing active tasks for this session before starting a new stream.
+                # This prevents duplicate SSE streams and state corruption that can cause infinite loops
+                # (e.g. when a user answers a question and the old stream keeps processing events).
+                existing_post_task = active_tasks.pop(str(session_id), None)
+                if existing_post_task and not existing_post_task.done():
+                    existing_post_task.cancel()
+                    try:
+                        await asyncio.wait_for(existing_post_task, timeout=2.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+
+                existing_session = session_tasks.pop(str(session_id), None)
+                if existing_session:
+                    existing_read_task = existing_session.get("read_task")
+                    if existing_read_task and not existing_read_task.done():
+                        existing_read_task.cancel()
+                        try:
+                            await asyncio.wait_for(existing_read_task, timeout=1.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                    existing_sse_session = existing_session.get("sse_session")
+                    if existing_sse_session and not existing_sse_session.closed:
+                        try:
+                            await existing_sse_session.close()
+                        except Exception:
+                            pass
+
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
                 if resolved_dir:
