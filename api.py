@@ -15,6 +15,7 @@ import requests
 import aiohttp
 import asyncio
 import json
+import subprocess
 import numpy as np
 from typing import List, Optional
 
@@ -985,6 +986,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 ).format(new_mode)
                 
                 event = 'reload_chats'
+            elif prompt.startswith("/reset"):
+                subprocess.run(["pkill", "-f", "opencode web"], capture_output=True)
+                yield f"data: {json.dumps({'delta': 'Done.', 'role': 'assistant', 'done': True})}\n\n"
+                return
             else:
                 # 1. Broad Intent Detection First
                 # 1. Broad Intent Detection First
