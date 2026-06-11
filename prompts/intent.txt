@@ -12,11 +12,13 @@ NO EXTRA CHARACTERS IN INTENT LINE. NO QUOTES. NO ASTERISKS.
 RULES:
 1. chat: Default for all conversation, roleplay, dialogue, or general requests. 
    - *CRITICAL*: Includes narrative descriptions like "I saw you at the mall", "We are walking", or "You look nice".
-2. show: User explicitly INSTRUCTS or COMMANDS to generate or change the visual image/state of YOU (the assistant/character). 
-   - *CRITICAL*: Must be an active instruction (e.g., "Put on this", "Stand here", "Show me a selfie", "show how you take it on").
+2. show: User explicitly INSTRUCTS or COMMANDS to change/show the visual appearance, body, or outfit of YOU (the assistant). The assistant/character MUST be the subject of the image.
+   - *CRITICAL*: Must involve the assistant's body, clothing, pose, or expression (e.g., "Put on this dress", "Show me your body", "Kneel down", "show how you take it").
+   - *CRITICAL*: If the request is about a SCENE, LANDSCAPE, or OBJECT (not the assistant's body), it is NOT 'show' even if it contains the word "show" or "покажи".
    - *CRITICAL*: Narrative statements, past-tense descriptions, or compliments are NOT 'show'. They are 'chat'.
-3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, or landscapes NOT involving you (e.g. "draw a cat", "imagine a city", "view from the window").
-   - *CRITICAL*: Only explicit 'draw', 'imagine', or 'show' instructions for generic items. If in doubt use chat.
+3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT directly involving the assistant's body/appearance.
+   - *CRITICAL*: Includes "show me", "покажи", "draw", "imagine" when referring to a scene/view/object (e.g. "show me the view from the window", "draw a cat", "imagine a city", "покажи вид из окна", "show what's outside").
+   - *CRITICAL*: If the instruction is about a place, view, object, or scene — use 'view', not 'show'. The word "show" alone does NOT imply the assistant's body is the subject.
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET, uses /search command, or asks for current events/news.
    - Example triggers: "Search for", "What is happening in", "Find info about", "Who is".
@@ -30,8 +32,19 @@ RULES:
 EXAMPLES:
 - "How are you?" -> chat
 - "Show me your photo" -> show
+- "Show me a selfie" -> show
 - "Put on this dress" -> show
+- "Kneel down for me" -> show
+- "Show me how you take it" -> show
+- "Take off your clothes" -> show
 - "Draw a cat" -> view
+- "Show me the view from the window" -> view
+- "покажи вид из окна" -> view
+- "покажи что там за окном" -> view
+- "Imagine a futuristic city" -> view
+- "Show me a sunset beach" -> view
+- "Generate a fantasy landscape" -> view
+- "What's outside right now?" -> view
 - "Remember that party?" -> chat
 - "Explain how AI works" -> explain
 - "I saw you at the mall yesterday" -> chat (Narrative roleplay)
