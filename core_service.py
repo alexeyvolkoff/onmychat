@@ -3223,7 +3223,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Generate image prompt with clean context — no roleplay, no personality
     instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
-    system_prompt = ""
+    system_prompt = "You are an image tag generator. Follow instructions exactly."
     image_instruction = instruction_text
 
 
@@ -3239,10 +3239,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
                  history_text += f"{role.upper()}: {content}\n"
         history_text += "========================================================\n"
 
-    # Сборка запроса: ровно 2 сообщения, чтобы LLM не переключалась в режим диалога/списков
+    # Single user message — Gemma's chat template doesn't handle system role well
+    full_prompt = (system_prompt + history_text + "\n\n" + image_instruction).strip()
     messages = [
-        {"role": "system", "content": system_prompt + history_text},
-        {"role": "user", "content": image_instruction}
+        {"role": "user", "content": full_prompt}
     ]
 
 
@@ -3258,13 +3258,16 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         }
     }
 
+    logging.info(f"[image_prompt] Sending to LLM — prompt: {full_prompt[:300]}")
     data = await llm_request(request_payload)
 
-    if "message" in data and "content" in data["message"]:
+    if data and "message" in data and "content" in data["message"]:
         response = data["message"]["content"]
-    else:
-        # на случай, если ответ в другом формате
+    elif data:
         response = data.get("content") or str(data)
+    else:
+        logging.error(f"[image_prompt] LLM returned None/empty response")
+        response = ""
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
