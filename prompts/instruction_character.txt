@@ -1,15 +1,8 @@
-Return ONLY `Image:` followed by comma-separated tags.
-
-Generate image tags for the scene based on: "{prompt}"
+Generate SDXL/Pony image tags for: "{prompt}"
 
 Character appearance (MUST include):
 {appearance}
 
-Required tags:
-- Pose/Action
-- Outfit/Clothing
-- Location
-- Atmosphere/Lighting
-- Expression
+Required tags: Pose/Action, Outfit/Clothing, Location, Atmosphere, Expression
 
-Format: Image: tags
+Format: Image: comma-separated tags

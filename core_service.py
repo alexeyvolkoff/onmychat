@@ -3216,20 +3216,15 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     clean_prompt_text = re.sub(r"<[^>]+>", "", prompt).strip()
     clean_appearance_text = re.sub(r"<[^>]+>", "", appearance).strip()
 
-    user_prompt =  "*Personality and behaviour:*\n" + ctx.settings.get("system_prompt", "") + "\n\n*Appearance:*\n" + clean_appearance_text
-    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
-
     # Clean prompt from slash commands
     clean_prompt = re.sub(r'^/(?:show|view|imagine|generate|recognize|detect|think|explain|search|import|learn)\s*', '', clean_prompt_text).strip()
     if not clean_prompt:
         clean_prompt = clean_prompt_text
 
-    if fun_mode:
-        system_prompt = f"{FUN_PREPHASE}\n{user_prompt}"
-        image_instruction = f"{IMAGE_PROMPT_FUN}\n{instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)}"
-    else:  
-        system_prompt =  user_prompt
-        image_instruction = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
+    # Generate image prompt with clean context — no roleplay, no personality, no fun prephase
+    instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
+    system_prompt = ""
+    image_instruction = instruction_text
 
 
 
