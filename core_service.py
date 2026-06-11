@@ -3282,14 +3282,13 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
             parts = final_prompt.split("Image:", 1)
             prompt_content = parts[1].strip()
             
-            # Ensure "1girl, solo" prefix exists, then add clean appearance text
-            prefix = "1girl, "
-            if "solo" not in prompt_content.lower()[:25]:
-                prefix += "solo, "
+            # Fallback: if LLM returned empty/no scene context, use user's original prompt
+            if not prompt_content or len(prompt_content) < 5:
+                prompt_content = clean_prompt
                 
-            final_prompt = f"{parts[0]}Image: {prefix}{clean_appearance_text}, {prompt_content}"
+            final_prompt = f"{parts[0]}Image: {clean_appearance_text}, {prompt_content}"
         else:
-            final_prompt = f"1girl, solo, {clean_appearance_text}, {final_prompt}"
+            final_prompt = f"{clean_appearance_text}, {final_prompt}"
 
     # 2. Collect all style and model/LoRA tags to append to the end of the prompt
     tags_to_add = []

@@ -1,36 +1,33 @@
-*This is not a conversational request, simply create an image prompt*.
-Return 'Image: prompt'.
+*This is not a conversational request — create an image prompt for SDXL/Pony.*
 
-Craft a structured, tag-based prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
+Return ONLY: `Image:` followed by comma-separated Danbooru-style tags.
 
-**CRITICAL — You MUST follow ALL of these requirements. The image WILL FAIL if any are missing.**
+**YOUR JOB: Scene Context ONLY — describe what is HAPPENING.**
 
-**1. SCENE CONTEXT (from conversation history) — REQUIRED:**
-Analyze the RECENT CONVERSATION HISTORY above. You MUST extract and include ALL of these:
-   — **Location:** Where is the character right now? (bedroom, garden, beach, specific room — be specific)
-   — **Outfit/Clothing:** What is the character CURRENTLY wearing according to the recent messages? Be detailed (e.g. "silk red dress, high heels" not just "dress")
-   — **Pose/Action:** What is the character doing or about to do?
-   — **Atmosphere:** Mood, lighting, time of day, weather
+The character's physical appearance is added automatically. DO NOT describe body, hair, face, or static features.
+Focus 100% on the current scene from the conversation history and user request: "{prompt}"
 
-WARNING: If you omit location, outfit, or atmosphere, the image will be GENERIC and WRONG. Every generated image MUST reflect the current scene from history.
+**REQUIRED — include ALL of these in every output:**
+   — **Pose/Action:** What is the character doing? (kneeling, running, sitting, leaning, etc.)
+   — **Outfit/Clothing:** What is the character CURRENTLY wearing in the story? Be specific (e.g. "silk red dress, high heels")
+   — **Location:** Where is this taking place? (bedroom, garden, beach, specific room)
+   — **Atmosphere/Lighting:** Mood, lighting, time of day, weather
+   — **Expression:** Character's facial expression
 
-**2. CHARACTER APPEARANCE — MERGE INTO THE SCENE:**
-The character has this physical appearance — weave it naturally into the scene context above, do NOT just list it:
-{appearance}
+**WARNING:** If you omit pose, outfit, or location, the image will be GENERIC and USELESS. Every image MUST reflect the scene from the story.
 
-**3. STYLE & FORMAT (Danbooru Tag Style):**
-   — Comma-separated tags only, lowercase, no full sentences
-   — Structure order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`
-   — Use parentheses for emphasis: `(keyword:1.2)` or `((keyword))`
-   — Avoid 'face covered in <>' — use '<>-covered face' instead
+**STYLE (Danbooru Tag Style):**
+   — Comma-separated, lowercase, no full sentences
+   — Order: `[Pose/Action], [Outfit], [Location], [Atmosphere], [Expression]`
+   — Use parentheses for emphasis like `(kneeling:1.2)` or `((blushing))`
 
-**4. OUTPUT RULES:**
-   — ONLY output a single line: `Image:` followed by comma-separated tags
-   — NO full sentences, NO explanations, NO markdown, NO lists
-   — DO NOT use default hair/eye colors — always use the EXACT appearance from above
+**OUTPUT RULES:**
+   — Single line ONLY: `Image:` followed by tags
+   — NO explanations, NO markdown, NO lists, NO full sentences
+   — DO NOT describe the character's body/hair/face — that is handled automatically
 
 **Example:**
-Image: 1girl, solo, leaning on balcony railing, (intricate black lace dress:1.2), strappy heels, long auburn hair flowing in wind, (night cityscape background:1.3), neon lights reflection, (pensive expression), cinematic lighting, moody atmosphere, wet pavement from rain, masterpiece
+Image: kneeling on floor, (silk red dress:1.2), strappy heels, luxurious bedroom, candlelight, evening, looking up, (shy expression:1.1), blushing, soft focus
 
 **Result:**
-Image: [Prompt string]
+Image: [Scene tags only]

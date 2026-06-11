@@ -1,34 +1,34 @@
-*This is not a conversational request, simply create an image prompt*.
-Return 'Title: short title' on the first line (3-4 words max), then 'Image: prompt' on the next line.
+*This is not a conversational request — create an image prompt for SDXL.*
 
-Create a high-quality SDXL prompt in ComfyUI / Danbooru tag style based on the conversation history and the requested object or scene: {prompt}
+Return TWO lines: `Title: <short title>` then `Image: <comma-separated tags>`.
 
-**CRITICAL — Follow ALL requirements:**
+Create a vivid, specific scene based on the conversation history and user request: "{prompt}"
 
-**1. SCENE CONTEXT (from conversation history) — REQUIRED:**
-Analyze the RECENT CONVERSATION HISTORY above. Extract and include the environment, lighting, and current situation. If the scene involves the assistant/companion character, you MUST incorporate their presence.
+**CRITICAL — Include ALL of these in the Image tags:**
+   — **Main subject / action:** What or who is in the scene, what is happening?
+   — **Environment/Location:** Where is this? Be specific (indoors, outdoors, setting)
+   — **Lighting/Atmosphere:** Mood, lighting, time of day, weather
+   — **Details:** Objects, props, notable visual elements
 
-WARNING: Do NOT generate a generic image. The image MUST reflect the specific scene, location, and details from the conversation history.
+WARNING: The image MUST reflect the specific scene from the story. Do NOT generate generic or default scenes.
 
-**2. CHARACTER APPEARANCE — if character is in the scene:**
-If the conversation context or the requested scene involves the companion character, you MUST strictly use their EXACT physical appearance. Do NOT use default or generic descriptions:
+**If the companion character is in the scene,** include their EXACT appearance — weave it into the scene context naturally. Do NOT use default or generic features:
 {appearance}
 
-**3. STYLE & FORMAT (Danbooru Tag Style):**
-   — Comma-separated tags only, lowercase, no full sentences
-   — Structure: `[Main Subject], [Details/Pose], [Environment/Location], [Lighting], [Style/Quality Tags]`
+**STYLE (Danbooru Tag Style):**
+   — Comma-separated tags, lowercase, no full sentences
+   — Structure: `[Subject/Action], [Details], [Location], [Lighting/Atmosphere], [Style]`
    — Perspective: External observer view
    — Use parentheses for emphasis: `(keyword:1.1)` or `((keyword))`
-   — Avoid 'face covered in <>' — use '<>-covered face' instead
 
-**4. OUTPUT RULES:**
-   — ONLY output TWO lines: `Title:` line first, then `Image:` line
-   — Title: 3-4 words max
-   — NO full sentences, NO explanations, NO markdown, NO lists
+**OUTPUT RULES:**
+   — Line 1: `Title:` (3-4 words max)
+   — Line 2: `Image:` followed by tags
+   — NO explanations, NO markdown, NO lists
 
 **Example:**
 Title: Rainy Night Balcony
-Image: 1girl, solo, leaning on balcony railing, (intricate black lace dress:1.2), long auburn hair flowing in wind, night cityscape background, neon lights reflection, pensive expression, cinematic lighting, wet pavement, moody atmosphere, photorealistic
+Image: 1girl, leaning on balcony railing, (intricate black lace dress:1.2), night cityscape background, neon lights reflection, pensive expression, cinematic lighting, wet pavement, moody atmosphere, photorealistic
 
 **Result:**
 Title: [Title]
