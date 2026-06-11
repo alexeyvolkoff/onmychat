@@ -3286,7 +3286,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
             if not prompt_content or len(prompt_content) < 5:
                 prompt_content = clean_prompt
                 
-            final_prompt = f"{parts[0]}Image: {clean_appearance_text}, {prompt_content}"
+            final_prompt = f"{parts[0]}, {clean_appearance_text}, {prompt_content}"
         else:
             final_prompt = f"{clean_appearance_text}, {final_prompt}"
 
