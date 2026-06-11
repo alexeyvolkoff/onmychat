@@ -3275,9 +3275,9 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Deterministic post-processing to inject style, model, and appearance into the final prompt
     final_prompt = response.strip()
-    logging.info(f"Clean prompt: {final_prompt}")
+    logging.info(f"[image_prompt] LLM raw response: {final_prompt}")
 
-    # 1. Prepend the clean physical description at the beginning of the prompt (only for assistant/character image)
+    # 1. Inject appearance into the prompt (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
         if "Image:" in final_prompt:
             parts = final_prompt.split("Image:", 1)
@@ -3286,10 +3286,12 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
             # Fallback: if LLM returned empty/no scene context, use user's original prompt
             if not prompt_content or len(prompt_content) < 5:
                 prompt_content = clean_prompt
-                
-            final_prompt = f"{parts[0]}, {clean_appearance_text}, {prompt_content}"
+            
+            final_prompt = f"{parts[0]}Image: {clean_appearance_text}, {prompt_content}"
         else:
-            final_prompt = f"{clean_appearance_text}, {final_prompt}"
+            # LLM didn't output expected format — use clean_prompt as scene fallback
+            scene = clean_prompt if len(final_prompt) < 10 else final_prompt
+            final_prompt = f"{clean_appearance_text}, {scene}"
 
     # 2. Collect all style and model/LoRA tags to append to the end of the prompt
     tags_to_add = []
