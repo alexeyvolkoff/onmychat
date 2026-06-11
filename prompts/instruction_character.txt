@@ -1,36 +1,8 @@
-*This is not a conversational request, simply create an image prompt*.
-Return 'Image: prompt'.
+Generate SDXL/Pony image tags for: "{prompt}"
 
-Craft a structured, tag-based prompt for an SDXL/Pony model based on the conversation history and the user's latest request: "{prompt}"
-
-**CRITICAL — You MUST follow ALL of these requirements. The image WILL FAIL if any are missing.**
-
-**1. SCENE CONTEXT (from conversation history) — REQUIRED:**
-Analyze the RECENT CONVERSATION HISTORY above. You MUST extract and include ALL of these:
-   — **Location:** Where is the character right now? (bedroom, garden, beach, specific room — be specific)
-   — **Outfit/Clothing:** What is the character CURRENTLY wearing according to the recent messages? Be detailed (e.g. "silk red dress, high heels" not just "dress")
-   — **Pose/Action:** What is the character doing or about to do?
-   — **Atmosphere:** Mood, lighting, time of day, weather
-
-WARNING: If you omit location, outfit, or atmosphere, the image will be GENERIC and WRONG. Every generated image MUST reflect the current scene from history.
-
-**2. CHARACTER APPEARANCE — MERGE INTO THE SCENE:**
-The character has this physical appearance — weave it naturally into the scene context above, do NOT just list it:
+Character appearance (MUST include):
 {appearance}
 
-**3. STYLE & FORMAT (Danbooru Tag Style):**
-   — Comma-separated tags only, lowercase, no full sentences
-   — Structure order: `[Subject & Action], [Outfit & Appearance], [Environment/Location], [Lighting & Atmosphere], [Art Style]`
-   — Use parentheses for emphasis: `(keyword:1.2)` or `((keyword))`
-   — Avoid 'face covered in <>' — use '<>-covered face' instead
+Required tags: Pose/Action, Outfit/Clothing, Location, Atmosphere, Expression
 
-**4. OUTPUT RULES:**
-   — ONLY output a single line: `Image:` followed by comma-separated tags
-   — NO full sentences, NO explanations, NO markdown, NO lists
-   — DO NOT use default hair/eye colors — always use the EXACT appearance from above
-
-**Example:**
-Image: 1girl, solo, leaning on balcony railing, (intricate black lace dress:1.2), strappy heels, long auburn hair flowing in wind, (night cityscape background:1.3), neon lights reflection, (pensive expression), cinematic lighting, moody atmosphere, wet pavement from rain, masterpiece
-
-**Result:**
-Image: [Prompt string]
+Format: Image: comma-separated tags
