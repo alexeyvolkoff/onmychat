@@ -1186,9 +1186,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
-                # 3️⃣ Generate image
+                # 3️⃣ Generate image (no character LoRA)
                 
-                path, title, description = await core_service.generate_image(ctx, img_prompt, chat, prompt_id=prompt_id)
+                path, title, description = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id)
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
 
                 #Set specific instructions

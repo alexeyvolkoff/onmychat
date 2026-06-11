@@ -3642,7 +3642,7 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None) -> tuple[str, str, str]:
-    return await generate_image(ctx, prompt, chat, prompt_id=prompt_id)
+    return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id)
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):

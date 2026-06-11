@@ -12,8 +12,7 @@ Create a vivid, specific scene based on the conversation history and user reques
 
 WARNING: The image MUST reflect the specific scene from the story. Do NOT generate generic or default scenes.
 
-**If the companion character is in the scene,** include their EXACT appearance — weave it into the scene context naturally. Do NOT use default or generic features:
-{appearance}
+**If the companion character is in the scene,** describe their pose and actions only. Do NOT describe their body, hair, or face — that is handled separately.
 
 **STYLE (Danbooru Tag Style):**
    — Comma-separated tags, lowercase, no full sentences
