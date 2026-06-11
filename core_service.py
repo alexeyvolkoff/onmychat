@@ -3239,10 +3239,9 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
                  history_text += f"{role.upper()}: {content}\n"
         history_text += "========================================================\n"
 
-    # Single user message — Gemma's chat template doesn't handle system role well
-    full_prompt = (system_prompt + history_text + "\n\n" + image_instruction).strip()
     messages = [
-        {"role": "user", "content": full_prompt}
+        {"role": "system", "content": system_prompt + history_text},
+        {"role": "user", "content": image_instruction}
     ]
 
 
@@ -3258,7 +3257,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         }
     }
 
-    logging.info(f"[image_prompt] Sending to LLM — prompt: {full_prompt[:300]}")
+    logging.info(f"[image_prompt] user message: {image_instruction[:200]}")
     data = await llm_request(request_payload)
 
     if data and "message" in data and "content" in data["message"]:
