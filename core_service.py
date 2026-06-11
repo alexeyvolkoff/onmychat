@@ -3271,9 +3271,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
-    # Deterministic post-processing to inject style, model, and appearance into the final prompt
     final_prompt = response.strip()
-    logging.info(f"[image_prompt] LLM raw response: {final_prompt}")
 
     # 1. Fallback for empty Image: content (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
