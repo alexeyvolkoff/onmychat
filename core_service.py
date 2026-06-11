@@ -3275,6 +3275,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Deterministic post-processing to inject style, model, and appearance into the final prompt
     final_prompt = response.strip()
+    logging.info(f"Clean prompt: {final_prompt}")
 
     # 1. Prepend the clean physical description at the beginning of the prompt (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
