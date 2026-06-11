@@ -3259,7 +3259,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         }
     }
 
-    logging.info(f"[image_prompt] user message: {image_instruction[:200]}")
     data = await llm_request(request_payload)
 
     if data and "message" in data and "content" in data["message"]:
@@ -3330,7 +3329,6 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         else:
              final_prompt += tag_suffix
 
-    logging.info(f"[image_prompt] Final Prompt with Tags & Appearance: {final_prompt}")
     return final_prompt
 
 
@@ -3498,8 +3496,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         negative_prompt = NEGATIVE_PROMPTS["fun"] + "," + negative_prompt
 
 
-    logging.info(f"Generating image for user: {user_id}")
-    logging.info(f"Prompt: {prompt}")
+    logging.info(f"Prompt: {prompt[:200]}")
     with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
