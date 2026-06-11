@@ -3223,10 +3223,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Generate image prompt with clean context — no roleplay, no personality
     instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
-    if ctx.settings.get("content_mode", "work") == "fun":
-        system_prompt = IMAGE_PROMPT_FUN
-    else:
-        system_prompt = ""
+    system_prompt = ""
     image_instruction = instruction_text
 
 
