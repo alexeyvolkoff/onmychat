@@ -1,33 +1,15 @@
-*This is not a conversational request — create an image prompt for SDXL/Pony.*
+Return ONLY `Image:` followed by comma-separated tags.
 
-Return ONLY: `Image:` followed by comma-separated Danbooru-style tags.
+Generate image tags for the scene based on: "{prompt}"
 
-**YOUR JOB: Scene Context ONLY — describe what is HAPPENING.**
+Character appearance (MUST include):
+{appearance}
 
-The character's physical appearance is added automatically. DO NOT describe body, hair, face, or static features.
-Focus 100% on the current scene from the conversation history and user request: "{prompt}"
+Required tags:
+- Pose/Action
+- Outfit/Clothing
+- Location
+- Atmosphere/Lighting
+- Expression
 
-**REQUIRED — include ALL of these in every output:**
-   — **Pose/Action:** What is the character doing? (kneeling, running, sitting, leaning, etc.)
-   — **Outfit/Clothing:** What is the character CURRENTLY wearing in the story? Be specific (e.g. "silk red dress, high heels")
-   — **Location:** Where is this taking place? (bedroom, garden, beach, specific room)
-   — **Atmosphere/Lighting:** Mood, lighting, time of day, weather
-   — **Expression:** Character's facial expression
-
-**WARNING:** If you omit pose, outfit, or location, the image will be GENERIC and USELESS. Every image MUST reflect the scene from the story.
-
-**STYLE (Danbooru Tag Style):**
-   — Comma-separated, lowercase, no full sentences
-   — Order: `[Pose/Action], [Outfit], [Location], [Atmosphere], [Expression]`
-   — Use parentheses for emphasis like `(kneeling:1.2)` or `((blushing))`
-
-**OUTPUT RULES:**
-   — Single line ONLY: `Image:` followed by tags
-   — NO explanations, NO markdown, NO lists, NO full sentences
-   — DO NOT describe the character's body/hair/face — that is handled automatically
-
-**Example:**
-Image: kneeling on floor, (silk red dress:1.2), strappy heels, luxurious bedroom, candlelight, evening, looking up, (shy expression:1.1), blushing, soft focus
-
-**Result:**
-Image: [Scene tags only]
+Format: Image: tags
