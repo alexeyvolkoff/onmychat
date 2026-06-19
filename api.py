@@ -98,8 +98,8 @@ app.add_middleware(
 # Search Node Initialization
 try:
     from search_node import SearchNode
-    SEARCH_TOKEN = SETTINGS.get("SEARCH_TOKEN", "") # Ensure this key exists in config or is empty
-    search_node = SearchNode(storage_path=BASE_INDEX_DIR, model=memory_index.get_model(), token=SEARCH_TOKEN)
+    AI_TOKEN = SETTINGS.get("AI_TOKEN", "") # Ensure this key exists in config or is empty
+    search_node = SearchNode(storage_path=BASE_INDEX_DIR, model=memory_index.get_model(), token=AI_TOKEN)
     logging.info("[api] SearchNode initialized in BASE_INDEX_DIR")
     
     # Run legacy migration on the server side (disabled as legacy files are obsolete)
@@ -175,7 +175,7 @@ async def move_url(request: Request):
 def not_authorized(request: Request):
     # The gateway forwards the original client's Authorization header
     # AND adds its own 'Token' header for the node's API token.
-    # We must check if ANY of these tokens match our SEARCH_TOKEN.
+    # We must check if ANY of these tokens match our AI_TOKEN.
     possible_tokens = [
         request.headers.get("Token"),
         request.headers.get("X-OMD-Token"),
@@ -195,22 +195,22 @@ def not_authorized(request: Request):
             
         token = token.strip()
         
-        if SEARCH_TOKEN and token == SEARCH_TOKEN:
+        if AI_TOKEN and token == AI_TOKEN:
             return False # Authorized!
             
         # Also allow any valid 32-character hexadecimal token (the standard OMD node token format)
         if len(token) == 32 and all(c in '0123456789abcdefABCDEF' for c in token):
             return False # Authorized!
             
-    if SEARCH_TOKEN:
+    if AI_TOKEN:
         logging.warning(f"Unauthorized request, no valid token found.")
         return True # Not authorized
         
-    return False # Authorized if no SEARCH_TOKEN is configured
+    return False # Authorized if no AI_TOKEN is configured
 
 def is_private_mode(request: Request) -> bool:
     ai_token = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
-    return bool(SEARCH_TOKEN and ai_token == SEARCH_TOKEN)
+    return bool(AI_TOKEN and ai_token == AI_TOKEN)
 
 def get_omd_key(
     request: Request,
