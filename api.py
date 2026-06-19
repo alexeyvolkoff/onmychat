@@ -177,6 +177,7 @@ def not_authorized(request: Request):
     # AND adds its own 'Token' header for the node's API token.
     # We must check if ANY of these tokens match our AI_TOKEN.
     possible_tokens = [
+        request.headers.get("X-OMD-Ai-Token"),
         request.headers.get("Token"),
         request.headers.get("X-OMD-Token"),
         request.headers.get("Authorization"),
