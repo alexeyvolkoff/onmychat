@@ -2112,8 +2112,9 @@ def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> lis
                                 # Filter based on mode setting
                                 lora_mode = input_val.get("mode", input_val.get("nsfw", False))
                                 lora_mode_str = "fun" if lora_mode else "work"
-                                # Skip fun loras if user is in work mode
-                                if lora_mode_str == "fun" and user_mode == "work":
+                                effective_fun = (ctx.private_mode if ctx else False) and user_mode == "fun"
+                                # Skip fun loras if not in effective fun mode
+                                if lora_mode_str == "fun" and not effective_fun:
                                     continue
                                 
                                 loras.append({
@@ -3223,7 +3224,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     # Generate image prompt with clean context — no roleplay, no personality
     instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
     system_parts = ["You are an image tag generator. Follow instructions exactly."]
-    if ctx.settings.get("content_mode", "work") == "fun":
+    if ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun":
         system_parts.append(IMAGE_PROMPT_FUN)
     system_prompt = "\n".join(system_parts)
     image_instruction = instruction_text
@@ -3437,7 +3438,7 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
     
     mode = ctx.settings.get("content_mode", "work")
     model = get_llm_model(ctx, mode)
-    if mode == "fun":
+    if ctx.private_mode and mode == "fun":
          # In fun mode, we must prime the model to accept the input prompt
          # but still instruct it to output a neutral, safe description.
          instruction = FUN_PREPHASE + "\n\n" + IMAGE_PROMPT_FUN + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
@@ -3487,10 +3488,10 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
 
     user_id = ctx.user_id
 
-    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
+    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
 
     negative_prompt = NEGATIVE_PROMPTS["base"]
-    if fun_mode:
+    if effective_fun:
         negative_prompt = NEGATIVE_PROMPTS["fun"] + "," + negative_prompt
 
 
@@ -3565,9 +3566,9 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if not img_data:
         raise Exception("Image generation failed")
 
-
-    # Report usage to console
-
+    # Track token consumption (only in public mode)
+    if not ctx.private_mode:
+        ctx.tokens_consumed = 0.1
 
     # Local user folder (only used if no remote storage)
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
@@ -3641,9 +3642,9 @@ async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
-    fun_mode = ctx.settings.get("content_mode", "work") == "fun"
+    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
 
-    if fun_mode:
+    if effective_fun:
         system_prompt = FUN_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
     else:
         system_prompt =  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"

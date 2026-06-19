@@ -19,6 +19,8 @@ class UserContext:
     groups: list = None
     omd_key: str = ""
     storage: str = ""
+    private_mode: bool = False
+    tokens_consumed: float = 0.0
 
 def get_prompt(filename):
     prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")

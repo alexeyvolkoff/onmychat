@@ -208,6 +208,10 @@ def not_authorized(request: Request):
         
     return False # Authorized if no SEARCH_TOKEN is configured
 
+def is_private_mode(request: Request) -> bool:
+    ai_token = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
+    return bool(SEARCH_TOKEN and ai_token == SEARCH_TOKEN)
+
 def get_omd_key(
     request: Request,
     omd_key: str | None = Query(None),
@@ -928,6 +932,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
+    ctx.private_mode = is_private_mode(request)
 
     if provided_settings:
         logging.info(f"Applying client-provided settings for {ctx.user_id}")
@@ -1091,16 +1096,16 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 elif prompt.startswith("/generate"):
                     intent = "generate"
                     img_prompt = prompt[len("/generate"):].strip()
-                    if ctx.settings.get("content_mode", "work") == "work":
+                    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
+                    if not effective_fun:
                         logging.info(f"Checking image generation safety: {img_prompt}")
                         safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                         if safety_result != "SAFE":
                             logging.info(f"Image generation safety check failed: {safety_result}")
-                            
-                            warning = "I can not generate this in work mode. Switch to fun mode with /mode fun"
-                            if token_balance <= 0:
-                                 warning = "I can not generate this until you prove your age by subscribing for Premium plan"
-
+                            if ctx.private_mode:
+                                warning = "I can not generate this in work mode. Switch to fun mode with /mode fun"
+                            else:
+                                warning = "I can not generate this. Subscribe to Premium plan to enable fun mode."
                             yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
                             return
                 elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
@@ -1140,12 +1145,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             if ctx.settings.get("content_mode", "work") == "fun" and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
                  yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in fun mode.', 'role': 'assistant', 'done': True})}\n\n"
                  return
-            
-            logging.info(f"Token Balance: {token_balance}")
-            if token_balance <= 0:
-                 if check_intent in restricted_intents:
-                      yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                      return
+
+            if not ctx.private_mode:
+                logging.info(f"Token Balance: {token_balance}")
+                if token_balance <= 0:
+                     if check_intent in restricted_intents:
+                          yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
+                          return
 
             logging.info(f"Check intent: {check_intent}")
             if check_intent in ["tools", "search"]:
@@ -1153,7 +1159,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                  logging.info(f"Yielding {status_msg} status")
                  yield f"data: {json.dumps({'status': status_msg})}\n\n"
                  
-            if check_intent == "import":
+            if check_intent == "import" and not ctx.private_mode:
                  # Limit to 10 items for free accounts
                  memories = memory_index.load_memories(ctx, collection="shared")
                  if len(memories) >= 10:
@@ -1177,7 +1183,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 
 
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
                 
 
                 #Set specific instructions
@@ -1204,7 +1210,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # 3️⃣ Generate image (no character LoRA)
                 
                 path, title, description = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}})}\n\n"
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
 
                 #Set specific instructions
                 instruction = (
@@ -1319,7 +1325,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
                 path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'done': True})}\n\n"
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
@@ -1407,6 +1413,7 @@ async def memorize_endpoint(data: MemorizeInput):
 
 @app.post("/recognize")
 async def recognize_endpoint(
+    request: Request,
     omd_key: str | None = Depends(get_omd_key),
     chat: str = Form("default"),
     prompt: str = Form(""),
@@ -1416,6 +1423,7 @@ async def recognize_endpoint(
 ):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
+    ctx.private_mode = is_private_mode(request)
     if settings:
         try:
             provided_settings = json.loads(settings)
@@ -1440,9 +1448,10 @@ async def recognize_endpoint(
 
 
 @app.post("/generate/image/character")
-async def generate_character_image(data: GenerateInput):
+async def generate_character_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
+    ctx.private_mode = is_private_mode(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -1459,22 +1468,23 @@ async def generate_character_image(data: GenerateInput):
              # but we don't save it to local disk anymore.
              pass
 
-        return {"image": filename, "description": description}
+        return {"image": filename, "description": description, "tokens_consumed": ctx.tokens_consumed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/generate/image/general")
-async def generate_general_image(data: GenerateInput):
+async def generate_general_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
+    ctx.private_mode = is_private_mode(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         # generate_image returns (filename, title, description)
         filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
-        return {"image": filename, "description": description}
+        return {"image": filename, "description": description, "tokens_consumed": ctx.tokens_consumed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1483,9 +1493,10 @@ async def generate_general_image(data: GenerateInput):
 
 
 @app.post("/generate/prompt/character")
-async def generate_character_image_prompt(data: GenerateInput):
+async def generate_character_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
+    ctx.private_mode = is_private_mode(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -1499,9 +1510,10 @@ async def generate_character_image_prompt(data: GenerateInput):
 
 
 @app.post("/generate/prompt/general")
-async def generate_general_image_prompt(data: GenerateInput):
+async def generate_general_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
+    ctx.private_mode = is_private_mode(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
