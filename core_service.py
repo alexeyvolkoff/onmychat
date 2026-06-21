@@ -2699,7 +2699,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         system_prompt += user_context.DEFAULT_UNONBOARDED_PROMPT
         system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
     else:        
-        system_prompt += f"\n\n*Personality overrides*: {ctx.settings.get("system_prompt", user_context.DEFAULT_USER_PROMPT)}\n"
+        system_prompt += f"\n\n*Personality overrides*: {ctx.settings.get('system_prompt', user_context.DEFAULT_USER_PROMPT)}\n"
         system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
     system_prompt += "\n\n*Appearance overrides:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
@@ -3558,7 +3558,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     for key in active_lora_keys:
         workflow_json["103"]["inputs"][key]["on"] = True
         #workflow_json["103"]["inputs"][key]["strength"] = target_strength
-        logging.info(f"Activated LoRA {key} with strength {workflow_json["103"]["inputs"][key]["strength"]}")
+        logging.info(f"Activated LoRA {key} with strength {workflow_json['103']['inputs'][key]['strength']}")
 
     logging.info(f"Generating with model: {model}")
     img_data, filename = await generate_image_workflow(workflow_json)
