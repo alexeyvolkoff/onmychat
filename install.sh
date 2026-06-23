@@ -133,6 +133,7 @@ if [ "$ENGINE" = "ollama" ]; then
 elif [ "$ENGINE" = "rkllama" ]; then
     log_info "Installing RKLLAMA in /opt/rkllama..."
     mkdir -p /opt/rkllama
+    chown -R "$RUN_USER:$RUN_USER" /opt/rkllama
     if [ ! -d "/opt/rkllama/.git" ]; then
         log_info "Cloning RKLLAMA repository..."
         sudo -u "$RUN_USER" git clone https://github.com/NotPunchnox/rkllama.git /opt/rkllama
