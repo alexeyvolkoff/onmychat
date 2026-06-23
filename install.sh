@@ -148,10 +148,14 @@ elif [ "$ENGINE" = "rkllama" ]; then
     # Try to install in Miniconda if available, otherwise fallback to system pip
     if [ -d "$RUN_USER_HOME/miniconda3" ]; then
         log_info "Installing rkllama into Miniconda environment..."
-        sudo -u "$RUN_USER" "$RUN_USER_HOME/miniconda3/bin/pip" install -e /opt/rkllama/
+        cd /opt/rkllama
+        sudo -u "$RUN_USER" "$RUN_USER_HOME/miniconda3/bin/pip" install -e .
+        cd -
     else
         log_warning "Miniconda not found at $RUN_USER_HOME/miniconda3, installing globally..."
-        pip3 install -e /opt/rkllama/
+        cd /opt/rkllama
+        pip3 install -e .
+        cd -
     fi
 fi
 
