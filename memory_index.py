@@ -18,6 +18,19 @@ import time
 import chromadb
 from chromadb.config import Settings
 
+# Monkeypatch chromadb's sqlite metadata seq_id decoder to handle integer values 
+# stored in max_seq_id table (prevents TypeError: object of type 'int' has no len())
+try:
+    import chromadb.segment.impl.metadata.sqlite as sqlite_mod
+    original_decode = sqlite_mod._decode_seq_id
+    def patched_decode(seq_id_bytes):
+        if isinstance(seq_id_bytes, int):
+            return seq_id_bytes
+        return original_decode(seq_id_bytes)
+    sqlite_mod._decode_seq_id = patched_decode
+except Exception as patch_err:
+    logging.warning(f"Failed to monkeypatch chromadb sqlite seq_id decoder: {patch_err}")
+
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 RAG_THRESHOLD = float(SETTINGS.get("RAG_THRESHOLD", "0.75"))
 
