@@ -31,6 +31,27 @@ try:
 except Exception as patch_err:
     logging.warning(f"Failed to monkeypatch chromadb sqlite seq_id decoder: {patch_err}")
 
+# Monkeypatch chromadb's PersistentData load_from_file to support dict objects 
+# stored in index_metadata.pickle (prevents AttributeError: 'dict' object has no attribute 'dimensionality')
+try:
+    import chromadb.segment.impl.vector.local_persistent_hnsw as hnsw_mod
+    original_load = hnsw_mod.PersistentData.load_from_file
+    def patched_load(filename):
+        ret = original_load(filename)
+        if isinstance(ret, dict):
+            return hnsw_mod.PersistentData(
+                dimensionality=ret.get("dimensionality"),
+                total_elements_added=ret.get("total_elements_added", 0),
+                max_seq_id=ret.get("max_seq_id", 0),
+                id_to_label=ret.get("id_to_label", {}),
+                label_to_id=ret.get("label_to_id", {}),
+                id_to_seq_id=ret.get("id_to_seq_id", {})
+            )
+        return ret
+    hnsw_mod.PersistentData.load_from_file = patched_load
+except Exception as patch_err:
+    logging.warning(f"Failed to monkeypatch chromadb PersistentData load_from_file: {patch_err}")
+
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 RAG_THRESHOLD = float(SETTINGS.get("RAG_THRESHOLD", "0.75"))
 
