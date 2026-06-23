@@ -60,7 +60,10 @@ def get_model():
 CHROMA_DB_DIR = os.path.join(BASE_INDEX_DIR, "chroma_db")
 os.makedirs(CHROMA_DB_DIR, exist_ok=True)
 
-_chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+_chroma_client = chromadb.PersistentClient(
+    path=CHROMA_DB_DIR,
+    settings=Settings(anonymized_telemetry=False)
+)
 
 def ensure_collection():
     global _chroma_client
@@ -72,13 +75,19 @@ def ensure_collection():
         return col
     except Exception as e:
         logging.warning(f"ChromaDB collection stale or missing, re-initializing: {e}")
-        _chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+        _chroma_client = chromadb.PersistentClient(
+            path=CHROMA_DB_DIR,
+            settings=Settings(anonymized_telemetry=False)
+        )
         return _chroma_client.get_or_create_collection(name="omd", metadata={"hnsw:space": "cosine"})
 
 _collection = ensure_collection()
 
 SEARCH_DB_DIR = os.path.join(BASE_INDEX_DIR, "search_index")
-_search_chroma_client = chromadb.PersistentClient(path=SEARCH_DB_DIR)
+_search_chroma_client = chromadb.PersistentClient(
+    path=SEARCH_DB_DIR,
+    settings=Settings(anonymized_telemetry=False)
+)
 
 def ensure_search_collection():
     global _search_chroma_client
@@ -88,13 +97,19 @@ def ensure_search_collection():
         return col
     except Exception as e:
         logging.warning(f"Search collection re-initializing: {e}")
-        _search_chroma_client = chromadb.PersistentClient(path=SEARCH_DB_DIR)
+        _search_chroma_client = chromadb.PersistentClient(
+            path=SEARCH_DB_DIR,
+            settings=Settings(anonymized_telemetry=False)
+        )
         return _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
 
 QA_CHROMA_DIR = os.path.join(BASE_INDEX_DIR, "chroma_qa")
 os.makedirs(QA_CHROMA_DIR, exist_ok=True)
 
-_qa_chroma_client = chromadb.PersistentClient(path=QA_CHROMA_DIR)
+_qa_chroma_client = chromadb.PersistentClient(
+    path=QA_CHROMA_DIR,
+    settings=Settings(anonymized_telemetry=False)
+)
 
 def ensure_qa_collection():
     global _qa_chroma_client
@@ -107,7 +122,10 @@ def ensure_qa_collection():
         return col
     except Exception as e:
         logging.warning(f"QA ChromaDB re-initializing: {e}")
-        _qa_chroma_client = chromadb.PersistentClient(path=QA_CHROMA_DIR)
+        _qa_chroma_client = chromadb.PersistentClient(
+            path=QA_CHROMA_DIR,
+            settings=Settings(anonymized_telemetry=False)
+        )
         return _qa_chroma_client.get_or_create_collection(
             name="qa_index",
             metadata={"hnsw:space": "cosine"}

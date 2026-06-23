@@ -13,11 +13,13 @@ from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
-# Suppress logging of DuplicateIDError from chromadb
+# Suppress logging of DuplicateIDError and telemetry warnings from chromadb
 class DuplicateIDFilter(logging.Filter):
     def filter(self, record):
         message = record.getMessage()
         if "DuplicateIDError" in message or "Expected IDs to be unique" in message:
+            return False
+        if "chromadb.telemetry" in record.name or "Failed to send telemetry event" in message:
             return False
         if record.exc_info:
             exc_type, exc_value, _ = record.exc_info
@@ -32,7 +34,10 @@ logger.addFilter(DuplicateIDFilter())
 class SearchNode:
     def __init__(self, storage_path: str, model: SentenceTransformer = None, model_name: str = "all-MiniLM-L6-v2", token: str = ""):
         self.storage_path = storage_path
-        self.chroma_client = chromadb.PersistentClient(path=os.path.join(storage_path, "search_index"))
+        self.chroma_client = chromadb.PersistentClient(
+            path=os.path.join(storage_path, "search_index"),
+            settings=Settings(anonymized_telemetry=False)
+        )
         self._collection = self.chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
         self.model = model or SentenceTransformer(model_name)
         self.token = token
@@ -69,7 +74,10 @@ class SearchNode:
             return self._collection
         except Exception:
             logger.warning("SearchNode collection stale, re-initializing")
-            self.chroma_client = chromadb.PersistentClient(path=os.path.join(self.storage_path, "search_index"))
+            self.chroma_client = chromadb.PersistentClient(
+                path=os.path.join(self.storage_path, "search_index"),
+                settings=Settings(anonymized_telemetry=False)
+            )
             self._collection = self.chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
             return self._collection
         

@@ -2740,6 +2740,8 @@ async def _perform_prompt_gen(ctx: UserContext,
 
 
     # === ОСНОВНОЙ ЗАПРОС ===
+    # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
+    system_prompt += "\n\n" + instruction_prompt
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
@@ -2747,11 +2749,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     user_message = {
         "role": "user",
         "content": message,
-    }
-
-    instruction_message = {
-        "role": "system",
-        "content": instruction_prompt,
     }
 
     if img_source:
@@ -2768,8 +2765,6 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     # logging.info(f"Starting main request:{model} {think} {img_source} {mem_id}")
 
-    # Добавляем инструкцию
-    messages.append(instruction_message)
     # Добавляем пользовательский промпт
     messages.append(user_message)
 
