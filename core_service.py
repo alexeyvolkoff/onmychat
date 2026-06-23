@@ -106,7 +106,6 @@ STYLE_MODELS = {
     "perfect": SETTINGS["PERFECT_MODEL"],
     "fantasy": SETTINGS["FANTASY_MODEL"],
     "tooned": SETTINGS["TOONED_MODEL"],
-    "pleasure": SETTINGS["PLEASURE_MODEL"],
 }
 
 NEGATIVE_PROMPTS = get_json_prompt("negative_prompts.json")
