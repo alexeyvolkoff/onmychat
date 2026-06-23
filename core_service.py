@@ -3052,9 +3052,12 @@ async def generate_chat_title(message: str, model: str) -> str:
     Спросить у LLM короткое имя для чата.
     """
     prompt = (
-        "You are asked to generate a short (2–3 words) title for a chat conversation "
-        "based on the following first message. Title should start with a suitable emoji separated by space. "
-        "Return ONLY the title, no explanations.\n\n"
+        "Generate a short (2-3 words) title for a chat conversation based on the first message. "
+        "The title MUST be in the same language as the first message (e.g. Russian, English). "
+        "The title MUST start with a suitable emoji followed by space and then a short text (2-3 words). "
+        "Format: [emoji] [text]\n"
+        "Example: 🚀 Launching project\n\n"
+        "Return ONLY the title, no quotes, no explanations.\n\n"
         f"Message: {message}"
     )
 
