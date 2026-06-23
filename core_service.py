@@ -87,6 +87,18 @@ def get_prompt(filename):
         logging.error(f"Failed to load prompt {filename}: {e}")
         return ""
 
+def merge_system_into_user(messages: list[dict]) -> list[dict]:
+    """Merge system message into first user message for model compatibility."""
+    if not messages or messages[0].get("role") != "system":
+        return messages
+    system_content = messages[0]["content"]
+    for i, msg in enumerate(messages[1:], 1):
+        if msg.get("role") == "user":
+            merged = messages.copy()
+            merged[i] = {**msg, "content": f"{system_content}\n\n{msg['content']}"}
+            return merged[:i] + merged[i+1:]
+    return messages
+
 def get_json_prompt(filename):
     try:
         with open(os.path.join(PROMPTS_DIR, filename), "r", encoding="utf-8") as f:
@@ -2541,6 +2553,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
 # === Ollama запрос ===
 async def llm_request_stream(payload: dict, headers: dict = None):
+    if "messages" in payload:
+        payload["messages"] = merge_system_into_user(payload["messages"])
     try:
         # 300-second timeout for streaming (long responses from local LLM can take time)
         timeout = aiohttp.ClientTimeout(total=300, sock_read=120)
@@ -2563,6 +2577,8 @@ async def llm_request_stream(payload: dict, headers: dict = None):
 
 
 async def llm_request(payload: dict, headers: dict = None):
+    if "messages" in payload:
+        payload["messages"] = merge_system_into_user(payload["messages"])
     try:
         # 120-second safety timeout to prevent infinite client hangs if Ollama freezes
         timeout = aiohttp.ClientTimeout(total=120)
