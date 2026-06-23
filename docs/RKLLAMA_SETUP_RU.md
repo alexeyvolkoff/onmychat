@@ -4,24 +4,34 @@
 
 ---
 
-## 1. Установка и настройка RKLLAMA
+> [!TIP]
+> **Рекомендуемая автоматическая установка**
+> Вы можете настроить OnMyChat и RKLLAMA (включая службы systemd) автоматически с помощью нового скрипта **[install.sh](file:///home/alexey/projects/omd/onmychat/install.sh)**:
+> ```bash
+> sudo ./install.sh
+> ```
+> Выберите `rkllama` при запросе.
+
+---
+
+## 1. Установка и настройка RKLLAMA (Вручную)
 
 Выполните следующие шаги для развертывания и запуска сервера RKLLAMA:
 
 1. **Клонируйте репозиторий:**
    ```bash
-   git clone https://github.com/NotPunchnox/rkllama.git ~/RKLLAMA
+   git clone https://github.com/NotPunchnox/rkllama.git /opt/rkllama
    ```
 
 2. **Установите пакет:**
    Перейдите в папку репозитория и установите его в ваше Python-окружение (например, в base-окружение Miniconda):
    ```bash
-   cd ~/RKLLAMA
+   cd /opt/rkllama
    pip install .
    ```
 
 3. **Установка моделей RKLLM:**
-   Разместите ваши скомпилированные файлы моделей `.rkllm` в директории `~/RKLLAMA/models/<model-name>/` вместе с файлом описания `Modelfile`.
+   Разместите ваши скомпилированные файлы моделей `.rkllm` в директории `/opt/rkllama/models/<model-name>/` вместе с файлом описания `Modelfile`.
 
 4. **Создайте службу Systemd:**
    Создайте файл конфигурации службы `/etc/systemd/system/rkllama.service`:
@@ -32,10 +42,10 @@
 
    [Service]
    Type=simple
-   WorkingDirectory=/home/firefly
+   WorkingDirectory=/opt/rkllama
    Environment=HOME=/home/firefly
    User=firefly
-   ExecStart=/home/firefly/miniconda3/bin/rkllama_server --processor rk3588 --port 8080 --models /home/firefly/RKLLAMA/models
+   ExecStart=/home/firefly/miniconda3/bin/rkllama_server --processor rk3588 --port 8080 --models /opt/rkllama/models
    Restart=on-failure
 
    [Install]
@@ -73,7 +83,7 @@ pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
-Если при запуске OnMyChat возникает ошибка `AttributeError: np.float_ was removed in the NumPy 2.0 release`, принудительно понизьте версию NumPy:
+If you encounter an `AttributeError: np.float_ was removed in the NumPy 2.0 release` when starting OnMyChat, downgrade NumPy:
 ```bash
 pip install "numpy<2.0.0"
 ```
@@ -91,9 +101,9 @@ After=network.target rkllama.service
 [Service]
 Type=simple
 User=firefly
-WorkingDirectory=/home/firefly/projects/onmychat
-Environment="PATH=/home/firefly/projects/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/home/firefly/projects/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/onmychat
+Environment="PATH=/opt/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 

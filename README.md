@@ -47,7 +47,19 @@ The **OnMyChat** service manages the conversation history, schedules background 
 - OnMyDisk Connector installed on the same machine
 - Ollama or RKLLAMA running locally
 
-### 2. Installation
+### 2. Installation & Quick Setup
+
+You can install OnMyChat and configure the background system services automatically using the provided `install.sh` script (recommended for Linux servers and SBCs like Firefly):
+
+```bash
+git clone https://github.com/alexeyvolkoff/onmychat.git
+cd onmychat
+sudo ./install.sh
+```
+
+During installation, the script will ask whether you want to set up **Ollama** or **RKLLAMA** (for Rockchip NPUs). It will deploy the application to `/opt/onmychat`, configure python virtualenv, set up systemd services, and start them automatically.
+
+#### Manual Installation (Alternative)
 
 Clone the repository and set up a virtual environment:
 

@@ -4,24 +4,34 @@ If you are setting up your OnMyChat AI node on a Single Board Computer (SBC) pow
 
 ---
 
-## 1. Install and Configure RKLLAMA
+> [!TIP]
+> **Recommended Automated Setup**
+> You can set up both OnMyChat and RKLLAMA (including systemd services) automatically using the new **[install.sh](file:///home/alexey/projects/omd/onmychat/install.sh)** script:
+> ```bash
+> sudo ./install.sh
+> ```
+> Choose `rkllama` when prompted.
+
+---
+
+## 1. Install and Configure RKLLAMA (Manual Steps)
 
 Follow these steps to deploy and run the RKLLAMA server:
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/NotPunchnox/rkllama.git ~/RKLLAMA
+   git clone https://github.com/NotPunchnox/rkllama.git /opt/rkllama
    ```
 
 2. **Install the package:**
    Navigate to the repository and install it in your Python environment (e.g., base environment of Miniconda):
    ```bash
-   cd ~/RKLLAMA
+   cd /opt/rkllama
    pip install .
    ```
 
 3. **Install RKLLM Models:**
-   Place your compiled `.rkllm` model files under `~/RKLLAMA/models/<model-name>/` along with a `Modelfile`.
+   Place your compiled `.rkllm` model files under `/opt/rkllama/models/<model-name>/` along with a `Modelfile`.
 
 4. **Create a Systemd Service:**
    Create a systemd unit file `/etc/systemd/system/rkllama.service`:
@@ -32,10 +42,10 @@ Follow these steps to deploy and run the RKLLAMA server:
 
    [Service]
    Type=simple
-   WorkingDirectory=/home/firefly
+   WorkingDirectory=/opt/rkllama
    Environment=HOME=/home/firefly
    User=firefly
-   ExecStart=/home/firefly/miniconda3/bin/rkllama_server --processor rk3588 --port 8080 --models /home/firefly/RKLLAMA/models
+   ExecStart=/home/firefly/miniconda3/bin/rkllama_server --processor rk3588 --port 8080 --models /opt/rkllama/models
    Restart=on-failure
 
    [Install]
@@ -91,9 +101,9 @@ After=network.target rkllama.service
 [Service]
 Type=simple
 User=firefly
-WorkingDirectory=/home/firefly/projects/onmychat
-Environment="PATH=/home/firefly/projects/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/home/firefly/projects/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/onmychat
+Environment="PATH=/opt/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 
