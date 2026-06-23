@@ -108,7 +108,7 @@ def get_json_prompt(filename):
         return {}
 
 # Default system prompts
-BASE_SYSTEM_PROMPT = get_prompt("default.txt")
+BASE_SYSTEM_PROMPT = get_prompt("base_system.txt")
 MEMORIZATION_PROMPT = get_prompt("memorization.txt")
 SYSTEM_INSTRUCTION_CHARACTER = get_prompt("instruction_character.txt")
 SYSTEM_INSTRUCTION_GENERAL = get_prompt("instruction_general.txt")
