@@ -108,6 +108,7 @@ chown -R "$RUN_USER:$RUN_USER" /opt/onmychat
 
 # --- Step 2: Setup Python Virtual Environment ---
 log_info "Setting up Python virtual environment in /opt/onmychat/venv..."
+rm -rf /opt/onmychat/venv
 sudo -u "$RUN_USER" python3 -m venv /opt/onmychat/venv
 sudo -u "$RUN_USER" /opt/onmychat/venv/bin/pip install --upgrade pip
 
