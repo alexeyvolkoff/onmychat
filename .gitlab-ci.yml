@@ -13,12 +13,20 @@ deploy_job:
     - sudo -u alexey git -C /home/alexey/projects/omd/onmychat pull
     - sudo systemctl restart onmychat
 
+deploy_github:
+  stage: deploy
+  tags:
+    - linux
+  only:
+    - main
+  script:
+    - sudo -u alexey git -C /home/alexey/projects/omd/onmychat push github main
+
 upgrade_job:
   stage: deploy
   tags:
     - linux
   when: manual
-  script:
   script:
     - |
       cat << 'EOF' > /tmp/ci_upgrade.py
