@@ -33,7 +33,7 @@ def get_prompt(filename):
         logging.error(f"Failed to load prompt {filename}: {e}")
     return ""
 
-DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
+DEFAULT_USER_PROMPT = get_prompt("default.txt")
 DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
 def load_user_settings(**kwargs):
