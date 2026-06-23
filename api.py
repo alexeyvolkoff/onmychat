@@ -10,6 +10,32 @@ import mimetypes
 import os
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
+import logging
+
+# Suppress logging of DuplicateIDError and telemetry warnings from chromadb
+class DuplicateIDFilter(logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        if "DuplicateIDError" in message or "Expected IDs to be unique" in message:
+            return False
+        if "chromadb.telemetry" in record.name or "Failed to send telemetry event" in message:
+            return False
+        if record.exc_info:
+            exc_type, exc_value, _ = record.exc_info
+            if exc_type and ("DuplicateIDError" in exc_type.__name__ or "DuplicateIDError" in str(exc_type)):
+                return False
+            if exc_value and "Expected IDs to be unique" in str(exc_value):
+                return False
+        return True
+
+logging.basicConfig(level=logging.INFO)
+# Add filter to root logger and standard loggers
+for logger_name in [None, "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "chromadb", "chromadb.telemetry"]:
+    l = logging.getLogger(logger_name)
+    l.addFilter(DuplicateIDFilter())
+    for handler in l.handlers:
+        handler.addFilter(DuplicateIDFilter())
+
 import hashlib
 import email.utils
 import datetime
@@ -54,39 +80,11 @@ async def get_proxy_session():
     return _proxy_session
 
 import memory_index
-import logging
-import json
- 
 from config import USER_DATA_DIR
 from config import BASE_INDEX_DIR
 from config import SETTINGS
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
-
-logging.basicConfig(level=logging.INFO)
-
-# Suppress logging of DuplicateIDError and telemetry warnings from chromadb
-class DuplicateIDFilter(logging.Filter):
-    def filter(self, record):
-        message = record.getMessage()
-        if "DuplicateIDError" in message or "Expected IDs to be unique" in message:
-            return False
-        if "chromadb.telemetry" in record.name or "Failed to send telemetry event" in message:
-            return False
-        if record.exc_info:
-            exc_type, exc_value, _ = record.exc_info
-            if exc_type and ("DuplicateIDError" in exc_type.__name__ or "DuplicateIDError" in str(exc_type)):
-                return False
-            if exc_value and "Expected IDs to be unique" in str(exc_value):
-                return False
-        return True
-
-# Add filter to root logger and standard loggers
-for logger_name in [None, "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"]:
-    l = logging.getLogger(logger_name)
-    l.addFilter(DuplicateIDFilter())
-    for handler in l.handlers:
-        handler.addFilter(DuplicateIDFilter())
 
 app = FastAPI()
 
