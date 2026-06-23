@@ -76,11 +76,13 @@ log_info "Selected inference engine: $ENGINE"
 log_info "Setting up OnMyChat in /opt/onmychat..."
 mkdir -p /opt/onmychat
 
-# Copy files from current directory
-cp -rp ./* /opt/onmychat/
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Copy files from script directory
+cp -rp "$SCRIPT_DIR"/* /opt/onmychat/
 # Ensure hidden files like .gitignore and .git are copied if needed
-[ -f .gitignore ] && cp .gitignore /opt/onmychat/
-[ -d .git ] && cp -rp .git /opt/onmychat/
+[ -f "$SCRIPT_DIR"/.gitignore ] && cp "$SCRIPT_DIR"/.gitignore /opt/onmychat/
+[ -d "$SCRIPT_DIR"/.git ] && cp -rp "$SCRIPT_DIR"/.git /opt/onmychat/
 
 # Create necessary directories
 mkdir -p /opt/onmychat/user_data
