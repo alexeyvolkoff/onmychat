@@ -8,6 +8,8 @@ import io
 import re
 import mimetypes
 import os
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 import hashlib
 import email.utils
 import datetime
