@@ -49,8 +49,8 @@ MCP_MODEL = DEFAULT_MODEL
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
 TEMPERATURE = float(SETTINGS.get("TEMPERATURE", "0.85"))
 TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
-FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.6"))
-PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.5"))
+FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.0"))
+PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.0"))
 
 def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode is None:
