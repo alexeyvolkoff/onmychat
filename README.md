@@ -110,7 +110,7 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 
 For detailed setup guides and specifications, refer to the `docs` folder:
 - [Personal AI Node Setup Guide](docs/AI_NODE_SETUP_EN.md) (Russian version: [AI_NODE_SETUP_RU.md](docs/AI_NODE_SETUP_RU.md))
-- [RKLLAMA Rockchip NPU Setup Instructions](docs/AI_NODE_SETUP_EN.md#special-guide-for-rockchip-nPU-boards)
+- [RKLLAMA Rockchip NPU Setup Guide](docs/RKLLAMA_SETUP.md) (Russian version: [RKLLAMA_SETUP_RU.md](docs/RKLLAMA_SETUP_RU.md))
 
 ---
 

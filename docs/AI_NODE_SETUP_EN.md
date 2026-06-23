@@ -205,80 +205,11 @@ curl http://localhost:11434/api/tags
 > [!IMPORTANT]
 > For GPU acceleration, install the NVIDIA Container Toolkit or ROCm. On a CPU-only system, choose smaller models (e.g., `gemma4:4b` or `qwen2.5:7b`).
 
-### Special Guide for Rockchip NPU Boards (RK3588 / RK3576, e.g., Firefly, Orange Pi 5, etc.)
+### Rockchip NPU Boards (RK3588 / RK3576, e.g., Firefly, Orange Pi 5, etc.)
 
-If you are setting up the node on a board with a Rockchip NPU, standard Ollama is not supported. Use **RKLLAMA** instead:
+If you are setting up the node on a board powered by a Rockchip SoC, standard Ollama is not supported. You must use **RKLLAMA** to run models on the NPU.
 
-1. **Install and Configure RKLLAMA:**
-   - Clone the repository: `git clone https://github.com/NotPunchnox/rkllama.git ~/RKLLAMA`
-   - Navigate to the repository and install the package into your Python environment (e.g., Miniconda base environment):
-     ```bash
-     cd ~/RKLLAMA
-     pip install .
-     ```
-   - Place your `.rkllm` model files under `~/RKLLAMA/models/<model-name>/` along with a `Modelfile`.
-   - Create a systemd service file to run it automatically `/etc/systemd/system/rkllama.service`:
-     ```ini
-     [Unit]
-     Description=RKLLAMA Server
-     After=network.target
-
-     [Service]
-     Type=simple
-     WorkingDirectory=/home/firefly
-     Environment=HOME=/home/firefly
-     User=firefly
-     ExecStart=/home/firefly/miniconda3/bin/rkllama_server --processor rk3588 --port 8080 --models /home/firefly/RKLLAMA/models
-     Restart=on-failure
-
-     [Install]
-     WantedBy=multi-user.target
-     ```
-   - Reload systemd and activate the service:
-     ```bash
-     sudo systemctl daemon-reload && sudo systemctl enable rkllama && sudo systemctl start rkllama
-     ```
-   - Verify available models: `curl -s http://localhost:8080/api/tags`
-   - In OnMyChat's `config.ini`, specify:
-     ```ini
-     OLLAMA_URL = http://localhost:8080
-     DEFAULT_MODEL = <your_model_name_from_rkllama_tags>
-     ```
-
-2. **OnMyChat Installation on SBC (Avoiding CUDA Downloads):**
-   To avoid downloading gigabytes of unnecessary NVIDIA CUDA/cuDNN packages on the SBC, force a CPU-only PyTorch installation:
-   ```bash
-   pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-   ```
-   If you encounter an `AttributeError: np.float_ was removed in the NumPy 2.0 release` when starting OnMyChat, downgrade NumPy:
-   ```bash
-   pip install "numpy<2.0.0"
-   ```
-
-3. **Run OnMyChat as a Systemd Service:**
-   Create a `/etc/systemd/system/onmychat.service` file:
-   ```ini
-   [Unit]
-   Description=OnMyChat AI Service
-   After=network.target rkllama.service
-
-   [Service]
-   Type=simple
-   User=firefly
-   WorkingDirectory=/home/firefly/projects/onmychat
-   Environment="PATH=/home/firefly/projects/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
-   ExecStart=/home/firefly/projects/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
-   Restart=always
-   RestartSec=5
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-   Enable and start the service:
-   ```bash
-   sudo systemctl daemon-reload && sudo systemctl enable onmychat && sudo systemctl start onmychat
-   ```
+Please follow the detailed setup instructions in the [Rockchip NPU Setup Guide](RKLLAMA_SETUP.md).
 
 ---
 
