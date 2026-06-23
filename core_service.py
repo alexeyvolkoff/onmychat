@@ -47,6 +47,10 @@ FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 CODE_MODEL = SETTINGS.get("CODE_MODEL", DEFAULT_MODEL)
 MCP_MODEL = DEFAULT_MODEL
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
+TEMPERATURE = float(SETTINGS.get("TEMPERATURE", "0.85"))
+TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
+FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.6"))
+PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.5"))
 
 def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode is None:
@@ -2774,11 +2778,11 @@ async def _perform_prompt_gen(ctx: UserContext,
         "model": model,
         "stream": stream,
         "options": {
-            "temperature": 0.85,          # немного выше для разнообразия
-            "top_p": 0.9,                 # ограничивает вероятность, убирая “хвост”
-            "frequency_penalty": 0.6,     # штраф за частое повторение слов
-            "presence_penalty": 0.5,      # штраф за повторение идей/тем
-            "num_ctx": LLM_NUM_CTX,             # из config.ini → LLM_NUM_CTX
+            "temperature": TEMPERATURE,
+            "top_p": TOP_P,
+            "frequency_penalty": FREQUENCY_PENALTY,
+            "presence_penalty": PRESENCE_PENALTY,
+            "num_ctx": LLM_NUM_CTX,
         }
     }
 
