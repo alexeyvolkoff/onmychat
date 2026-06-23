@@ -34,7 +34,6 @@ def get_prompt(filename):
     return ""
 
 DEFAULT_USER_PROMPT = get_prompt("default_user.txt")
-DEFAULT_UNONBOARDED_PROMPT = DEFAULT_USER_PROMPT
 DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
 def load_user_settings(**kwargs):

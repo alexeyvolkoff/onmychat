@@ -96,7 +96,7 @@ def get_json_prompt(filename):
         return {}
 
 # Default system prompts
-BASE_SYSTEM_PROMPT = get_prompt("base_system.txt")
+BASE_SYSTEM_PROMPT = get_prompt("default.txt")
 MEMORIZATION_PROMPT = get_prompt("memorization.txt")
 SYSTEM_INSTRUCTION_CHARACTER = get_prompt("instruction_character.txt")
 SYSTEM_INSTRUCTION_GENERAL = get_prompt("instruction_general.txt")
@@ -2700,12 +2700,6 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     # Персонализация
     username = ctx.settings.get("name") or ctx.settings.get("username", "User")
-    if ctx.settings.get("newUser", False):
-        system_prompt += user_context.DEFAULT_UNONBOARDED_PROMPT
-        system_prompt += "\n\n*Attention*:* You are communicating with the new user!\n"
-    else:        
-        system_prompt += f"\n\n*Personality overrides*: {ctx.settings.get('system_prompt', user_context.DEFAULT_USER_PROMPT)}\n"
-        system_prompt += f"\n\n*Attention*:* You are communicating with existing user. User name: {username}.\n"
 
     system_prompt += "\n\n*Appearance overrides:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
     logging.info(f"Model: {model}\nMode: {mode}\nUser: {username}")
