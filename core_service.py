@@ -2085,7 +2085,9 @@ def get_model_avatar_path(model_name: str) -> str:
 
 
 def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> list:
-    lora_file = os.path.join(os.path.dirname(__file__), "analog_character_lora.json")
+    lora_file = WORKFLOW_PATH
+    if not os.path.exists(lora_file):
+        lora_file = os.path.join(os.path.dirname(__file__), WORKFLOW_PATH)
     if os.path.exists(lora_file):
         try:
             with open(lora_file, "r", encoding="utf-8") as f:
@@ -4079,7 +4081,7 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
                 lora_nodes = find_nodes_by_class("LoraLoader")
                 if lora_nodes:
                     # We need mapping from Name -> Filename.
-                    # This is tricky without reading analog_character_lora.json or having a map.
+                    # This is tricky without reading flow.json or having a map.
                     # For now, if usage implies Power Lora Loader, we stick to that or skip.
                     logging.warning("Character LoRA requested but no compatible LoRA loader found in workflow.")
                         
