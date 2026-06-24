@@ -95,7 +95,6 @@ if [ ! -f /opt/onmychat/config.ini ]; then
     cp /opt/onmychat/config.example.ini /opt/onmychat/config.ini
     
     # Adjust paths in config.ini
-    sed -i "s|STORAGE_ROOT = .*|STORAGE_ROOT = $RUN_USER_HOME|g" /opt/onmychat/config.ini
     sed -i "s|APP_ROOT_DIR = .*|APP_ROOT_DIR = /opt/onmychat|g" /opt/onmychat/config.ini
     
     if [ "$ENGINE" = "rkllama" ]; then

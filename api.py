@@ -532,18 +532,12 @@ async def assistant_avatar(
     ctx = get_ctx(omd_key)
     try:
         # Fallback to default model avatar
-        storage_path = core_service.get_assistant_avatar_path(ctx)
-        
-        if storage_path.startswith("/"):
-            storage_path = storage_path[1:]
-            
-        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        avatar_path = core_service.get_assistant_avatar_path(ctx)
         return serve_file(avatar_path, request, size=size)
 
     except Exception as e:
         logging.error(f"Error serving avatar: {e}")
-        # Return default if anything fails
-        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
         return serve_file(default_path, request, size=size)
 
 
@@ -784,20 +778,13 @@ async def model_avatar(
 ):
     ctx = get_ctx(omd_key)
     try:
-        storage_path = core_service.get_model_avatar_path(lora_name)
-        
-        # Re-attach STORAGE_ROOT logic
-        if storage_path.startswith("/"):
-            storage_path = storage_path[1:]
-            
-        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        avatar_path = core_service.get_model_avatar_path(lora_name)
 
         logging.warning(f"Serving model avatar: {avatar_path}")
         return serve_file(avatar_path, request, size=size)
     except Exception as e:
         logging.error(f"Error serving model avatar: {e}")
-        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
-        return serve_file(default_path, request, size=size)
+        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
         return serve_file(default_path, request, size=size)
     
     

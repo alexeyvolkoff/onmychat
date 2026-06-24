@@ -98,8 +98,7 @@ AI_TOKEN = <generate-your-own-secure-token>
 OLLAMA_URL = http://localhost:11434
 DEFAULT_MODEL = gemma4:12b
 
-STORAGE_ROOT = /path/to/shared/storage
-APP_ROOT_DIR = /path/to/onmychat
+APP_ROOT_DIR = /opt/onmychat
 ```
 
 ### 4. Running the Service
