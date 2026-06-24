@@ -15,6 +15,10 @@ OnMyChat is a private, local, self-hosted AI orchestrator designed to run as an 
 
 ---
 
+![OnMyChat Interface](docs/screenshot.png)
+
+---
+
 ## Architecture Overview
 
 ```
