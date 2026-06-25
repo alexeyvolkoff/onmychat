@@ -22,12 +22,17 @@ from chromadb.config import Settings
 # stored in max_seq_id table (prevents TypeError: object of type 'int' has no len())
 try:
     import chromadb.segment.impl.metadata.sqlite as sqlite_mod
-    original_decode = sqlite_mod._decode_seq_id
-    def patched_decode(seq_id_bytes):
-        if isinstance(seq_id_bytes, int):
-            return seq_id_bytes
-        return original_decode(seq_id_bytes)
-    sqlite_mod._decode_seq_id = patched_decode
+    if hasattr(sqlite_mod, "_decode_seq_id"):
+        original_decode = sqlite_mod._decode_seq_id
+        def patched_decode(seq_id_bytes):
+            if isinstance(seq_id_bytes, int):
+                return seq_id_bytes
+            return original_decode(seq_id_bytes)
+        sqlite_mod._decode_seq_id = patched_decode
+    else:
+        logging.debug("chromadb sqlite seq_id decoder patch skipped: _decode_seq_id not found")
+except ImportError:
+    logging.debug("chromadb sqlite metadata sqlite module not found, patch skipped")
 except Exception as patch_err:
     logging.warning(f"Failed to monkeypatch chromadb sqlite seq_id decoder: {patch_err}")
 
@@ -35,49 +40,60 @@ except Exception as patch_err:
 # stored in index_metadata.pickle (prevents AttributeError: 'dict' object has no attribute 'dimensionality')
 try:
     import chromadb.segment.impl.vector.local_persistent_hnsw as hnsw_mod
-    original_load = hnsw_mod.PersistentData.load_from_file
-    def patched_load(filename):
-        ret = original_load(filename)
-        if isinstance(ret, dict):
-            ret_data = hnsw_mod.PersistentData(
-                dimensionality=ret.get("dimensionality"),
-                total_elements_added=ret.get("total_elements_added", 0),
-                max_seq_id=ret.get("max_seq_id", 0),
-                id_to_label=ret.get("id_to_label", {}),
-                label_to_id=ret.get("label_to_id", {}),
-                id_to_seq_id=ret.get("id_to_seq_id", {})
-            )
-        else:
-            ret_data = ret
-        
-        # Ensure dimensionality is never None to prevent hnswlib.Index init error
-        if getattr(ret_data, "dimensionality", None) is None:
-            ret_data.dimensionality = 384
+    if hasattr(hnsw_mod, "PersistentData") and hasattr(hnsw_mod.PersistentData, "load_from_file"):
+        original_load = hnsw_mod.PersistentData.load_from_file
+        def patched_load(filename):
+            ret = original_load(filename)
+            if isinstance(ret, dict):
+                ret_data = hnsw_mod.PersistentData(
+                    dimensionality=ret.get("dimensionality"),
+                    total_elements_added=ret.get("total_elements_added", 0),
+                    max_seq_id=ret.get("max_seq_id", 0),
+                    id_to_label=ret.get("id_to_label", {}),
+                    label_to_id=ret.get("label_to_id", {}),
+                    id_to_seq_id=ret.get("id_to_seq_id", {})
+                )
+            else:
+                ret_data = ret
             
-        return ret_data
-    hnsw_mod.PersistentData.load_from_file = patched_load
+            # Ensure dimensionality is never None to prevent hnswlib.Index init error
+            if getattr(ret_data, "dimensionality", None) is None:
+                ret_data.dimensionality = 384
+                
+            return ret_data
+        hnsw_mod.PersistentData.load_from_file = patched_load
+    else:
+        logging.debug("chromadb PersistentData load_from_file patch skipped: PersistentData or load_from_file not found")
+except ImportError:
+    logging.debug("chromadb local_persistent_hnsw module or hnswlib not found, patch skipped")
 except Exception as patch_err:
     logging.warning(f"Failed to monkeypatch chromadb PersistentData load_from_file: {patch_err}")
 
 # Monkeypatch chromadb's PersistentLocalHnswSegment.query_vectors to normalize L2 distances to Cosine distances
 try:
     import chromadb.segment.impl.vector.local_persistent_hnsw as hnsw_mod
-    original_query_vectors = hnsw_mod.PersistentLocalHnswSegment.query_vectors
-    def patched_query_vectors(self, query):
-        results = original_query_vectors(self, query)
-        is_l2 = False
-        if self._index is not None:
-            is_l2 = (self._index.space == "l2")
-        if is_l2:
-            for i in range(len(results)):
-                for r in results[i]:
-                    if "distance" in r:
-                        # Convert squared L2 distance of unit vectors to cosine distance: L2 / 2
-                        r["distance"] = r["distance"] / 2.0
-        return results
-    hnsw_mod.PersistentLocalHnswSegment.query_vectors = patched_query_vectors
+    if hasattr(hnsw_mod, "PersistentLocalHnswSegment") and hasattr(hnsw_mod.PersistentLocalHnswSegment, "query_vectors"):
+        original_query_vectors = hnsw_mod.PersistentLocalHnswSegment.query_vectors
+        def patched_query_vectors(self, query):
+            results = original_query_vectors(self, query)
+            is_l2 = False
+            if self._index is not None:
+                is_l2 = (self._index.space == "l2")
+            if is_l2:
+                for i in range(len(results)):
+                    for r in results[i]:
+                        if "distance" in r:
+                            # Convert squared L2 distance of unit vectors to cosine distance: L2 / 2
+                            r["distance"] = r["distance"] / 2.0
+            return results
+        hnsw_mod.PersistentLocalHnswSegment.query_vectors = patched_query_vectors
+    else:
+        logging.debug("chromadb PersistentLocalHnswSegment.query_vectors patch skipped: class or query_vectors not found")
+except ImportError:
+    logging.debug("chromadb local_persistent_hnsw module or hnswlib not found, patch skipped")
 except Exception as patch_err:
     logging.warning(f"Failed to monkeypatch chromadb PersistentLocalHnswSegment.query_vectors: {patch_err}")
+
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 RAG_THRESHOLD = float(SETTINGS.get("RAG_THRESHOLD", "0.75"))
