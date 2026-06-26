@@ -584,11 +584,11 @@ async def assistant_avatar(
             logging.info("Model avatar not found, serving default")
         else:
             logging.warning(f"HTTP error serving avatar: {e.detail}")
-        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
         return serve_default_avatar(default_path, request, size=size)
     except Exception as e:
         logging.error(f"Error serving avatar: {e}")
-        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
         return serve_default_avatar(default_path, request, size=size)
 
 
@@ -838,11 +838,11 @@ async def model_avatar(
             logging.info(f"Model avatar not found for {lora_name}, serving default")
         else:
             logging.warning(f"HTTP error serving model avatar: {e.detail}")
-        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
         return serve_default_avatar(default_path, request, size=size)
     except Exception as e:
         logging.error(f"Error serving model avatar: {e}")
-        default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
         return serve_default_avatar(default_path, request, size=size)
     
     
