@@ -88,6 +88,8 @@ cp -rp "$SCRIPT_DIR"/* /opt/onmychat/
 mkdir -p /opt/onmychat/user_data
 mkdir -p /opt/onmychat/memory_index
 mkdir -p /opt/onmychat/history
+mkdir -p /opt/onmychat/user_avatars
+
 
 # Create config.ini if it does not exist
 if [ ! -f /opt/onmychat/config.ini ]; then
