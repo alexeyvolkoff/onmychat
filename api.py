@@ -519,6 +519,50 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
         headers=headers
     )
 
+
+def serve_default_avatar(default_path: str, request: Request, size: int = None) -> Response:
+    # 1. Try to ensure it is created on disk
+    if not os.path.exists(default_path):
+        try:
+            from PIL import ImageDraw
+            os.makedirs(os.path.dirname(default_path), exist_ok=True)
+            img = Image.new("RGBA", (512, 512), color=(74, 144, 226, 255))
+            draw = ImageDraw.Draw(img)
+            draw.ellipse([186, 130, 326, 270], fill=(255, 255, 255, 255))
+            draw.ellipse([96, 320, 416, 580], fill=(255, 255, 255, 255))
+            img.save(default_path, "PNG")
+            logging.info(f"Created default avatar at {default_path}")
+        except Exception as err:
+            logging.error(f"Could not write default avatar to disk: {err}")
+            
+    # 2. If it exists on disk now, serve it normally
+    if os.path.isfile(default_path):
+        try:
+            return serve_file(default_path, request, size=size)
+        except Exception as serve_err:
+            logging.error(f"Error serving default avatar from disk: {serve_err}")
+            
+    # 3. In-memory fallback if disk operations failed
+    try:
+        from PIL import ImageDraw
+        import io
+        img = Image.new("RGBA", (512, 512), color=(74, 144, 226, 255))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([186, 130, 326, 270], fill=(255, 255, 255, 255))
+        draw.ellipse([96, 320, 416, 580], fill=(255, 255, 255, 255))
+        
+        if size:
+            img.thumbnail((size, size))
+            
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="image/png")
+    except Exception as mem_err:
+        logging.error(f"Fatal error generating fallback avatar in memory: {mem_err}")
+        raise HTTPException(status_code=500, detail="Could not serve default avatar")
+
+
 # ==== Эндпоинты ====
 
 
@@ -538,7 +582,7 @@ async def assistant_avatar(
     except Exception as e:
         logging.error(f"Error serving avatar: {e}")
         default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
-        return serve_file(default_path, request, size=size)
+        return serve_default_avatar(default_path, request, size=size)
 
 
 @app.post("/assistant/avatar/generate")
@@ -785,7 +829,7 @@ async def model_avatar(
     except Exception as e:
         logging.error(f"Error serving model avatar: {e}")
         default_path = os.path.join(core_service.APP_ROOT_DIR, "avatars", "default.png")
-        return serve_file(default_path, request, size=size)
+        return serve_default_avatar(default_path, request, size=size)
     
     
 @app.get("/assistant/avatars")
