@@ -2110,7 +2110,10 @@ def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> lis
                                     
                                 # Filter based on mode setting
                                 lora_mode = input_val.get("mode", input_val.get("nsfw", False))
-                                lora_mode_str = "fun" if lora_mode else "work"
+                                if isinstance(lora_mode, str):
+                                    lora_mode_str = lora_mode.lower()
+                                else:
+                                    lora_mode_str = "fun" if lora_mode else "work"
                                 effective_fun = (ctx.private_mode if ctx else False) and user_mode == "fun"
                                 # Skip fun loras if not in effective fun mode
                                 if lora_mode_str == "fun" and not effective_fun:
