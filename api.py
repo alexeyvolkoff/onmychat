@@ -1863,6 +1863,28 @@ async def proxy_opencode_question_reply(request: Request, request_id: str):
         payload = await request.json()
         logging.info(f"[OpenCode Proxy] Forwarding question reply for {request_id}: {payload}")
         
+        # INTERCEPT PERMISSION REPLIES SUBMITTED AS QUESTIONS
+        if str(request_id) in _pending_permissions_metadata:
+            logging.info(f"[OpenCode Proxy] Intercepted question reply as permission reply for {request_id}")
+            p_url = f"{core_service.CODE_BASE_URL}/permission/{request_id}/reply"
+            
+            # Map the answer back to a permission reply payload
+            answers = payload.get("answers", [])
+            reply_action = "allow"
+            if answers and answers[0] and answers[0][0].lower() == "reject":
+                reply_action = "reject"
+                
+            session = await get_proxy_session()
+            async with session.post(p_url, json={"reply": reply_action}) as p_resp:
+                if p_resp.status not in [200, 201, 204]:
+                    err_body = await p_resp.text()
+                    logging.error(f"[OpenCode Proxy] Intercepted permission reply failed: {err_body}")
+                    raise HTTPException(status_code=p_resp.status, detail=err_body)
+                
+                # Cleanup
+                _pending_permissions_metadata.pop(str(request_id), None)
+                return {}
+        
         query_params = dict(request.query_params)
         directory = query_params.get("directory")
         if not directory:
@@ -1907,6 +1929,21 @@ async def proxy_opencode_question_reply(request: Request, request_id: str):
 async def proxy_opencode_question_reject(request: Request, request_id: str):
     try:
         logging.info(f"[OpenCode Proxy] Forwarding question reject for {request_id}")
+        
+        # INTERCEPT PERMISSION REJECTS SUBMITTED AS QUESTIONS
+        if str(request_id) in _pending_permissions_metadata:
+            logging.info(f"[OpenCode Proxy] Intercepted question reject as permission reject for {request_id}")
+            p_url = f"{core_service.CODE_BASE_URL}/permission/{request_id}/reply"
+            session = await get_proxy_session()
+            async with session.post(p_url, json={"reply": "reject"}) as p_resp:
+                if p_resp.status not in [200, 201, 204]:
+                    err_body = await p_resp.text()
+                    logging.error(f"[OpenCode Proxy] Intercepted permission reject failed: {err_body}")
+                    raise HTTPException(status_code=p_resp.status, detail=err_body)
+                
+                # Cleanup
+                _pending_permissions_metadata.pop(str(request_id), None)
+                return {}
         
         query_params = dict(request.query_params)
         directory = query_params.get("directory")
@@ -2448,7 +2485,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             "directory": resolved_dir,
                                                         }
                                                         logging.info(f"[OpenCode Proxy] Permission stored for session {session_id}: id={permission_id}, directory={resolved_dir}")
-                                                        yield f"data: {json.dumps({'type': 'permission.asked', 'permissionID': permission_id, 'permission': props})}\n\n".encode('utf-8')
+                                                        
+                                                        # TRANSFORM PERMISSION INTO QUESTION FOR FRONTEND
+                                                        action_val = props.get("Action", "unknown action")
+                                                        target_val = props.get("Target", "unknown target")
+                                                        reason_val = props.get("Reason", "No reason provided")
+                                                        q_text = f"Agent requests permission for: **{action_val}** on `{target_val}`\n\nReason: {reason_val}"
+                                                        q_opts = ["Allow", "Reject"]
+                                                        
+                                                        yield f"data: {json.dumps({'type': 'question.asked', 'requestID': permission_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
                                                         terminal_event_received = False
 
                                                 elif event_type in ("permission.v2.replied", "permission.replied"):
