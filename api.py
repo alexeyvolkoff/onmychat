@@ -2385,6 +2385,46 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         logging.info(f"[OpenCode Proxy] Question {req_id} rejected, cleaned up")
                                             continue
                                         
+                                        # PERMISSION EVENTS (filtered by authorized_sids if present, otherwise fallback to current session)
+                                        if event_type.startswith("permission."):
+                                            is_authorized = (event_sid in authorized_sids) or (event_sid == "None") or (not event_sid)
+                                            if is_authorized:
+                                                if event_type in ("permission.updated", "permission.v2.asked", "permission.asked"):
+                                                    logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
+                                                    permission_id = props.get("id")
+                                                    if permission_id:
+                                                        # Store permission state for reply routing
+                                                        _pending_permissions[str(session_id)] = {
+                                                            "requestID": permission_id,
+                                                            "permission": props,
+                                                        }
+                                                        _pending_permissions_metadata[str(permission_id)] = {
+                                                            "session_id": str(session_id),
+                                                            "directory": resolved_dir,
+                                                        }
+                                                        logging.info(f"[OpenCode Proxy] Permission stored for session {session_id}: id={permission_id}, directory={resolved_dir}")
+                                                        yield f"data: {json.dumps({'type': 'permission.asked', 'permissionID': permission_id, 'permission': props})}\n\n".encode('utf-8')
+                                                        terminal_event_received = False
+
+                                                elif event_type in ("permission.v2.replied", "permission.replied"):
+                                                    req_id = props.get("requestID")
+                                                    if req_id:
+                                                        _pending_permissions_metadata.pop(str(req_id), None)
+                                                        entry = _pending_permissions.get(str(session_id))
+                                                        if entry and entry.get("requestID") == req_id:
+                                                            _pending_permissions.pop(str(session_id), None)
+                                                            logging.info(f"[OpenCode Proxy] Permission {req_id} replied, cleaned up")
+                                                            
+                                                elif event_type in ("permission.v2.rejected", "permission.rejected"):
+                                                    req_id = props.get("requestID")
+                                                    if req_id:
+                                                        _pending_permissions_metadata.pop(str(req_id), None)
+                                                        entry = _pending_permissions.get(str(session_id))
+                                                        if entry and entry.get("requestID") == req_id:
+                                                            _pending_permissions.pop(str(session_id), None)
+                                                            logging.info(f"[OpenCode Proxy] Permission {req_id} rejected, cleaned up")
+                                            continue
+                                        
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
                                         parent_sid = props.get("parentID") or info.get("parentID")
                                         if parent_sid and str(parent_sid) in authorized_sids:
@@ -2410,32 +2450,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 if title:
                                                     logging.info(f"[OpenCode Proxy] Stream rename event received: {title}")
                                                     yield f"data: {json.dumps({'action': 'rename', 'title': title})}\n\n".encode('utf-8')
-                                            
-                                            elif event_type in ("permission.updated", "permission.v2.asked"):
-                                                logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
-                                                permission_id = props.get("id")
-                                                if permission_id:
-                                                    # Store permission state for reply routing
-                                                    _pending_permissions[str(session_id)] = {
-                                                        "requestID": permission_id,
-                                                        "permission": props,
-                                                    }
-                                                    _pending_permissions_metadata[str(permission_id)] = {
-                                                        "session_id": str(session_id),
-                                                        "directory": resolved_dir,
-                                                    }
-                                                    logging.info(f"[OpenCode Proxy] Permission stored for session {session_id}: id={permission_id}, directory={resolved_dir}")
-                                                    yield f"data: {json.dumps({'type': 'permission.asked', 'permissionID': permission_id, 'permission': props})}\n\n".encode('utf-8')
-                                                    terminal_event_received = False
-
-                                            elif event_type == "permission.v2.replied":
-                                                req_id = props.get("requestID")
-                                                if req_id:
-                                                    _pending_permissions_metadata.pop(str(req_id), None)
-                                                    entry = _pending_permissions.get(str(session_id))
-                                                    if entry and entry.get("requestID") == req_id:
-                                                        _pending_permissions.pop(str(session_id), None)
-                                                        logging.info(f"[OpenCode Proxy] Permission {req_id} replied, cleaned up")
                                             
                                             elif event_type == "session.diff":
                                                 yield f"data: {json.dumps({'action': 'refresh_diffs'})}\n\n".encode('utf-8')
