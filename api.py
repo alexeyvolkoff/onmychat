@@ -2515,14 +2515,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             
                                                         q_text = f"**⚠️ Требуется разрешение (Permission Required)**\n\nАгент запрашивает доступ: `{action_val}`\nПуть: `{target_val}`\n\n*Пожалуйста, напишите 'да' (разрешить) или 'нет' (отклонить) прямо в чат.*"
                                                         
+                                                        tool_info = props.get("tool", {})
+                                                        msg_id = tool_info.get("messageID", f"msg_perm_{permission_id}")
+                                                        
                                                         fake_msg = {
                                                             "id": f"evt_fake_perm_{permission_id}",
                                                             "type": "message.part.updated",
                                                             "properties": {
                                                                 "sessionID": str(session_id),
                                                                 "part": {
-                                                                    "id": f"prt_{permission_id}",
-                                                                    "messageID": f"msg_perm_{permission_id}",
+                                                                    "id": f"prt_perm_{permission_id}",
+                                                                    "messageID": msg_id,
                                                                     "sessionID": str(session_id),
                                                                     "type": "text",
                                                                     "text": q_text
