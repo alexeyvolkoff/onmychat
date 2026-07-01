@@ -2489,16 +2489,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     if permission_id:
                                                         # AUTOMATICALLY REJECT PERMISSION TO PREVENT UI HANG
                                                         logging.info(f"[OpenCode Proxy] Auto-rejecting permission {permission_id} to prevent UI hang")
-                                                        async def auto_reject_permission(pid):
+                                                        async def auto_reject_permission(pid, p_dir):
                                                             try:
                                                                 await asyncio.sleep(0.5)
                                                                 r_url = f"{core_service.CODE_BASE_URL}/permission/{pid}/reply"
+                                                                if p_dir:
+                                                                    import urllib.parse
+                                                                    r_url += "?" + urllib.parse.urlencode({"directory": p_dir})
                                                                 async with session.post(r_url, json={"reply": "reject"}) as resp:
                                                                     logging.info(f"[OpenCode Proxy] Auto-reject sent for {pid}, status: {resp.status}")
                                                             except Exception as e:
                                                                 logging.error(f"[OpenCode Proxy] Auto-reject failed for {pid}: {e}")
                                                                 
-                                                        asyncio.create_task(auto_reject_permission(permission_id))
+                                                        asyncio.create_task(auto_reject_permission(permission_id, resolved_dir))
                                                         continue
 
                                                 elif event_type in ("permission.v2.replied", "permission.replied"):
