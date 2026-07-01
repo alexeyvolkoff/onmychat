@@ -291,6 +291,7 @@ async def search(
 
 @app.on_event("startup")
 async def startup_event():
+    _load_persisted_sessions_into_memory()
     logging.info("[api] Startup complete")
 
 # ==== Модели ввода ====
@@ -723,6 +724,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     child_sids = agent_sessions.pop(sid, set())
     for child_sid in child_sids:
         logging.info(f"[OpenCode Proxy] Force-killing subagent session: {child_sid}")
+        agent_session_parents.pop(child_sid, None)
         child_task = active_tasks.pop(child_sid, None)
         if child_task and not child_task.done():
             child_task.cancel()
@@ -745,6 +747,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
                     await child_sse.close()
                 except Exception:
                     pass
+    _save_agent_sessions()
 
     # 4. Clean up pending questions & session directories
     pq = _pending_questions.pop(sid, None)
@@ -1721,6 +1724,33 @@ session_tasks: dict[str, dict] = {}
 # Structure: { primary_sid: set[child_sid] }
 agent_sessions: dict[str, set[str]] = {}
 
+# Reverse lookup: child_sid -> parent_sid
+agent_session_parents: dict[str, str] = {}
+
+# JSON file for persisting parent-child relationships across sessions
+AGENT_SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agent_sessions.json')
+
+def _load_agent_sessions():
+    try:
+        with open(AGENT_SESSIONS_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _save_agent_sessions():
+    """Persist current agent_sessions to JSON file."""
+    data = {
+        pid: list(ch) for pid, ch in agent_sessions.items()
+    }
+    with open(AGENT_SESSIONS_FILE, 'w') as f:
+        json.dump(data, f)
+
+def _load_persisted_sessions_into_memory():
+    """Load persisted session relationships into memory at startup."""
+    data = _load_agent_sessions()
+    for pid, children in data.items():
+        agent_sessions[pid] = set(children)
+
 def resolve_session_directory(directory: str) -> str:
     if not directory:
         return directory
@@ -1856,6 +1886,41 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
             raise HTTPException(status_code=500, detail=str(e))
             
     return await proxy_request(target_url, request, method=request.method)
+
+@app.get("/code/sessions/children")
+async def get_all_session_children(request: Request):
+    """
+    Returns all known parent-child session mappings.
+    """
+    result = {}
+    for pid, children in agent_sessions.items():
+        result[pid] = sorted(list(children))
+    return {"children": result}
+
+@app.get("/code/sessions/{session_id}/children")
+async def get_session_children(request: Request, session_id: str):
+    """
+    Returns child session data for a given parent session.
+    Fetches each child session's info from OpenCode.
+    """
+    child_ids = agent_sessions.get(session_id, set())
+    if not child_ids:
+        return {"children": []}
+    
+    s = await get_proxy_session()
+    children = []
+    for cid in child_ids:
+        try:
+            async with s.get(f"{core_service.CODE_BASE_URL}/session/{cid}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    children.append(data)
+                else:
+                    children.append({"id": cid})
+        except Exception as e:
+            logging.error(f"[OpenCode Proxy] Error fetching child session {cid}: {e}")
+            children.append({"id": cid})
+    return {"children": children}
 
 @app.post("/code/question/{request_id}/reply")
 async def proxy_opencode_question_reply(request: Request, request_id: str):
@@ -2589,6 +2654,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 authorized_sids.add(event_sid)
                                                 # Register globally so _force_kill_session can find and cancel it
                                                 agent_sessions.setdefault(str(session_id), set()).add(event_sid)
+                                                agent_session_parents[str(event_sid)] = str(parent_sid)
+                                                _save_agent_sessions()
+                                                # Notify the frontend about the new child session
+                                                yield f"data: {json.dumps({'action': 'child_session_created', 'childId': event_sid, 'parentId': str(parent_sid)})}\n\n".encode('utf-8')
 
                                         # Only process events for authorized sessions (Primary + Subagents)
                                         logging.debug(f"[OpenCode Proxy] Event: {event_type} | event_sid: {event_sid} | authorized: {event_sid in authorized_sids} | authorized_sids: {list(authorized_sids)}")
@@ -2749,7 +2818,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     _pending_permissions_metadata.pop(str(pp["requestID"]), None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
-                agent_sessions.pop(str(session_id), None)
+                removed = agent_sessions.pop(str(session_id), None)
+                if removed:
+                    for child_sid in removed:
+                        agent_session_parents.pop(child_sid, None)
+                    _save_agent_sessions()
         
         return StreamingResponse(
             stream_generator(),
