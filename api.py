@@ -2101,6 +2101,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         # this session, we reply to the question directly and then start the SSE stream.
         is_question_reply = False
         pending_entry = _pending_questions.pop(str(session_id), None)
+        pending_perm = _pending_permissions.pop(str(session_id), None)
+        
         if pending_entry:
             is_question_reply = True
             answer = prompt_text.strip()
@@ -2108,6 +2110,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
             target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
             opencode_payload = {"answers": [[answer]]}
+        elif pending_perm:
+            is_question_reply = True
+            answer = prompt_text.strip().lower()
+            reply_val = "allow" if answer in ("allow", "yes", "y", "да", "разрешить", "ok") else "reject"
+            rid = pending_perm["requestID"]
+            logging.info(f"[OpenCode Proxy] Replying directly to pending permission {rid} with answer: {reply_val}")
+            target_url = f"{core_service.CODE_BASE_URL}/permission/{rid}/reply"
+            opencode_payload = {"reply": reply_val}
         else:
             opencode_payload = {
                 "parts": [
@@ -2497,14 +2507,29 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         }
                                                         logging.info(f"[OpenCode Proxy] Permission stored for session {session_id}: id={permission_id}, directory={resolved_dir}")
                                                         
-                                                        # TRANSFORM PERMISSION INTO QUESTION FOR FRONTEND
-                                                        action_val = props.get("Action", "unknown action")
-                                                        target_val = props.get("Target", "unknown target")
-                                                        reason_val = props.get("Reason", "No reason provided")
-                                                        q_text = f"Agent requests permission for: **{action_val}** on `{target_val}`\n\nReason: {reason_val}"
-                                                        q_opts = ["Allow", "Reject"]
+                                                        # TRANSFORM PERMISSION INTO TEXT MESSAGE FOR FRONTEND
+                                                        action_val = props.get("permission", "unknown permission")
+                                                        target_val = props.get("patterns", ["unknown target"])
+                                                        if isinstance(target_val, list) and target_val:
+                                                            target_val = target_val[0]
+                                                            
+                                                        q_text = f"**⚠️ Требуется разрешение (Permission Required)**\n\nАгент запрашивает доступ: `{action_val}`\nПуть: `{target_val}`\n\n*Пожалуйста, напишите 'да' (разрешить) или 'нет' (отклонить) прямо в чат.*"
                                                         
-                                                        yield f"data: {json.dumps({'type': 'question.asked', 'requestID': permission_id, 'question': q_text, 'options': q_opts})}\n\n".encode('utf-8')
+                                                        fake_msg = {
+                                                            "id": f"evt_fake_perm_{permission_id}",
+                                                            "type": "message.part.updated",
+                                                            "properties": {
+                                                                "sessionID": str(session_id),
+                                                                "part": {
+                                                                    "id": f"prt_{permission_id}",
+                                                                    "messageID": f"msg_perm_{permission_id}",
+                                                                    "sessionID": str(session_id),
+                                                                    "type": "text",
+                                                                    "text": q_text
+                                                                }
+                                                            }
+                                                        }
+                                                        yield f"data: {json.dumps(fake_msg)}\n\n".encode('utf-8')
                                                         terminal_event_received = False
 
                                                 elif event_type in ("permission.v2.replied", "permission.replied"):
