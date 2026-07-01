@@ -2183,6 +2183,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             _active_session_directories[str(session_id)] = resolved_dir
         
         async def stream_generator():
+            if prompt_text.strip().startswith("/reset"):
+                subprocess.run(["pkill", "-f", "opencode web"], capture_output=True)
+                msg = {
+                    "type": "message.part.updated",
+                    "properties": {
+                        "sessionID": str(session_id),
+                        "part": {"id": "reset_part", "type": "text", "text": "OpenCode agent restarted."}
+                    }
+                }
+                yield f"data: {json.dumps(msg)}\n\n".encode('utf-8')
+                yield b"data: {\"done\": true}\n\n"
+                return
+                
             read_task = None
             event_stream_closed = False
             try:
@@ -2696,8 +2709,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             except Exception as loop_e:
                                 logging.error(f"[OpenCode Proxy] Error in event loop: {loop_e}")
                                 break
-
-                            await asyncio.sleep(0.01) 
                         
                         # 4. Final cleanup
                         if not post_task.done():
