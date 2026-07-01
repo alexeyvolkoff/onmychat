@@ -2422,6 +2422,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
                                         
+                                        # DEBUG DUMP TO /home/alexey/Documents/debug.txt
+                                        try:
+                                            import os
+                                            os.makedirs("/home/alexey/Documents", exist_ok=True)
+                                            with open("/home/alexey/Documents/debug.txt", "a") as dbg_file:
+                                                dbg_file.write(f"EVENT TYPE: {event_type} | SID: {event_sid} | PROPS: {json.dumps(props)}\n")
+                                        except Exception as e:
+                                            logging.error(f"Debug file error: {e}")
+                                            
                                         # QUESTION EVENTS (filtered by authorized_sids if present, otherwise fallback to current session)
                                         if event_type.startswith("question."):
                                             is_authorized = (event_sid in authorized_sids) or (event_sid == "None") or (not event_sid)
