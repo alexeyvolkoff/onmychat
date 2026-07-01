@@ -75,7 +75,17 @@ else
     exit 1
 fi
 
-# --- Step 3: Restart Services ---
+# --- Step 3: Update onmydisk-connector ---
+log_info "Updating onmydisk-connector..."
+CONNECTOR_URL="https://forge.bineon.team/repo/Ubuntu/focal/onmydisk-connector-arm64.deb"
+CONNECTOR_DEB="/tmp/onmydisk-connector-arm64.deb"
+curl -fsSL "$CONNECTOR_URL" -o "$CONNECTOR_DEB"
+dpkg -i "$CONNECTOR_DEB" || true
+apt-get install -f -y
+rm -f "$CONNECTOR_DEB"
+log_success "onmydisk-connector updated."
+
+# --- Step 4: Restart Services ---
 log_info "Restarting services..."
 if systemctl is-active --quiet rkllama; then
     echo "-> Restarting rkllama service..."
@@ -85,6 +95,11 @@ fi
 if systemctl is-active --quiet onmychat; then
     echo "-> Restarting onmychat service..."
     sudo systemctl restart onmychat
+fi
+
+if systemctl is-active --quiet onmydisk; then
+    echo "-> Restarting onmydisk service..."
+    sudo systemctl restart onmydisk
 fi
 
 log_success "All updates applied and services restarted successfully!"
