@@ -157,7 +157,6 @@ AI_TOKEN = <придумайте-ваш-ai-token>
 OLLAMA_URL = http://localhost:11434
 DEFAULT_MODEL = gemma4:12b
 
-STORAGE_ROOT = /opt/onmychat/storage
 APP_ROOT_DIR = /opt/onmychat
 ```
 

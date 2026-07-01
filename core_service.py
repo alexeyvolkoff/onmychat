@@ -64,9 +64,7 @@ COMFY_API_URL = SETTINGS["COMFY_API_URL"]
 
 WORKFLOW_PATH = SETTINGS["WORKFLOW_PATH"]
 COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
-COMFY_INPUT_DIR = SETTINGS["COMFY_INPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
-STORAGE_ROOT = SETTINGS["STORAGE_ROOT"]
 APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
@@ -2078,14 +2076,10 @@ def bind_account(ctx: UserContext, omd_key: str):
 
 def get_assistant_avatar_path(ctx: UserContext) -> str:
     model = ctx.settings.get("assistant_model", "Domi")
-    full_avatar_path = f"{COMFY_INPUT_DIR}/{AVATAR_DIR}/{model}.png"
-    avatar_path = full_avatar_path.replace(STORAGE_ROOT, "")
-    return avatar_path
+    return os.path.join(APP_ROOT_DIR, AVATAR_DIR, f"{model}.png")
 
 def get_model_avatar_path(model_name: str) -> str:
-    full_avatar_path = f"{COMFY_INPUT_DIR}/{AVATAR_DIR}/{model_name}.png"
-    avatar_path = full_avatar_path.replace(STORAGE_ROOT, "")
-    return avatar_path
+    return os.path.join(APP_ROOT_DIR, AVATAR_DIR, f"{model_name}.png")
 
 
 def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> list:
@@ -2116,7 +2110,10 @@ def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> lis
                                     
                                 # Filter based on mode setting
                                 lora_mode = input_val.get("mode", input_val.get("nsfw", False))
-                                lora_mode_str = "fun" if lora_mode else "work"
+                                if isinstance(lora_mode, str):
+                                    lora_mode_str = lora_mode.lower()
+                                else:
+                                    lora_mode_str = "fun" if lora_mode else "work"
                                 effective_fun = (ctx.private_mode if ctx else False) and user_mode == "fun"
                                 # Skip fun loras if not in effective fun mode
                                 if lora_mode_str == "fun" and not effective_fun:
@@ -2172,14 +2169,9 @@ async def get_avatar_version(ctx: UserContext) -> str:
 
     # 2. Fallback to local
     try:
-        storage_path = get_assistant_avatar_path(ctx)
-        if storage_path.startswith("/"):
-            storage_path = storage_path[1:]
-        
-        full_path = os.path.join(STORAGE_ROOT, storage_path)
+        full_path = get_assistant_avatar_path(ctx)
         if os.path.exists(full_path):
             mtime = os.path.getmtime(full_path)
-            #logging.info(f"[get_avatar_version] Local avatar local version: {mtime}")
 
             return str(int(mtime))
     except Exception as e:
@@ -2242,44 +2234,7 @@ async def get_generated_avatars(ctx: UserContext) -> list:
             # If storage is configured, we assume remote is source of truth.
             return []
 
-    # 2. Local fallback
-    try:
-        # Assuming generated is adjacent to avatar.png or in user root?
-        # Standard: STORAGE_ROOT / user_id / generated
-        # Need to verify path. core_service has upload_to_storage logic.
-        # It uses 'generated/' as path.
-        # We need absolute path.
-        # upload_to_storage uses: os.path.join(STORAGE_ROOT, user_id, path)
-        
-        user_storage_path = os.path.join(STORAGE_ROOT, ctx.user_id)
-        if ctx.storage and not ctx.omd_key: # Local storage mount
-             # Logic for local mounts is complex, assume standard structure for now
-             user_storage_path = os.path.join(STORAGE_ROOT, ctx.storage.strip("/"))
-        
-        generated_dir = os.path.join(user_storage_path, "generated", "avatars")
-        
-        if os.path.exists(generated_dir):
-            for filename in os.listdir(generated_dir):
-                if filename.startswith("avatar"):
-                    full_path = os.path.join(generated_dir, filename)
-                    if os.path.isfile(full_path):
-                         # Simple local URL? Or we need api to serve it?
-                         # For now, return filename. Frontend likely needs full URL.
-                         # But if local, we might need an endpoint to serve it.
-                         # Since remote is priority, basic implementation:
-                         avatars.append({
-                             "name": filename,
-                             "url": "", # Frontend might fallback
-                             "date": os.path.getmtime(full_path)
-                         })
-        
-        # Sort local by date?
-        avatars.sort(key=lambda x: x["date"], reverse=True)
-        return avatars
-
-    except Exception as e:
-        logging.warning(f"Failed to list local avatars: {e}")
-        return []
+    return []
 
 
 async def generate_image_workflow(workflow) -> bytes:

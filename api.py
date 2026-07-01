@@ -519,6 +519,50 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
         headers=headers
     )
 
+
+def serve_default_avatar(default_path: str, request: Request, size: int = None) -> Response:
+    # 1. Try to ensure it is created on disk
+    if not os.path.exists(default_path):
+        try:
+            from PIL import ImageDraw
+            os.makedirs(os.path.dirname(default_path), exist_ok=True)
+            img = Image.new("RGBA", (512, 512), color=(74, 144, 226, 255))
+            draw = ImageDraw.Draw(img)
+            draw.ellipse([186, 130, 326, 270], fill=(255, 255, 255, 255))
+            draw.ellipse([96, 320, 416, 580], fill=(255, 255, 255, 255))
+            img.save(default_path, "PNG")
+            logging.info(f"Created default avatar at {default_path}")
+        except Exception as err:
+            logging.error(f"Could not write default avatar to disk: {err}")
+            
+    # 2. If it exists on disk now, serve it normally
+    if os.path.isfile(default_path):
+        try:
+            return serve_file(default_path, request, size=size)
+        except Exception as serve_err:
+            logging.error(f"Error serving default avatar from disk: {serve_err}")
+            
+    # 3. In-memory fallback if disk operations failed
+    try:
+        from PIL import ImageDraw
+        import io
+        img = Image.new("RGBA", (512, 512), color=(74, 144, 226, 255))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([186, 130, 326, 270], fill=(255, 255, 255, 255))
+        draw.ellipse([96, 320, 416, 580], fill=(255, 255, 255, 255))
+        
+        if size:
+            img.thumbnail((size, size))
+            
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="image/png")
+    except Exception as mem_err:
+        logging.error(f"Fatal error generating fallback avatar in memory: {mem_err}")
+        raise HTTPException(status_code=500, detail="Could not serve default avatar")
+
+
 # ==== Эндпоинты ====
 
 
@@ -532,19 +576,20 @@ async def assistant_avatar(
     ctx = get_ctx(omd_key)
     try:
         # Fallback to default model avatar
-        storage_path = core_service.get_assistant_avatar_path(ctx)
-        
-        if storage_path.startswith("/"):
-            storage_path = storage_path[1:]
-            
-        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        avatar_path = core_service.get_assistant_avatar_path(ctx)
         return serve_file(avatar_path, request, size=size)
 
+    except HTTPException as e:
+        if e.status_code == 404:
+            logging.info("Model avatar not found, serving default")
+        else:
+            logging.warning(f"HTTP error serving avatar: {e.detail}")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+        return serve_default_avatar(default_path, request, size=size)
     except Exception as e:
         logging.error(f"Error serving avatar: {e}")
-        # Return default if anything fails
-        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
-        return serve_file(default_path, request, size=size)
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+        return serve_default_avatar(default_path, request, size=size)
 
 
 @app.post("/assistant/avatar/generate")
@@ -784,21 +829,21 @@ async def model_avatar(
 ):
     ctx = get_ctx(omd_key)
     try:
-        storage_path = core_service.get_model_avatar_path(lora_name)
-        
-        # Re-attach STORAGE_ROOT logic
-        if storage_path.startswith("/"):
-            storage_path = storage_path[1:]
-            
-        avatar_path = os.path.join(core_service.STORAGE_ROOT, storage_path)
+        avatar_path = core_service.get_model_avatar_path(lora_name)
 
-        logging.warning(f"Serving model avatar: {avatar_path}")
+        logging.info(f"Serving model avatar: {avatar_path}")
         return serve_file(avatar_path, request, size=size)
+    except HTTPException as e:
+        if e.status_code == 404:
+            logging.info(f"Model avatar not found for {lora_name}, serving default")
+        else:
+            logging.warning(f"HTTP error serving model avatar: {e.detail}")
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+        return serve_default_avatar(default_path, request, size=size)
     except Exception as e:
         logging.error(f"Error serving model avatar: {e}")
-        default_path = os.path.join(core_service.STORAGE_ROOT, "avatars", "default.png")
-        return serve_file(default_path, request, size=size)
-        return serve_file(default_path, request, size=size)
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+        return serve_default_avatar(default_path, request, size=size)
     
     
 @app.get("/assistant/avatars")
