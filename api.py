@@ -66,11 +66,7 @@ _active_session_directories: dict[str, str] = {}
 # question.asked events when SSE reconnections replay history.
 _processed_question_ids: dict[str, set[str]] = {}
 
-# Track pending permission requests per session.
-# Populated when a permission.updated SSE event arrives; the frontend replies
-# via /code/permission/{permission_id}/reply or /reject.
-# Structure: { session_id: { "requestID": str, "permission": dict } }
-_pending_permissions: dict[str, dict] = {}
+# Track pending permission metadata for reply/reject endpoints (legacy, rarely used with auto-reject).
 _pending_permissions_metadata: dict[str, dict] = {}
 
 async def get_proxy_session():
@@ -758,10 +754,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     for req_id in to_remove:
         _pending_questions_metadata.pop(req_id, None)
         
-    # Clean up pending permissions
-    pp = _pending_permissions.pop(sid, None)
-    if pp and pp.get("requestID"):
-        _pending_permissions_metadata.pop(str(pp["requestID"]), None)
+    # Clean up pending permission metadata for this session
     perm_to_remove = [req_id for req_id, meta in _pending_permissions_metadata.items() if meta.get("session_id") == sid]
     for req_id in perm_to_remove:
         _pending_permissions_metadata.pop(req_id, None)
@@ -2180,23 +2173,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         # this session, we reply to the question directly and then start the SSE stream.
         is_question_reply = False
         pending_entry = _pending_questions.pop(str(session_id), None)
-        pending_perm = _pending_permissions.pop(str(session_id), None)
         
         if pending_entry:
             is_question_reply = True
-            answer = prompt_text.strip()
+            answer = prompt_text.strip().lower()
             rid = pending_entry["requestID"]
             logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
             target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
             opencode_payload = {"answers": [[answer]]}
-        elif pending_perm:
-            is_question_reply = True
-            answer = prompt_text.strip().lower()
-            reply_val = "allow" if answer in ("allow", "yes", "y", "да", "разрешить", "ok") else "reject"
-            rid = pending_perm["requestID"]
-            logging.info(f"[OpenCode Proxy] Replying directly to pending permission {rid} with answer: {reply_val}")
-            target_url = f"{core_service.CODE_BASE_URL}/permission/{rid}/reply"
-            opencode_payload = {"reply": reply_val}
         else:
             opencode_payload = {
                 "parts": [
@@ -2585,79 +2569,32 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             is_authorized = (event_sid in authorized_sids) or (event_sid == "None") or (not event_sid)
                                             if is_authorized:
                                                 if event_type in ("permission.updated", "permission.v2.asked", "permission.asked"):
-                                                    logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
-                                                    permission_id = props.get("id")
-                                                    if permission_id:
-                                                        # TRANSFORM PERMISSION INTO MOCK TOOL FOR FRONTEND
-                                                        action_val = props.get("permission", "unknown permission")
-                                                        target_val = props.get("patterns", ["unknown target"])
-                                                        if isinstance(target_val, list) and target_val:
-                                                            target_val = target_val[0]
-                                                            
-                                                        q_text = f"**⚠️ Требуется разрешение (Permission Required)**\n\nАгент запрашивает доступ: `{action_val}`\nПуть: `{target_val}`\n\n*Пожалуйста, напишите 'да' (разрешить) или 'нет' (отклонить) прямо в чат.*"
-                                                        
-                                                        tool_info = props.get("tool", {})
-                                                        msg_id = tool_info.get("messageID", f"msg_perm_{permission_id}")
-                                                        
-                                                        # Emulate a tool call with questions to unlock the frontend chat input
-                                                        fake_msg = {
-                                                            "id": f"evt_fake_perm_{permission_id}",
-                                                            "type": "message.part.updated",
-                                                            "properties": {
-                                                                "sessionID": str(session_id),
-                                                                "part": {
-                                                                    "id": f"prt_perm_{permission_id}",
-                                                                    "messageID": msg_id,
-                                                                    "sessionID": str(session_id),
-                                                                    "type": "tool",
-                                                                    "tool": "ask_permission",
-                                                                    "state": {
-                                                                        "status": "pending",
-                                                                        "input": {
-                                                                            "questions": [
-                                                                                {
-                                                                                    "question": q_text,
-                                                                                    "options": ["да", "нет"]
-                                                                                }
-                                                                            ]
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        
-                                                        # Store permission state for reply routing
-                                                        _pending_permissions[str(session_id)] = {
-                                                            "requestID": permission_id,
-                                                            "permission": props,
-                                                        }
-                                                        _pending_permissions_metadata[str(permission_id)] = {
-                                                            "session_id": str(session_id),
-                                                            "directory": resolved_dir,
-                                                        }
-                                                        logging.info(f"[OpenCode Proxy] Permission mock tool yielded for session {session_id}: id={permission_id}")
-                                                        
-                                                        yield f"data: {json.dumps(fake_msg)}\n\n".encode('utf-8')
-                                                        terminal_event_received = False
-                                                        continue
+                                                     logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
+                                                     permission_id = props.get("id")
+                                                     if permission_id:
+                                                         # AUTO-REJECT: prevent UI hang by rejecting immediately
+                                                         logging.info(f"[OpenCode Proxy] Auto-rejecting permission {permission_id} for session {session_id}")
+                                                         try:
+                                                             reject_url = f"{core_service.CODE_BASE_URL}/permission/{permission_id}/reply"
+                                                             url_params = {}
+                                                             if resolved_dir:
+                                                                 import urllib.parse as up
+                                                                 reject_url += "?" + up.urlencode({"directory": resolved_dir})
+                                                             async with session.post(reject_url, json={"reply": "reject"}) as resp:
+                                                                 if resp.status not in (200, 201, 204):
+                                                                     err_text = await resp.text()
+                                                                     logging.error(f"[OpenCode Proxy] Auto-reject failed for {permission_id}: {resp.status} {err_text}")
+                                                                 else:
+                                                                     logging.info(f"[OpenCode Proxy] Auto-reject sent for {permission_id}, status: {resp.status}")
+                                                         except Exception as e:
+                                                             logging.error(f"[OpenCode Proxy] Auto-reject error for {permission_id}: {e}")
+                                                         continue
 
-                                                elif event_type in ("permission.v2.replied", "permission.replied"):
-                                                    req_id = props.get("requestID")
-                                                    if req_id:
-                                                        _pending_permissions_metadata.pop(str(req_id), None)
-                                                        entry = _pending_permissions.get(str(session_id))
-                                                        if entry and entry.get("requestID") == req_id:
-                                                            _pending_permissions.pop(str(session_id), None)
-                                                            logging.info(f"[OpenCode Proxy] Permission {req_id} replied, cleaned up")
-                                                            
-                                                elif event_type in ("permission.v2.rejected", "permission.rejected"):
-                                                    req_id = props.get("requestID")
-                                                    if req_id:
-                                                        _pending_permissions_metadata.pop(str(req_id), None)
-                                                        entry = _pending_permissions.get(str(session_id))
-                                                        if entry and entry.get("requestID") == req_id:
-                                                            _pending_permissions.pop(str(session_id), None)
-                                                            logging.info(f"[OpenCode Proxy] Permission {req_id} rejected, cleaned up")
+                                                elif event_type in ("permission.v2.replied", "permission.replied", "permission.v2.rejected", "permission.rejected"):
+                                                     req_id = props.get("requestID")
+                                                     if req_id:
+                                                         _pending_permissions_metadata.pop(str(req_id), None)
+                                                         logging.info(f"[OpenCode Proxy] Permission {req_id} resolved, cleaned up")
                                             continue
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
@@ -2826,10 +2763,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 pq = _pending_questions.pop(str(session_id), None)
                 if pq and pq.get("requestID"):
                     _pending_questions_metadata.pop(str(pq["requestID"]), None)
-                # Clean up any pending permission entry for this session
-                pp = _pending_permissions.pop(str(session_id), None)
-                if pp and pp.get("requestID"):
-                    _pending_permissions_metadata.pop(str(pp["requestID"]), None)
+                # Clean up any pending permission metadata for this session
+                perm_meta_remove = [rid for rid, m in _pending_permissions_metadata.items() if m.get("session_id") == str(session_id)]
+                for rid in perm_meta_remove:
+                    _pending_permissions_metadata.pop(rid, None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
                 removed = agent_sessions.pop(str(session_id), None)
