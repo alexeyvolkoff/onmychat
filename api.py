@@ -2107,6 +2107,51 @@ async def proxy_opencode_permission_reply(request: Request, permission_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/code/session/{session_id}/permissions/{permission_id}")
+async def proxy_opencode_frontend_permission_reply(request: Request, session_id: str, permission_id: str):
+    """Endpoint called by the frontend when user clicks Allow Once / Allow Always / Reject."""
+    try:
+        payload = await request.json()
+        response = payload.get("response", "reject")
+        logging.info(f"[OpenCode Proxy] Frontend permission reply for {permission_id}: {response}")
+
+        # Map frontend response to opencode format
+        if response in ("once", "always"):
+            reply = "allow"
+        else:
+            reply = "reject"
+
+        # Look up directory from stored metadata
+        query_params = dict(request.query_params)
+        directory = query_params.get("directory")
+        if not directory:
+            p_meta = _pending_permissions_metadata.get(str(permission_id))
+            if p_meta:
+                directory = p_meta.get("directory")
+
+        p_url = f"{core_service.CODE_BASE_URL}/permission/{permission_id}/reply"
+        url_params = {}
+        if directory:
+            import urllib.parse
+            p_url += "?" + urllib.parse.urlencode({"directory": directory})
+
+        session = await get_proxy_session()
+        async with session.post(p_url, json={"reply": reply}) as p_resp:
+            if p_resp.status not in [200, 201, 204]:
+                err_body = await p_resp.text()
+                logging.error(f"[OpenCode Proxy] Frontend permission reply failed ({p_resp.status}): {err_body}")
+                raise HTTPException(status_code=p_resp.status, detail=err_body)
+
+            logging.info(f"[OpenCode Proxy] Frontend permission {permission_id} forwarded as {reply}, status: {p_resp.status}")
+            _pending_permissions_metadata.pop(str(permission_id), None)
+            return {"status": "ok", "reply": reply}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[OpenCode Proxy] Error in frontend permission reply: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/code/permission/{permission_id}/reject")
 async def proxy_opencode_permission_reject(request: Request, permission_id: str):
     try:
@@ -2563,21 +2608,30 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                      logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
                                                      permission_id = props.get("id")
                                                      if permission_id:
-                                                         # AUTO-REJECT immediately to prevent tool call hang
-                                                         logging.info(f"[OpenCode Proxy] Auto-rejecting permission {permission_id} for session {session_id}")
-                                                         try:
-                                                             reject_url = f"{core_service.CODE_BASE_URL}/permission/{permission_id}/reply"
-                                                             if resolved_dir:
-                                                                 import urllib.parse as up
-                                                                 reject_url += "?" + up.urlencode({"directory": resolved_dir})
-                                                             async with session.post(reject_url, json={"reply": "reject"}) as resp:
-                                                                 if resp.status not in (200, 201, 204):
-                                                                     err_text = await resp.text()
-                                                                     logging.error(f"[OpenCode Proxy] Auto-reject failed for {permission_id}: {resp.status} {err_text}")
-                                                                 else:
-                                                                     logging.info(f"[OpenCode Proxy] Auto-reject sent for {permission_id}, status: {resp.status}")
-                                                         except Exception as e:
-                                                             logging.error(f"[OpenCode Proxy] Auto-reject error for {permission_id}: {e}")
+                                                         # Store permission metadata so the frontend reply endpoint can find it
+                                                         _pending_permissions_metadata[str(permission_id)] = {
+                                                             "session_id": str(session_id),
+                                                             "directory": resolved_dir,
+                                                         }
+                                                         # Yield the permission event to the frontend so it can render the permission UI
+                                                         perm_target = (props.get("patterns") or ["unknown"])[0] if props.get("patterns") else "unknown"
+                                                         perm_meta = props.get("metadata") or {}
+                                                         perm_chunk = {
+                                                             "type": "permission.asked",
+                                                             "permissionID": permission_id,
+                                                             "permission": {
+                                                                 "id": permission_id,
+                                                                 "title": "Запрос доступа к файловой системе",
+                                                                 "patterns": props.get("patterns", []),
+                                                                 "metadata": {
+                                                                     "Reason": perm_meta.get("command") or perm_meta.get("description") or "Доступ к внешней директории",
+                                                                     "Target": perm_target,
+                                                                 }
+                                                             }
+                                                         }
+                                                         logging.info(f"[OpenCode Proxy] Forwarding permission {permission_id} to frontend UI")
+                                                         yield f"data: {json.dumps(perm_chunk)}\n\n".encode('utf-8')
+                                                         terminal_event_received = False
                                                          continue
 
                                                 elif event_type in ("permission.v2.replied", "permission.replied", "permission.v2.rejected", "permission.rejected"):
