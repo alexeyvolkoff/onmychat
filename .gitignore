@@ -8,3 +8,4 @@ chroma_db/
 test_data/
 opencode.conf
 agent_sessions.json
+.knowledge/
