@@ -66,8 +66,12 @@ _active_session_directories: dict[str, str] = {}
 # question.asked events when SSE reconnections replay history.
 _processed_question_ids: dict[str, set[str]] = {}
 
-# Track pending permission metadata for reply/reject endpoints (legacy, rarely used with auto-reject).
+# Track pending permission metadata for reply/reject endpoints.
 _pending_permissions_metadata: dict[str, dict] = {}
+
+# Maps fake question requestID → permission data for permission-via-question flow.
+_permission_questions: dict[str, dict] = {}
+_permission_question_counter: int = 0
 
 async def get_proxy_session():
     global _proxy_session
@@ -758,6 +762,10 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     perm_to_remove = [req_id for req_id, meta in _pending_permissions_metadata.items() if meta.get("session_id") == sid]
     for req_id in perm_to_remove:
         _pending_permissions_metadata.pop(req_id, None)
+    # Clean up permission questions for this session
+    perm_q_remove = [qid for qid, qdata in _permission_questions.items() if qdata.get("session_id") == sid]
+    for qid in perm_q_remove:
+        _permission_questions.pop(qid, None)
         
     _active_session_directories.pop(sid, None)
     _processed_question_ids.pop(sid, None)
@@ -2174,6 +2182,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         is_question_reply = False
         pending_entry = _pending_questions.pop(str(session_id), None)
         
+        # Also check if there's a permission question pending for this session
+        pending_perm_qid = None
+        pending_perm_q = None
+        for qid, qdata in list(_permission_questions.items()):
+            if qdata.get("session_id") == str(session_id):
+                pending_perm_qid = qid
+                pending_perm_q = qdata
+                break
+        
         if pending_entry:
             is_question_reply = True
             answer = prompt_text.strip().lower()
@@ -2181,6 +2198,18 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
             target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
             opencode_payload = {"answers": [[answer]]}
+        elif pending_perm_q:
+            is_question_reply = True
+            answer = prompt_text.strip().lower()
+            reply_val = "allow" if answer in ("allow", "yes", "y", "да", "разрешить", "ok") else "reject"
+            perm_id = pending_perm_q["permission_id"]
+            logging.info(f"[OpenCode Proxy] Replying to permission {perm_id} via question with: {reply_val}")
+            target_url = f"{core_service.CODE_BASE_URL}/permission/{perm_id}/reply"
+            if pending_perm_q.get("directory"):
+                import urllib.parse
+                target_url += "?" + urllib.parse.urlencode({"directory": pending_perm_q["directory"]})
+            opencode_payload = {"reply": reply_val}
+            _permission_questions.pop(pending_perm_qid, None)
         else:
             opencode_payload = {
                 "parts": [
@@ -2562,22 +2591,27 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                      logging.info(f"[OpenCode Proxy] {event_type} event received. event_sid={event_sid}, props={props}")
                                                      permission_id = props.get("id")
                                                      if permission_id:
-                                                         # AUTO-REJECT: prevent UI hang by rejecting immediately
-                                                         logging.info(f"[OpenCode Proxy] Auto-rejecting permission {permission_id} for session {session_id}")
-                                                         try:
-                                                             reject_url = f"{core_service.CODE_BASE_URL}/permission/{permission_id}/reply"
-                                                             url_params = {}
-                                                             if resolved_dir:
-                                                                 import urllib.parse as up
-                                                                 reject_url += "?" + up.urlencode({"directory": resolved_dir})
-                                                             async with session.post(reject_url, json={"reply": "reject"}) as resp:
-                                                                 if resp.status not in (200, 201, 204):
-                                                                     err_text = await resp.text()
-                                                                     logging.error(f"[OpenCode Proxy] Auto-reject failed for {permission_id}: {resp.status} {err_text}")
-                                                                 else:
-                                                                     logging.info(f"[OpenCode Proxy] Auto-reject sent for {permission_id}, status: {resp.status}")
-                                                         except Exception as e:
-                                                             logging.error(f"[OpenCode Proxy] Auto-reject error for {permission_id}: {e}")
+                                                         # ASK USER via fake question.asked event
+                                                         global _permission_question_counter
+                                                         _permission_question_counter += 1
+                                                         fake_req_id = f"perm_q_{_permission_question_counter}"
+                                                         
+                                                         action_val = props.get("permission", "unknown permission")
+                                                         target_val = props.get("patterns", ["unknown target"])
+                                                         if isinstance(target_val, list) and target_val:
+                                                             target_val = target_val[0]
+                                                         
+                                                         perm_q_text = f"**⚠️ Разрешение доступа**\n\nАгент запрашивает: **{action_val}**\nПуть: `{target_val}`\n\nРазрешить?"
+                                                         
+                                                         _permission_questions[fake_req_id] = {
+                                                             "permission_id": permission_id,
+                                                             "session_id": str(session_id),
+                                                             "directory": resolved_dir,
+                                                         }
+                                                         logging.info(f"[OpenCode Proxy] Asking user about permission {permission_id} via question {fake_req_id}")
+                                                         
+                                                         yield f"data: {json.dumps({'type': 'question.asked', 'requestID': fake_req_id, 'question': perm_q_text, 'options': ['да', 'нет']})}\n\n".encode('utf-8')
+                                                         terminal_event_received = False
                                                          continue
 
                                                 elif event_type in ("permission.v2.replied", "permission.replied", "permission.v2.rejected", "permission.rejected"):
@@ -2757,6 +2791,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 perm_meta_remove = [rid for rid, m in _pending_permissions_metadata.items() if m.get("session_id") == str(session_id)]
                 for rid in perm_meta_remove:
                     _pending_permissions_metadata.pop(rid, None)
+                perm_q_remove2 = [qid for qid, qdata in _permission_questions.items() if qdata.get("session_id") == str(session_id)]
+                for qid in perm_q_remove2:
+                    _permission_questions.pop(qid, None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
                 removed = agent_sessions.pop(str(session_id), None)
