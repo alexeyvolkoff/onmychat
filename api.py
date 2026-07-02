@@ -1740,7 +1740,8 @@ def _load_agent_sessions():
 def _save_agent_sessions():
     """Persist current agent_sessions to JSON file."""
     data = {
-        pid: list(ch) for pid, ch in agent_sessions.items()
+        "children": {pid: list(ch) for pid, ch in agent_sessions.items()},
+        "parents": dict(agent_session_parents)
     }
     with open(AGENT_SESSIONS_FILE, 'w') as f:
         json.dump(data, f)
@@ -1748,8 +1749,18 @@ def _save_agent_sessions():
 def _load_persisted_sessions_into_memory():
     """Load persisted session relationships into memory at startup."""
     data = _load_agent_sessions()
-    for pid, children in data.items():
-        agent_sessions[pid] = set(children)
+    if not isinstance(data, dict):
+        return
+    # New format: {"children": {...}, "parents": {...}}
+    if "children" in data:
+        for pid, ch in data["children"].items():
+            agent_sessions[pid] = set(ch)
+        if "parents" in data:
+            agent_session_parents.update(data["parents"])
+    # Legacy format: {pid: [child, ...]}
+    else:
+        for pid, children in data.items():
+            agent_sessions[pid] = set(children)
 
 def resolve_session_directory(directory: str) -> str:
     if not directory:
@@ -1858,7 +1869,10 @@ async def get_all_session_children(request: Request):
     result = {}
     for pid, children in agent_sessions.items():
         result[pid] = sorted(list(children))
-    return {"children": result}
+    return {
+        "children": result,
+        "parentMap": dict(agent_session_parents)
+    }
 
 @app.get("/code/sessions/{session_id}/children")
 async def get_session_children(request: Request, session_id: str):
