@@ -2115,13 +2115,7 @@ async def proxy_opencode_frontend_permission_reply(request: Request, session_id:
         response = payload.get("response", "reject")
         logging.info(f"[OpenCode Proxy] Frontend permission reply for {permission_id}: {response}")
 
-        # Map frontend response to opencode format
-        if response in ("once", "always"):
-            reply = "allow"
-        else:
-            reply = "reject"
-
-        # Look up directory from stored metadata
+        # Pass through directly — opencode accepts "once" / "always" / "reject"
         query_params = dict(request.query_params)
         directory = query_params.get("directory")
         if not directory:
@@ -2136,15 +2130,15 @@ async def proxy_opencode_frontend_permission_reply(request: Request, session_id:
             p_url += "?" + urllib.parse.urlencode({"directory": directory})
 
         session = await get_proxy_session()
-        async with session.post(p_url, json={"reply": reply}) as p_resp:
+        async with session.post(p_url, json={"reply": response}) as p_resp:
             if p_resp.status not in [200, 201, 204]:
                 err_body = await p_resp.text()
                 logging.error(f"[OpenCode Proxy] Frontend permission reply failed ({p_resp.status}): {err_body}")
                 raise HTTPException(status_code=p_resp.status, detail=err_body)
 
-            logging.info(f"[OpenCode Proxy] Frontend permission {permission_id} forwarded as {reply}, status: {p_resp.status}")
+            logging.info(f"[OpenCode Proxy] Frontend permission {permission_id} forwarded as {response}, status: {p_resp.status}")
             _pending_permissions_metadata.pop(str(permission_id), None)
-            return {"status": "ok", "reply": reply}
+            return {"status": "ok", "reply": response}
     except HTTPException:
         raise
     except Exception as e:
