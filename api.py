@@ -2501,16 +2501,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     
                                 line_str = line.decode('utf-8').strip()
                                 
-                                # RAW DEBUG DUMP TO /home/alexey/Documents/debug.txt
-                                if line_str:
-                                    try:
-                                        import os
-                                        os.makedirs("/home/alexey/Documents", exist_ok=True)
-                                        with open("/home/alexey/Documents/debug.txt", "a") as dbg_file:
-                                            dbg_file.write(f"RAW LINE: {line_str}\n")
-                                    except Exception as e:
-                                        pass
-
                                 if line_str.startswith("data: "):
                                     try:
                                         event_data = json.loads(line_str[6:])
