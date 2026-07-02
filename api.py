@@ -1850,6 +1850,41 @@ async def proxy_opencode_sessions_create(request: Request):
         logging.error(f"[OpenCode Proxy] Error creating session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/code/sessions/children")
+async def get_all_session_children(request: Request):
+    """
+    Returns all known parent-child session mappings.
+    """
+    result = {}
+    for pid, children in agent_sessions.items():
+        result[pid] = sorted(list(children))
+    return {"children": result}
+
+@app.get("/code/sessions/{session_id}/children")
+async def get_session_children(request: Request, session_id: str):
+    """
+    Returns child session data for a given parent session.
+    Fetches each child session's info from OpenCode.
+    """
+    child_ids = agent_sessions.get(session_id, set())
+    if not child_ids:
+        return {"children": []}
+    
+    s = await get_proxy_session()
+    children = []
+    for cid in child_ids:
+        try:
+            async with s.get(f"{core_service.CODE_BASE_URL}/session/{cid}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    children.append(data)
+                else:
+                    children.append({"id": cid})
+        except Exception as e:
+            logging.error(f"[OpenCode Proxy] Error fetching child session {cid}: {e}")
+            children.append({"id": cid})
+    return {"children": children}
+
 @app.api_route("/code/sessions/{session_id}", methods=["GET", "DELETE", "PATCH", "POST"])
 async def proxy_opencode_session_item(request: Request, session_id: str):
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}"
@@ -1886,41 +1921,6 @@ async def proxy_opencode_session_item(request: Request, session_id: str):
             raise HTTPException(status_code=500, detail=str(e))
             
     return await proxy_request(target_url, request, method=request.method)
-
-@app.get("/code/sessions/children")
-async def get_all_session_children(request: Request):
-    """
-    Returns all known parent-child session mappings.
-    """
-    result = {}
-    for pid, children in agent_sessions.items():
-        result[pid] = sorted(list(children))
-    return {"children": result}
-
-@app.get("/code/sessions/{session_id}/children")
-async def get_session_children(request: Request, session_id: str):
-    """
-    Returns child session data for a given parent session.
-    Fetches each child session's info from OpenCode.
-    """
-    child_ids = agent_sessions.get(session_id, set())
-    if not child_ids:
-        return {"children": []}
-    
-    s = await get_proxy_session()
-    children = []
-    for cid in child_ids:
-        try:
-            async with s.get(f"{core_service.CODE_BASE_URL}/session/{cid}") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    children.append(data)
-                else:
-                    children.append({"id": cid})
-        except Exception as e:
-            logging.error(f"[OpenCode Proxy] Error fetching child session {cid}: {e}")
-            children.append({"id": cid})
-    return {"children": children}
 
 @app.post("/code/question/{request_id}/reply")
 async def proxy_opencode_question_reply(request: Request, request_id: str):
