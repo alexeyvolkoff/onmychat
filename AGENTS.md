@@ -13,7 +13,6 @@
 5. Never rebuild the frontend. It is done by CI
 6. Never try to restart the backend. Ask user to do it manually.
 7. Never call shell commands that require sudo
-8. NEVER read or write files outside the workspace directory. It causes the agent to hang indefinitely.
 
 
 ## Knowledge Management
