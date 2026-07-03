@@ -69,6 +69,9 @@ _processed_question_ids: dict[str, set[str]] = {}
 # Track pending permission metadata for reply/reject endpoints.
 _pending_permissions_metadata: dict[str, dict] = {}
 
+# Track child sessions already saved to .knowledge/ to prevent duplicates
+_saved_knowledge_ids: set[str] = set()
+
 
 
 async def get_proxy_session():
@@ -1784,6 +1787,81 @@ def resolve_session_directory(directory: str) -> str:
         relative_path = '/'.join(parts[1:])
     return os.path.join(home_dir, relative_path)
 
+
+async def _save_child_knowledge(child_sid: str, workspace_dir: str):
+    """Fetch a completed child session's messages and save as .knowledge/<topic>.md"""
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        return
+    knowledge_dir = os.path.join(workspace_dir, '.knowledge')
+    os.makedirs(knowledge_dir, exist_ok=True)
+
+    # 1. Fetch session info for the title
+    try:
+        session = await get_proxy_session()
+        async with session.get(f"{core_service.CODE_BASE_URL}/session/{child_sid}") as resp:
+            if resp.status != 200:
+                logging.warning(f"[Knowledge] Session {child_sid} not found (status {resp.status})")
+                return
+            data = await resp.json()
+            session_info = data.get("session", data)
+    except Exception as e:
+        logging.error(f"[Knowledge] Failed to fetch session {child_sid}: {e}")
+        return
+
+    title = session_info.get("title") or session_info.get("name") or child_sid
+
+    # Sanitize to a safe filename
+    safe_name = re.sub(r'[^\w\s-]', '', title).strip().lower()
+    safe_name = re.sub(r'[-\s]+', '-', safe_name)[:80]
+
+    # 2. Fetch messages
+    try:
+        session2 = await get_proxy_session()
+        async with session2.get(f"{core_service.CODE_BASE_URL}/session/{child_sid}/message") as resp:
+            msgs_data = await resp.json()
+    except Exception as e:
+        logging.error(f"[Knowledge] Failed to fetch messages for {child_sid}: {e}")
+        return
+
+    messages = msgs_data if isinstance(msgs_data, list) else msgs_data.get("messages", [])
+
+    # Don't save if there's no meaningful content
+    has_content = any(
+        msg.get("role") in ("assistant", "user") and (msg.get("text") or msg.get("content"))
+        for msg in messages
+    )
+    if not has_content:
+        logging.info(f"[Knowledge] Child session {child_sid} has no content, skipping")
+        return
+
+    # 3. Build the knowledge markdown — extract only assistant text content
+    lines = [f"# {title}\n\n"]
+    for msg in messages:
+        role = msg.get("role", "")
+        if role in ("assistant", "user"):
+            content = msg.get("text", "") or msg.get("content", "") or ""
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, dict):
+                        parts.append(p.get("text", ""))
+                    else:
+                        parts.append(str(p))
+                content = " ".join(parts)
+            if content.strip():
+                lines.append(f"{content}\n\n")
+
+    lines.append(f"---\n*Source: OpenCode session `{child_sid}`*\n")
+
+    filepath = os.path.join(knowledge_dir, f"{safe_name}.md")
+    try:
+        with open(filepath, "w") as f:
+            f.write("".join(lines))
+        logging.info(f"[Knowledge] Saved '{title}' → {filepath}")
+    except Exception as e:
+        logging.error(f"[Knowledge] Failed to write {filepath}: {e}")
+
+
 @app.get("/code/sessions")
 async def proxy_opencode_sessions_list(request: Request, directory: str = Query(None)):
     target_url = f"{core_service.CODE_BASE_URL}/session"
@@ -2674,7 +2752,14 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     terminal_event_received = True
                                                 else:
                                                     logging.info(f"[OpenCode Proxy] Subagent session idle: {event_sid}")
-                                            
+                                                    # Auto-save explore results to .knowledge/
+                                                    eid = str(event_sid)
+                                                    if eid not in _saved_knowledge_ids and eid in agent_session_parents:
+                                                        _saved_knowledge_ids.add(eid)
+                                                        parent_dir = _active_session_directories.get(str(session_id))
+                                                        if parent_dir:
+                                                            asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                            
                                             elif event_type == "session.status":
                                                 status_info = props.get("status", {})
                                                 if isinstance(status_info, dict):
@@ -2685,6 +2770,12 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             terminal_event_received = True
                                                         else:
                                                             logging.info(f"[OpenCode Proxy] Subagent status idle: {event_sid}")
+                                                            eid = str(event_sid)
+                                                            if eid not in _saved_knowledge_ids and eid in agent_session_parents:
+                                                                _saved_knowledge_ids.add(eid)
+                                                                parent_dir = _active_session_directories.get(str(session_id))
+                                                                if parent_dir:
+                                                                    asyncio.create_task(_save_child_knowledge(eid, parent_dir))
                                                     elif status_type in ["thinking", "running", "generating"]:
                                                         if event_sid == str(session_id):
                                                             logging.info(f"[OpenCode Proxy] Primary SESSION STATUS ACTIVE ({status_type}). Resetting terminal status.")

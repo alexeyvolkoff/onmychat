@@ -15,6 +15,7 @@
 7. Never call shell commands that require sudo
 8. NEVER read or write files outside the workspace directory. It causes the agent to hang indefinitely.
 
+
 ## Knowledge Management
 - Before exploring any topic, first check `.knowledge/` directory in the project root for existing research notes
 - If relevant and up-to-date knowledge exists, skip exploration and use what's there
