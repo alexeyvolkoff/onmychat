@@ -2533,13 +2533,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         primary_message_ids = set()
                         terminal_event_received = False
                         active_tool_parts = set()
+                        post_task_processed = False
                         
                         while True:
                             now = asyncio.get_event_loop().time()
                             idle_time = now - last_event_time
                             
                             # CRITICAL: We trust the background POST task as the definitive signal for termination.
-                            if post_task.done():
+                            if post_task.done() and not post_task_processed:
+                                post_task_processed = True
                                 if post_task.cancelled():
                                     logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
                                     break
