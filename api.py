@@ -2430,6 +2430,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             # Fallback: Just fire and return
                             async with session.post(target_url, json=opencode_payload) as resp:
                                 result = await resp.json()
+                                if isinstance(result, dict):
+                                    info = result.get("info")
+                                    if isinstance(info, dict):
+                                        user_id = info.get("parentID")
+                                        ass_id = info.get("id")
+                                        if user_id and omd_payload.get("user_nonce"):
+                                            _nonce_to_msg_id[omd_payload["user_nonce"]] = user_id
+                                            logging.info(f"[OpenCode Proxy] Mapped user nonce in fallback: {omd_payload['user_nonce']} -> {user_id}")
+                                        if ass_id and omd_payload.get("assistant_nonce"):
+                                            _nonce_to_msg_id[omd_payload["assistant_nonce"]] = ass_id
+                                            logging.info(f"[OpenCode Proxy] Mapped assistant nonce in fallback: {omd_payload['assistant_nonce']} -> {ass_id}")
                                 yield f"data: {json.dumps(result)}\n\n".encode('utf-8')
                                 yield b"data: {\"done\": true}\n\n"
                             return
@@ -2536,10 +2547,25 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 # Check if the task returned an error dict instead of raising an exception.
                                 task_result = post_task.result()
                                 logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
-                                if isinstance(task_result, dict) and "error" in task_result:
-                                    logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
-                                    yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
-                                    break
+                                if isinstance(task_result, dict):
+                                    if "error" in task_result:
+                                        logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
+                                        yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
+                                        break
+                                    
+                                    # Record the mapping in our backend cache!
+                                    info = task_result.get("info")
+                                    if isinstance(info, dict):
+                                        user_id = info.get("parentID")
+                                        ass_id = info.get("id")
+                                        if user_id and omd_payload.get("user_nonce"):
+                                            user_nonce = omd_payload["user_nonce"]
+                                            _nonce_to_msg_id[user_nonce] = user_id
+                                            logging.info(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
+                                        if ass_id and omd_payload.get("assistant_nonce"):
+                                            ass_nonce = omd_payload["assistant_nonce"]
+                                            _nonce_to_msg_id[ass_nonce] = ass_id
+                                            logging.info(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
 
                                 # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
                                 if terminal_event_received and not active_tool_parts:
