@@ -72,6 +72,9 @@ _pending_permissions_metadata: dict[str, dict] = {}
 # Track child sessions already saved to .knowledge/ to prevent duplicates
 _saved_knowledge_ids: set[str] = set()
 
+# Map of frontend nonces (mr...) to backend OpenCode message IDs (msg_...)
+_nonce_to_msg_id: dict[str, str] = {}
+
 
 
 async def get_proxy_session():
@@ -2788,9 +2791,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 # Map frontend user/assistant nonces to backend message IDs
                                                 if event_type == "message.created" and msg_id:
                                                     if msg_role == "user" and omd_payload.get("user_nonce"):
-                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': omd_payload['user_nonce'], 'message_id': msg_id})}\n\n".encode('utf-8')
+                                                        user_nonce = omd_payload["user_nonce"]
+                                                        _nonce_to_msg_id[user_nonce] = msg_id
+                                                        logging.info(f"[OpenCode Proxy] Mapping user nonce {user_nonce} -> {msg_id}")
+                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': user_nonce, 'message_id': msg_id})}\n\n".encode('utf-8')
                                                     elif msg_role == "assistant" and omd_payload.get("assistant_nonce"):
-                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': omd_payload['assistant_nonce'], 'message_id': msg_id})}\n\n".encode('utf-8')
+                                                        ass_nonce = omd_payload["assistant_nonce"]
+                                                        _nonce_to_msg_id[ass_nonce] = msg_id
+                                                        logging.info(f"[OpenCode Proxy] Mapping assistant nonce {ass_nonce} -> {msg_id}")
+                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': ass_nonce, 'message_id': msg_id})}\n\n".encode('utf-8')
 
                                                 if msg_role == "assistant":
                                                     if msg_id:
@@ -3299,7 +3308,12 @@ async def proxy_opencode_revert(request: Request, session_id: str):
         logging.info(f"[OpenCode Proxy] Revert payload: {req_data}")
         # Translate message_id -> messageID for OpenCode backend
         if "message_id" in req_data:
-            req_data["messageID"] = req_data.pop("message_id")
+            msg_id = req_data.pop("message_id")
+            if msg_id.startswith("mr") and msg_id in _nonce_to_msg_id:
+                translated = _nonce_to_msg_id[msg_id]
+                logging.info(f"[OpenCode Proxy] Translating revert nonce {msg_id} -> {translated}")
+                msg_id = translated
+            req_data["messageID"] = msg_id
     except:
         req_data = {}
         
@@ -3343,6 +3357,11 @@ async def proxy_delete_message(request: Request, session_id: str, message_id: st
     """
     Surgically deletes a message from a session.
     """
+    if message_id.startswith("mr") and message_id in _nonce_to_msg_id:
+        translated = _nonce_to_msg_id[message_id]
+        logging.info(f"[OpenCode Proxy] Translating delete message nonce {message_id} -> {translated}")
+        message_id = translated
+
     target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
     session = await get_proxy_session()
     headers = dict(request.headers)
