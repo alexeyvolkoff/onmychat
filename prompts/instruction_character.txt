@@ -1,8 +1,16 @@
-Generate SDXL/Pony image tags for: "{prompt}"
+Generate SDXL/Pony image tags for the character described below.
+
+Use the RECENT CONVERSATION HISTORY to extract the current scene context: location, what is happening, what the character is doing, their outfit/pose, the mood/atmosphere.
 
 Character appearance (MUST include):
 {appearance}
 
-Required tags: Pose/Action, Outfit/Clothing, Location, Atmosphere, Expression
+User request: "{prompt}"
+
+Required tags: Pose/Action, Outfit/Clothing, Location, Atmosphere, Expression, Scene details from the story
+
+CRITICAL: The image MUST reflect the specific scene from the roleplay RIGHT NOW. Do NOT generate a generic portrait. Extract scene details (location, objects, lighting, mood) from the conversation history.
+
+If no specific scene context is available in history, use the user request as guidance.
 
 Format: Image: comma-separated tags

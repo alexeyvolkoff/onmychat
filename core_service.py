@@ -3176,6 +3176,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # Generate image prompt with clean context — no roleplay, no personality
     instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
+    logging.info(f"[img_prompt] instruction_text:\n{instruction_text}")
     system_parts = ["You are an image tag generator. Follow instructions exactly."]
     if ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun":
         system_parts.append(IMAGE_PROMPT_FUN)
@@ -3188,7 +3189,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     history_text = ""
     if history:
         history_text = "\n\n=== RECENT CONVERSATION HISTORY (extract from this: location, outfit, pose/action, atmosphere, objects) ===\n"
-        for msg in history[-15:]:
+        for msg in history[-4:]:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if isinstance(content, str):
@@ -3213,6 +3214,9 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         }
     }
 
+    logging.info(f"[img_prompt] LLM request system:\n{messages[0]['content'][:500]}")
+    logging.info(f"[img_prompt] LLM request user:\n{messages[1]['content'][:500]}")
+
     data = await llm_request(request_payload)
 
     if data and "message" in data and "content" in data["message"]:
@@ -3222,6 +3226,9 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     else:
         logging.error(f"[image_prompt] LLM returned None/empty response")
         response = ""
+
+    logging.info(f"[img_prompt] RAW LLM response:\n{response}")
+    logging.info(f"[img_prompt] History used: {len(history) if history else 0} messages, last {min(len(history) if history else 0, 4)} shown")
 
     # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
 
@@ -3448,7 +3455,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         negative_prompt = NEGATIVE_PROMPTS["fun"] + "," + negative_prompt
 
 
-    logging.info(f"Prompt: {prompt[:200]}")
+    logging.info(f"Prompt: {prompt[:500]}")
     with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
 
