@@ -2782,8 +2782,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                             terminal_event_received = False
                                             
                                             elif event_type in ["message.created", "message.updated"]:
-                                                if info.get("role") == "assistant":
-                                                    msg_id = info.get("id")
+                                                msg_role = info.get("role")
+                                                msg_id = info.get("id")
+                                                
+                                                # Map frontend user/assistant nonces to backend message IDs
+                                                if event_type == "message.created" and msg_id:
+                                                    if msg_role == "user" and omd_payload.get("user_nonce"):
+                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': omd_payload['user_nonce'], 'message_id': msg_id})}\n\n".encode('utf-8')
+                                                    elif msg_role == "assistant" and omd_payload.get("assistant_nonce"):
+                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': omd_payload['assistant_nonce'], 'message_id': msg_id})}\n\n".encode('utf-8')
+
+                                                if msg_role == "assistant":
                                                     if msg_id:
                                                         is_new = (msg_id not in primary_message_ids)
                                                         is_first_msg = (len(primary_message_ids) == 0)
@@ -3272,6 +3281,7 @@ async def proxy_opencode_session_diffs(request: Request, session_id: str, messag
         return {"diffs": []}
 
 @app.post("/code/sessions/{session_id}/revert")
+@app.post("/code/session/{session_id}/revert")
 async def proxy_opencode_revert(request: Request, session_id: str):
     """
     Triggers OpenCode backend to revert file snapshots effectively undoing code generations since the specified messageID.
@@ -3287,23 +3297,24 @@ async def proxy_opencode_revert(request: Request, session_id: str):
     try:
         req_data = await request.json()
         logging.info(f"[OpenCode Proxy] Revert payload: {req_data}")
+        # Translate message_id -> messageID for OpenCode backend
+        if "message_id" in req_data:
+            req_data["messageID"] = req_data.pop("message_id")
     except:
         req_data = {}
         
     try:
         async with session.post(target_url, headers=headers, json=req_data) as resp:
-            # Check if JSON is expected and present
             content_type = resp.headers.get("Content-Type", "")
             if "application/json" in content_type:
                 data = await resp.json()
                 return JSONResponse(status_code=resp.status, content=data)
             else:
-                # If it's not JSON, return text with actual status code
                 text = await resp.text()
                 return JSONResponse(status_code=resp.status, content={"status": "error" if resp.status >= 400 else "success", "message": text})
     except Exception as e:
         logging.error(f"[OpenCode Proxy] Exception during session revert: {e}")
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/code/sessions/{session_id}/messages")
 @app.get("/code/session/{session_id}/messages")
@@ -3326,6 +3337,7 @@ async def proxy_opencode_messages(request: Request, session_id: str):
         return {"messages": []}
 
 @app.delete("/code/sessions/{session_id}/message/{message_id}")
+@app.delete("/code/sessions/{session_id}/messages/{message_id}")
 @app.delete("/code/session/{session_id}/message/{message_id}")
 async def proxy_delete_message(request: Request, session_id: str, message_id: str):
     """
@@ -3335,63 +3347,20 @@ async def proxy_delete_message(request: Request, session_id: str, message_id: st
     session = await get_proxy_session()
     headers = dict(request.headers)
     headers.pop("host", None)
+    headers.pop("content-length", None)
+    headers.pop("connection", None)
     
     try:
         async with session.delete(target_url, headers=headers) as resp:
-            data = await resp.json()
-            return JSONResponse(status_code=resp.status, content=data)
-    except Exception as e:
-        logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.delete("/code/sessions/{session_id}/messages/{message_id}")
-@app.delete("/code/session/{session_id}/message/{message_id}")
-async def proxy_opencode_delete_message(request: Request, session_id: str, message_id: str):
-    """
-    Surgically deletes a message from the OpenCode backend.
-    """
-    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/message/{message_id}"
-    
-    # Use headers from the request (token/omdkey)
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-OMD-Key": request.headers.get("X-OMD-Key", "")
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(target_url, headers=headers) as resp:
-                data = await resp.json() if resp.status == 200 else {"status": "ok"}
-                return JSONResponse(status_code=resp.status, content=data)
-    except Exception as e:
-        logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.post("/code/sessions/{session_id}/revert")
-@app.post("/code/session/{session_id}/revert")
-async def proxy_opencode_revert(request: Request, session_id: str):
-    """
-    Triggers OpenCode backend to revert file snapshots.
-    """
-    target_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/revert"
-    
-    # Use headers from the request
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-OMD-Key": request.headers.get("X-OMD-Key", ""),
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        req_data = await request.json()
-        logging.info(f"[OpenCode Proxy] Revert payload: {req_data}")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(target_url, headers=headers, json=req_data) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if "application/json" in content_type:
                 data = await resp.json()
                 return JSONResponse(status_code=resp.status, content=data)
+            else:
+                text = await resp.text()
+                return JSONResponse(status_code=resp.status, content={"status": "error" if resp.status >= 400 else "success", "message": text})
     except Exception as e:
-        logging.error(f"[OpenCode Proxy] Exception during session revert: {e}")
+        logging.error(f"[OpenCode Proxy] Error deleting message {message_id}: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/code/sessions/{session_id}")
