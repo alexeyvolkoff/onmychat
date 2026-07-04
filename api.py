@@ -88,8 +88,8 @@ from config import USER_DATA_DIR
 from config import BASE_INDEX_DIR
 from config import SETTINGS
 
-CLOUD_CODE_MODEL = "opencode/Nemotron-3-Ultra"
-LOCAL_CODE_MODEL = "ollama/gemma4:12b-32k"
+CLOUD_CODE_MODEL = SETTINGS.get("CLOUD_CODE_MODEL", "opencode/Nemotron-3-Ultra")
+LOCAL_CODE_MODEL = SETTINGS.get("LOCAL_CODE_MODEL", "ollama/gemma4:12b-32k")
 
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
