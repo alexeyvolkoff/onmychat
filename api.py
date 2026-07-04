@@ -2587,9 +2587,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         logging.info(f"[OpenCode Proxy] Post task completed, terminal event received, no active tools ({len(active_tool_parts)} active) and 0.5s silence. Closing.")
                                         break
 
-                                # Grace period: Wait 2.0s for trailing SSE events after task completion.
-                                if idle_time > 2.0:
-                                    logging.info(f"[OpenCode Proxy] Post task completed and stream drained (2s silence). Closing.")
+                                # Grace period: Wait for trailing SSE events after task completion.
+                                # Use a long timeout (120s) so permission dialogs don't time out.
+                                if idle_time > 120.0:
+                                    logging.info(f"[OpenCode Proxy] Post task completed and stream drained (120s silence). Closing.")
                                     break
                             else:
                                 # We no longer time out on silence while generating.
