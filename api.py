@@ -88,6 +88,9 @@ from config import USER_DATA_DIR
 from config import BASE_INDEX_DIR
 from config import SETTINGS
 
+CLOUD_CODE_MODEL = "opencode/Nemotron-3-Ultra"
+LOCAL_CODE_MODEL = "ollama/gemma4:12b-32k"
+
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
 app = FastAPI()
@@ -2456,7 +2459,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     if resp.status not in [200, 201, 204]:
                                         error_text = await resp.text()
                                         logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
-                                        return {"error": f"Backend error: {resp.status}"}
+                                        return {"error": f"Backend error: {resp.status}", "text": error_text}
                                     
                                     # Handle empty or non-JSON responses safely
                                     res = {}
@@ -2549,8 +2552,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                 logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
                                 if isinstance(task_result, dict):
                                     if "error" in task_result:
-                                        logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
-                                        yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
+                                        err_msg = task_result.get("error", "")
+                                        err_text = task_result.get("text", "")
+                                        logging.error(f"[OpenCode Proxy] Post task returned error: {err_msg}")
+                                        
+                                        if "Rate limit exceeded" in err_text or "429" in err_msg:
+                                            from config import SETTINGS
+                                            if not SETTINGS.get("CODE_MODEL", "").startswith("ollama/"):
+                                                logging.info(f"[OpenCode Proxy] Rate limit exceeded detected. Switching to local model ({LOCAL_CODE_MODEL}) automatically.")
+                                                SETTINGS["CODE_MODEL"] = LOCAL_CODE_MODEL
+                                                    
+                                            yield f"data: {json.dumps({'error': f'Rate limit exceeded. Switching to local model ({LOCAL_CODE_MODEL}). Please try again!'})}\n\n".encode('utf-8')
+                                        else:
+                                            yield f"data: {json.dumps({'error': err_msg})}\n\n".encode('utf-8')
                                         break
                                     
                                     # Record the mapping in our backend cache!
