@@ -2808,15 +2808,19 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                                 logging.debug(f"[OpenCode Proxy] Message {msg_id} marked as completed in metadata.")
                                                     
                                             elif event_type == "message.part.delta":
-                                                if event_sid == str(session_id):
-                                                    terminal_event_received = False
-                                                chunk = {
-                                                    "id": props.get("partID") or props.get("id"),
-                                                    "delta": props.get("delta"),
-                                                    "field": props.get("field", "text"),
-                                                    "type": "thought" if props.get("field") == "thought" else "text"
-                                                }
-                                                yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+                                                if event_sid == str(session_id) and terminal_event_received:
+                                                    # Stale delta after idle — stop streaming token-by-token
+                                                    pass
+                                                else:
+                                                    if event_sid == str(session_id):
+                                                        terminal_event_received = False
+                                                    chunk = {
+                                                        "id": props.get("partID") or props.get("id"),
+                                                        "delta": props.get("delta"),
+                                                        "field": props.get("field", "text"),
+                                                        "type": "thought" if props.get("field") == "thought" else "text"
+                                                    }
+                                                    yield f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
                                                 
                                             elif event_type in ["message.part.updated", "part.update", "message.part.created"]:
                                                 part = props.get("part") or props or {}
