@@ -2500,8 +2500,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                         logging.info(f"[OpenCode Proxy] read_events EOF after {chunk_count} chunks")
                                         break
                                     chunk_count += 1
-                                    if chunk_count <= 5:
-                                        logging.info(f"[OpenCode Proxy] read_events chunk #{chunk_count}: {chunk[:100]}")
+                                    if chunk_count <= 2:
+                                        logging.debug(f"[OpenCode Proxy] read_events chunk #{chunk_count}: {chunk[:80]}")
                                     buffer += chunk
                                     while b"\n" in buffer:
                                         line, buffer = buffer.split(b"\n", 1)
@@ -2585,11 +2585,30 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             if user_id and omd_payload.get("user_nonce"):
                                                 user_nonce = omd_payload["user_nonce"]
                                                 _nonce_to_msg_id[user_nonce] = user_id
-                                                logging.debug(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
+                                                logging.info(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
                                             if ass_id and omd_payload.get("assistant_nonce"):
                                                 ass_nonce = omd_payload["assistant_nonce"]
                                                 _nonce_to_msg_id[ass_nonce] = ass_id
-                                                logging.debug(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
+                                                logging.info(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
+
+                                        # KEY: If the POST returned 'parts' directly, OpenCode completed synchronously.
+                                        # Synthesize SSE events from the response body and close immediately.
+                                        parts_list = task_result.get("parts")
+                                        if isinstance(parts_list, list) and parts_list:
+                                            logging.info(f"[OpenCode Proxy] Direct response detected ({len(parts_list)} parts). Synthesizing SSE events.")
+                                            msg_sess_id = str(session_id)
+                                            msg_id = (info or {}).get("id", "")
+                                            # Emit message.updated event
+                                            yield f"data: {json.dumps({'type': 'message.updated', 'properties': {'sessionID': msg_sess_id, 'info': info or {}}})}\n\n".encode('utf-8')
+                                            # Emit each part
+                                            for part in parts_list:
+                                                if part.get("type") in ("text", "reasoning"):
+                                                    yield f"data: {json.dumps({'type': 'message.part.updated', 'properties': {'sessionID': msg_sess_id, 'part': part}})}\n\n".encode('utf-8')
+                                            # Emit terminal events
+                                            yield f"data: {json.dumps({'type': 'session.status', 'properties': {'sessionID': msg_sess_id, 'status': {'type': 'idle'}}})}\n\n".encode('utf-8')
+                                            yield f"data: {json.dumps({'type': 'session.idle', 'properties': {'sessionID': msg_sess_id}})}\n\n".encode('utf-8')
+                                            terminal_event_received = True
+                                            last_event_time = asyncio.get_event_loop().time()
 
                                 # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
                                 if terminal_event_received and not active_tool_parts:
