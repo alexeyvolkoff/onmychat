@@ -2419,9 +2419,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
 
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
-                if resolved_dir:
-                    import urllib.parse
-                    event_url += f"&directory={urllib.parse.quote(resolved_dir)}"
                 class _AsyncNull:
                     async def __aenter__(self): return self
                     async def __aexit__(self, *args): pass
@@ -2455,7 +2452,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             try:
                                 # Set infinity timeout for agentic tasks
                                 timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=None)
+                                logging.info(f"[OpenCode Proxy] do_post() -> POST {target_url} payload_keys={list(opencode_payload.keys())}")
                                 async with session.post(target_url, json=opencode_payload, timeout=timeout) as resp:
+                                    logging.info(f"[OpenCode Proxy] do_post() response: status={resp.status}")
                                     if resp.status not in [200, 201, 204]:
                                         error_text = await resp.text()
                                         logging.error(f"[OpenCode Proxy] Backend error {resp.status}: {error_text}")
@@ -2466,14 +2465,16 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     if resp.status != 204:
                                         try:
                                             res = await resp.json()
+                                            logging.info(f"[OpenCode Proxy] do_post() JSON result keys={list(res.keys()) if isinstance(res, dict) else type(res)}")
                                         except Exception:
                                             try:
                                                 text = await resp.text()
                                                 if text:
                                                     res = {"result": text}
+                                                    logging.info(f"[OpenCode Proxy] do_post() text result len={len(text)}")
                                             except Exception:
                                                 pass
-                                                
+                                            
                                     if is_question_reply:
                                         # Wait until execution is finished to keep post_task alive
                                         while not terminal_event_received and not event_stream_closed:
@@ -2490,12 +2491,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         async def read_events(content_reader, queue):
                             nonlocal event_stream_closed
                             try:
-                                logging.debug("[OpenCode Proxy] read_events started")
+                                logging.info("[OpenCode Proxy] read_events started")
                                 buffer = b""
+                                chunk_count = 0
                                 while True:
                                     chunk = await content_reader.read(65536)
                                     if not chunk:
+                                        logging.info(f"[OpenCode Proxy] read_events EOF after {chunk_count} chunks")
                                         break
+                                    chunk_count += 1
+                                    if chunk_count <= 5:
+                                        logging.info(f"[OpenCode Proxy] read_events chunk #{chunk_count}: {chunk[:100]}")
                                     buffer += chunk
                                     while b"\n" in buffer:
                                         line, buffer = buffer.split(b"\n", 1)
@@ -2504,11 +2510,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     await queue.put(buffer)
                             except Exception as read_ex:
                                 if terminal_event_received:
-                                    logging.debug(f"[OpenCode Proxy] Event stream connection closed normally: {read_ex}")
+                                    logging.info(f"[OpenCode Proxy] Event stream connection closed normally: {read_ex}")
                                 else:
                                     logging.error(f"[OpenCode Proxy] Error reading event stream: {read_ex}")
                             finally:
-                                logging.debug("[OpenCode Proxy] read_events finished")
+                                logging.info("[OpenCode Proxy] read_events finished")
                                 event_stream_closed = True
                                 await queue.put(None)
                         
@@ -2523,6 +2529,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         await asyncio.sleep(0.2)
                         
                         # 4. Start the POST request in the background
+                        logging.info(f"[OpenCode Proxy] Starting POST task for session {session_id}")
                         post_task = asyncio.create_task(do_post())
                         active_tasks[str(session_id)] = post_task
                         
@@ -2670,6 +2677,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     try:
                                         event_data = json.loads(line_str[6:])
                                         event_type = event_data.get("type", "")
+                                        logging.info(f"[OpenCode Proxy] Event read: {event_type}")
                                         props = event_data.get("properties", {})
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
