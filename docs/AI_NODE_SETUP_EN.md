@@ -2,7 +2,7 @@
 
 > Run your own AI infrastructure: private, uncensored, unlimited.
 
-This guide walks you through deploying a personal OnMyChat AI node on your own hardware and connecting it to your OnMyDisk account via the **OnMyDisk Connector**. Once set up, you get:
+This guide walks you through deploying a personal **OnMyChat** AI node on your own hardware and connecting it to your **OnMyDisk** account via the **OnMyDisk Connector**. Once set up, you get:
 
 - **Private RAG** — your files indexed locally, no data leaves your network
 - **Semantic Search** — find documents by meaning, not just filenames
@@ -45,13 +45,13 @@ The **AI Node** (`onmychat`) handles inference, search, and RAG — all behind y
 | Storage | 20 GB free | 100+ GB (SSD) |
 | GPU (optional) | — | NVIDIA GTX 1060 6GB+ |
 | OS | Ubuntu 22.04 / 24.04 | Ubuntu 24.04 LTS |
-| Network | Internet access | Installed OnMyDisk Connector |
+| Network | Internet access | Installed **OnMyDisk** Connector |
 
 ---
 
-## Step 1: Install the OnMyDisk Connector
+## Step 1: Install the **OnMyDisk** Connector
 
-The Connector is an **advanced client** of On My Disk designed for installation on various storage devices. It runs as a system service, shares your local folders, and hosts the local AI assistant.
+The Connector is an **advanced client** of **On My Disk** designed for installation on various storage devices. It runs as a system service, shares your local folders, and hosts the local AI assistant.
 
 ### Download the Package
 
@@ -106,24 +106,24 @@ systemctl status onmydisk
 # Should show: active (running)
 ```
 
-The connector listens on **port 80** by default. Open `http://<your-device-ip-or-name>` to access the Web UI.
+The Connector listens on **port 80** by default. Open `http://<your-device-ip-or-name>` to access the Web UI.
 
 ---
 
-## Step 2: Register and Connect to On My Disk
+## Step 2: Register and Connect to **On My Disk**
 
-Initially, your device will run in anonymous mode, not linked to any On My Disk account, accessible only within your local network. To access your device over the Internet, from the mobile app, and share files and the AI assistant with other users, follow these steps:
+Initially, your device will run in anonymous mode, not linked to any **On My Disk** account, accessible only within your local network. To access your device over the Internet, from the mobile app, and share files and the AI assistant with other users, follow these steps:
 
-1. Create an On My Disk account or sign in using Google at the gateway interface: [onmydisk.net](https://onmydisk.net).
+1. Create an **On My Disk** account or sign in using Google at the gateway interface: [**onmydisk**.net](https://onmydisk.net).
 2. Open the Connector Web UI: `http://<ip-or-device-name>` and navigate to profile settings (**Settings → Profile**).
 3. Click "Link device to account". In the pop-up window, log in with your account.
-4. Verify in the gateway web interface [onmydisk.net](https://onmydisk.net) - your device should appear in the **My Devices** section. Now you can use your device remotely and share files and the AI assistant with other users in your group.
+4. Verify in the gateway web interface [**onmydisk**.net](https://onmydisk.net) - your device should appear in the **My Devices** section. Now you can use your device remotely and share files and the AI assistant with other users in your group.
 
 ---
 
-## Step 3: Install and Configure OnMyChat (AI Node)
+## Step 3: Install and Configure **OnMyChat** (AI Node)
 
-OnMyChat is an additional service that orchestrates the LLM, RAG, and search.
+**OnMyChat** is an additional service that orchestrates the LLM, RAG, and search.
 
 ```bash
 # Clone the repository
@@ -160,7 +160,7 @@ DEFAULT_MODEL = gemma4:12b
 APP_ROOT_DIR = /opt/onmychat
 ```
 
-After that, open the Connector Web UI (`http://<ip-or-device-name>`), go to **Settings → Integrations**, enable **On My Chat**, specify **Base URL**: `http://localhost:8000` and enter the same **AI Token** as in the config above. Connector will start proxying AI requests from the OnMyDisk gateway to your local OnMyChat.
+After that, open the Connector Web UI (`http://<ip-or-device-name>`), go to **Settings → Integrations**, enable **On My Chat**, specify **Base URL**: `http://localhost:8000` and enter the same **AI Token** as in the config above. Connector will start proxying AI requests from the **OnMyDisk** gateway to your local **OnMyChat**.
 
 ### Run
 
@@ -237,7 +237,7 @@ ls /opt/onmychat/memory_index/search_index/
 
 ## AI Node Operating Modes
 
-An AI node connected to the OnMyDisk gateway can operate in two modes, determined by the user's authentication on the gateway:
+An AI node connected to the **OnMyDisk** gateway can operate in two modes, determined by the user's authentication on the gateway:
 
 - **Public Mode** — the user is a guest. The node checks the token balance and applies limits on import and generation.
 - **Private Mode** — the user is the device owner or is in the device's access list. Token checks and limits are not applied.
@@ -257,7 +257,7 @@ We are working on enabling node owners who make their nodes publicly available t
    ```bash
    python3 main.py --listen 0.0.0.0 --port 8188
    ```
-3. Edit `config.ini` in OnMyChat:
+3. Edit `config.ini` in **OnMyChat**:
    ```ini
    COMFY_API_URL = http://localhost:8188
    WORKFLOW_PATH = flow.json
@@ -269,7 +269,7 @@ We are working on enabling node owners who make their nodes publicly available t
 
 ## Advanced: Systemd Services
 
-### OnMyChat Service
+### **OnMyChat** Service
 
 Create `/etc/systemd/system/onmychat.service`:
 
@@ -349,7 +349,7 @@ sudo systemctl restart ollama
 | Problem | Likely Cause | Solution |
 |---------|-------------|----------|
 | Connector shows "offline" | NAT / firewall | Check `http://<ip>:8081` is reachable. Enable UPnP or forward ports 9000, 8899. |
-| AI node not responding | OnMyChat not running | `systemctl status onmychat` and check logs. |
+| AI node not responding | **OnMyChat** not running | `systemctl status onmychat` and check logs. |
 | RAG not finding documents | ChromaDB not populated | Run `/learn <path>` in chat. Check `memory_index/` exists. |
 | Slow inference | No GPU / small RAM | Use a smaller model (e.g., `gemma4:4b`) or enable CUDA. |
 | Image generation fails | ComfyUI not running | Check `COMFY_API_URL` in `config.ini`. Run ComfyUI manually. |

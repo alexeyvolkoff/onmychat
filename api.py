@@ -2540,48 +2540,49 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             idle_time = now - last_event_time
                             
                             # CRITICAL: We trust the background POST task as the definitive signal for termination.
-                            if post_task.done() and not post_task_processed:
-                                post_task_processed = True
-                                if post_task.cancelled():
-                                    logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
-                                    break
-                                if post_task.exception():
-                                    logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
-                                    break
-                                
-                                # Check if the task returned an error dict instead of raising an exception.
-                                task_result = post_task.result()
-                                logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
-                                if isinstance(task_result, dict):
-                                    if "error" in task_result:
-                                        err_msg = task_result.get("error", "")
-                                        err_text = task_result.get("text", "")
-                                        logging.error(f"[OpenCode Proxy] Post task returned error: {err_msg}")
-                                        
-                                        if "Rate limit exceeded" in err_text or "429" in err_msg:
-                                            from config import SETTINGS
-                                            if not SETTINGS.get("CODE_MODEL", "").startswith("ollama/"):
-                                                logging.info(f"[OpenCode Proxy] Rate limit exceeded detected. Switching to local model ({LOCAL_CODE_MODEL}) automatically.")
-                                                SETTINGS["CODE_MODEL"] = LOCAL_CODE_MODEL
-                                                    
-                                            yield f"data: {json.dumps({'error': f'Rate limit exceeded. Switching to local model ({LOCAL_CODE_MODEL}). Please try again!'})}\n\n".encode('utf-8')
-                                        else:
-                                            yield f"data: {json.dumps({'error': err_msg})}\n\n".encode('utf-8')
+                            if post_task.done():
+                                if not post_task_processed:
+                                    post_task_processed = True
+                                    if post_task.cancelled():
+                                        logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
+                                        break
+                                    if post_task.exception():
+                                        logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
                                         break
                                     
-                                    # Record the mapping in our backend cache!
-                                    info = task_result.get("info")
-                                    if isinstance(info, dict):
-                                        user_id = info.get("parentID")
-                                        ass_id = info.get("id")
-                                        if user_id and omd_payload.get("user_nonce"):
-                                            user_nonce = omd_payload["user_nonce"]
-                                            _nonce_to_msg_id[user_nonce] = user_id
-                                            logging.info(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
-                                        if ass_id and omd_payload.get("assistant_nonce"):
-                                            ass_nonce = omd_payload["assistant_nonce"]
-                                            _nonce_to_msg_id[ass_nonce] = ass_id
-                                            logging.info(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
+                                    # Check if the task returned an error dict instead of raising an exception.
+                                    task_result = post_task.result()
+                                    logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
+                                    if isinstance(task_result, dict):
+                                        if "error" in task_result:
+                                            err_msg = task_result.get("error", "")
+                                            err_text = task_result.get("text", "")
+                                            logging.error(f"[OpenCode Proxy] Post task returned error: {err_msg}")
+                                            
+                                            if "Rate limit exceeded" in err_text or "429" in err_msg:
+                                                from config import SETTINGS
+                                                if not SETTINGS.get("CODE_MODEL", "").startswith("ollama/"):
+                                                    logging.info(f"[OpenCode Proxy] Rate limit exceeded detected. Switching to local model ({LOCAL_CODE_MODEL}) automatically.")
+                                                    SETTINGS["CODE_MODEL"] = LOCAL_CODE_MODEL
+                                                        
+                                                yield f"data: {json.dumps({'error': f'Rate limit exceeded. Switching to local model ({LOCAL_CODE_MODEL}). Please try again!'})}\n\n".encode('utf-8')
+                                            else:
+                                                yield f"data: {json.dumps({'error': err_msg})}\n\n".encode('utf-8')
+                                            break
+                                        
+                                        # Record the mapping in our backend cache!
+                                        info = task_result.get("info")
+                                        if isinstance(info, dict):
+                                            user_id = info.get("parentID")
+                                            ass_id = info.get("id")
+                                            if user_id and omd_payload.get("user_nonce"):
+                                                user_nonce = omd_payload["user_nonce"]
+                                                _nonce_to_msg_id[user_nonce] = user_id
+                                                logging.debug(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
+                                            if ass_id and omd_payload.get("assistant_nonce"):
+                                                ass_nonce = omd_payload["assistant_nonce"]
+                                                _nonce_to_msg_id[ass_nonce] = ass_id
+                                                logging.debug(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
 
                                 # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
                                 if terminal_event_received and not active_tool_parts:
