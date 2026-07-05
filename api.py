@@ -2361,10 +2361,11 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         directory = omd_payload.get("directory")
         resolved_dir = None
         if directory:
-            import urllib.parse
             resolved_dir = resolve_session_directory(directory)
-            target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
-            logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
+            # NOTE: do NOT append ?directory= to the message URL — OpenCode does not
+            # support this parameter on /session/{id}/message and hangs if it is present.
+            # The directory is already set on the session at creation time.
+            logging.info(f"[OpenCode Proxy] Resolved directory for message (not appended): {directory} -> {resolved_dir}")
             
         if resolved_dir:
             _active_session_directories[str(session_id)] = resolved_dir
