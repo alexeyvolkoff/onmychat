@@ -88,9 +88,6 @@ from config import USER_DATA_DIR
 from config import BASE_INDEX_DIR
 from config import SETTINGS
 
-CLOUD_CODE_MODEL = SETTINGS.get("CLOUD_CODE_MODEL", "opencode/Nemotron-3-Ultra")
-LOCAL_CODE_MODEL = SETTINGS.get("LOCAL_CODE_MODEL", "ollama/gemma4:12b-32k")
-
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 
 app = FastAPI()
@@ -2361,11 +2358,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         directory = omd_payload.get("directory")
         resolved_dir = None
         if directory:
+            import urllib.parse
             resolved_dir = resolve_session_directory(directory)
-            # NOTE: do NOT append ?directory= to the message URL — OpenCode does not
-            # support this parameter on /session/{id}/message and hangs if it is present.
-            # The directory is already set on the session at creation time.
-            logging.info(f"[OpenCode Proxy] Resolved directory for message (not appended): {directory} -> {resolved_dir}")
+            target_url += f"?directory={urllib.parse.quote(resolved_dir)}"
+            logging.info(f"[OpenCode Proxy] Resolved directory for message: {directory} -> {resolved_dir}")
             
         if resolved_dir:
             _active_session_directories[str(session_id)] = resolved_dir
@@ -2420,6 +2416,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
 
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
+                if resolved_dir:
+                    import urllib.parse
+                    event_url += f"&directory={urllib.parse.quote(resolved_dir)}"
                 class _AsyncNull:
                     async def __aenter__(self): return self
                     async def __aexit__(self, *args): pass
@@ -2541,7 +2540,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         primary_message_ids = set()
                         terminal_event_received = False
                         active_tool_parts = set()
-                        post_task_processed = False
                         
                         while True:
                             now = asyncio.get_event_loop().time()
@@ -2549,67 +2547,20 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                             
                             # CRITICAL: We trust the background POST task as the definitive signal for termination.
                             if post_task.done():
-                                if not post_task_processed:
-                                    post_task_processed = True
-                                    if post_task.cancelled():
-                                        logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
-                                        break
-                                    if post_task.exception():
-                                        logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
-                                        break
-                                    
-                                    # Check if the task returned an error dict instead of raising an exception.
-                                    task_result = post_task.result()
-                                    logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
-                                    if isinstance(task_result, dict):
-                                        if "error" in task_result:
-                                            err_msg = task_result.get("error", "")
-                                            err_text = task_result.get("text", "")
-                                            logging.error(f"[OpenCode Proxy] Post task returned error: {err_msg}")
-                                            
-                                            if "Rate limit exceeded" in err_text or "429" in err_msg:
-                                                from config import SETTINGS
-                                                if not SETTINGS.get("CODE_MODEL", "").startswith("ollama/"):
-                                                    logging.info(f"[OpenCode Proxy] Rate limit exceeded detected. Switching to local model ({LOCAL_CODE_MODEL}) automatically.")
-                                                    SETTINGS["CODE_MODEL"] = LOCAL_CODE_MODEL
-                                                        
-                                                yield f"data: {json.dumps({'error': f'Rate limit exceeded. Switching to local model ({LOCAL_CODE_MODEL}). Please try again!'})}\n\n".encode('utf-8')
-                                            else:
-                                                yield f"data: {json.dumps({'error': err_msg})}\n\n".encode('utf-8')
-                                            break
-                                        
-                                        # Record the mapping in our backend cache!
-                                        info = task_result.get("info")
-                                        if isinstance(info, dict):
-                                            user_id = info.get("parentID")
-                                            ass_id = info.get("id")
-                                            if user_id and omd_payload.get("user_nonce"):
-                                                user_nonce = omd_payload["user_nonce"]
-                                                _nonce_to_msg_id[user_nonce] = user_id
-                                                logging.info(f"[OpenCode Proxy] Mapped user nonce from POST result: {user_nonce} -> {user_id}")
-                                            if ass_id and omd_payload.get("assistant_nonce"):
-                                                ass_nonce = omd_payload["assistant_nonce"]
-                                                _nonce_to_msg_id[ass_nonce] = ass_id
-                                                logging.info(f"[OpenCode Proxy] Mapped assistant nonce from POST result: {ass_nonce} -> {ass_id}")
-
-                                        # KEY: If the POST returned 'parts' directly, OpenCode completed synchronously.
-                                        # Synthesize SSE events from the response body and close immediately.
-                                        parts_list = task_result.get("parts")
-                                        if isinstance(parts_list, list) and parts_list:
-                                            logging.info(f"[OpenCode Proxy] Direct response detected ({len(parts_list)} parts). Synthesizing SSE events.")
-                                            msg_sess_id = str(session_id)
-                                            msg_id = (info or {}).get("id", "")
-                                            # Emit message.updated event
-                                            yield f"data: {json.dumps({'type': 'message.updated', 'properties': {'sessionID': msg_sess_id, 'info': info or {}}})}\n\n".encode('utf-8')
-                                            # Emit each part
-                                            for part in parts_list:
-                                                if part.get("type") in ("text", "reasoning"):
-                                                    yield f"data: {json.dumps({'type': 'message.part.updated', 'properties': {'sessionID': msg_sess_id, 'part': part}})}\n\n".encode('utf-8')
-                                            # Emit terminal events
-                                            yield f"data: {json.dumps({'type': 'session.status', 'properties': {'sessionID': msg_sess_id, 'status': {'type': 'idle'}}})}\n\n".encode('utf-8')
-                                            yield f"data: {json.dumps({'type': 'session.idle', 'properties': {'sessionID': msg_sess_id}})}\n\n".encode('utf-8')
-                                            terminal_event_received = True
-                                            last_event_time = asyncio.get_event_loop().time()
+                                if post_task.cancelled():
+                                    logging.info(f"[OpenCode Proxy] Post task was cancelled for {session_id}")
+                                    break
+                                if post_task.exception():
+                                    logging.error(f"[OpenCode Proxy] Post task exception, closing stream.")
+                                    break
+                                
+                                # Check if the task returned an error dict instead of raising an exception.
+                                task_result = post_task.result()
+                                logging.debug(f"[OpenCode Proxy] Post task completed with result: {task_result}")
+                                if isinstance(task_result, dict) and "error" in task_result:
+                                    logging.error(f"[OpenCode Proxy] Post task returned error: {task_result['error']}")
+                                    yield f"data: {json.dumps({'error': task_result['error']})}\n\n".encode('utf-8')
+                                    break
 
                                 # If the terminal SSE event has already been received, we can close after a brief grace period (e.g. 0.5s silence) to allow trailing events.
                                 if terminal_event_received and not active_tool_parts:
@@ -2860,19 +2811,6 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 msg_role = info.get("role")
                                                 msg_id = info.get("id")
                                                 
-                                                # Map frontend user/assistant nonces to backend message IDs
-                                                if event_type == "message.created" and msg_id:
-                                                    if msg_role == "user" and omd_payload.get("user_nonce"):
-                                                        user_nonce = omd_payload["user_nonce"]
-                                                        _nonce_to_msg_id[user_nonce] = msg_id
-                                                        logging.info(f"[OpenCode Proxy] Mapping user nonce {user_nonce} -> {msg_id}")
-                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': user_nonce, 'message_id': msg_id})}\n\n".encode('utf-8')
-                                                    elif msg_role == "assistant" and omd_payload.get("assistant_nonce"):
-                                                        ass_nonce = omd_payload["assistant_nonce"]
-                                                        _nonce_to_msg_id[ass_nonce] = msg_id
-                                                        logging.info(f"[OpenCode Proxy] Mapping assistant nonce {ass_nonce} -> {msg_id}")
-                                                        yield f"data: {json.dumps({'action': 'map_message_id', 'nonce': ass_nonce, 'message_id': msg_id})}\n\n".encode('utf-8')
-
                                                 if msg_role == "assistant":
                                                     if msg_id:
                                                         is_new = (msg_id not in primary_message_ids)
