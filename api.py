@@ -1940,13 +1940,43 @@ async def proxy_opencode_sessions_create(request: Request):
 async def get_all_session_children(request: Request):
     """
     Returns all known parent-child session mappings.
+    Merges persisted data with live scan of OpenCode sessions for parentID.
     """
     result = {}
+    parent_map = dict(agent_session_parents)
+
+    # Merge in persisted data first
     for pid, children in agent_sessions.items():
         result[pid] = sorted(list(children))
+
+    # Also scan all sessions from OpenCode for parentID in info
+    try:
+        sess = await get_proxy_session()
+        async with sess.get(f"{core_service.CODE_BASE_URL}/session") as resp:
+            if resp.status == 200:
+                sessions = await resp.json()
+                if isinstance(sessions, list):
+                    for session in sessions:
+                        sid = session.get("id")
+                        if not sid:
+                            continue
+                        info = session.get("info") or {}
+                        pid = info.get("parentID") or info.get("parent_id") or info.get("parentId")
+                        if pid:
+                            sid_s, pid_s = str(sid), str(pid)
+                            if sid_s not in parent_map:
+                                parent_map[sid_s] = pid_s
+                            result.setdefault(pid_s, []).append(sid_s)
+    except Exception as e:
+        logging.warning(f"[OpenCode Proxy] Failed to scan sessions for parentID: {e}")
+
+    # Deduplicate children lists
+    for pid in result:
+        result[pid] = sorted(set(result[pid]))
+
     return {
         "children": result,
-        "parentMap": dict(agent_session_parents)
+        "parentMap": parent_map
     }
 
 @app.get("/code/sessions/{session_id}/children")
