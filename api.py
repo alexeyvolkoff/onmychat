@@ -957,9 +957,11 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     ctx.private_mode = is_private_mode(request)
 
     if provided_settings:
-        logging.info(f"Applying client-provided settings for {ctx.user_id}")
+        logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         ctx.settings.update(provided_settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
+    else:
+        logging.info(f"NO provided_settings received for {ctx.user_id}")
 
     async def event_generator():
         try:
