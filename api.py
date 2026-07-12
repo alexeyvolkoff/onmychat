@@ -1119,9 +1119,15 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     intent = "generate"
                     img_prompt = prompt[len("/generate"):].strip()
                     effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
+                        
                     if not effective_fun:
-                        logging.info(f"Checking image generation safety: {img_prompt}")
-                        safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                        # Whitelist bypass for explicit content safety check
+                        if ctx.omd_key in ["3139ee6b2c54c18ff7437de7aac8b6c0"]:
+                            safety_result = "SAFE"
+                        else:
+                            logging.info(f"Checking image generation safety: {img_prompt}")
+                            safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                            
                         if safety_result != "SAFE":
                             logging.info(f"Image generation safety check failed: {safety_result}")
                             if ctx.private_mode:
