@@ -1122,7 +1122,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         
                     if not effective_fun:
                         # Whitelist bypass for explicit content safety check
-                        if ctx.omd_key in ["3139ee6b2c54c18ff7437de7aac8b6c0"]:
+                        if ctx.is_unlimited:
                             safety_result = "SAFE"
                         else:
                             logging.info(f"Checking image generation safety: {img_prompt}")

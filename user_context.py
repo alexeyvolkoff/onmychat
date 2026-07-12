@@ -20,6 +20,7 @@ class UserContext:
     omd_key: str = ""
     storage: str = ""
     private_mode: bool = False
+    is_unlimited: bool = False
     tokens_consumed: float = 0.0
 
 def get_prompt(filename):
@@ -71,7 +72,8 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
             settings=load_user_settings(), 
             history=[], 
             omd_key=account_id, 
-            storage=storage
+            storage=storage,
+            is_unlimited=(user_info.get("status") == "Unlimited")
         )
 
     return UserContext(type="temp", user_id=f"web_{account_id[:8]}", settings=load_user_settings(), history=[], omd_key=account_id, storage=storage)
