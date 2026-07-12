@@ -1213,9 +1213,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "You have ALREADY generated an image of yourself based on the user's request.\n"
                     "The scene description is:\n"
                     "{}\n\n"
-                    "YOUR TASK: Roleplay this scene. Describe your feelings, thoughts, or actions AS IF YOU ARE IN THE IMAGE RIGHT NOW.\n"
-                    "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
-                    "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
+                    "TASK: Roleplay this scene. Continue conversation. Take into account the generated image, your feelings about it and the previous conversation context.\n"
                 ).format(img_prompt)
                 llm_message = "Please describe the image or roleplay as requested."
                 # [LEGACY HISTORY] save_user_message removed
@@ -1239,9 +1237,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "You have ALREADY generated an image based on the user's request.\n"
                     "The scene description is:\n"
                     "{}\n\n"
-                    "YOUR TASK: Describe this image enthusiastically or provide a caption for it.\n"
-                    "CRITICAL: Do NOT output instructions, prompts, or technical details.\n"
-                    "CRITICAL: Do NOT output 'System Tool Output' or mimic system logs."
+                    "Your TASK: describe the generated image enthusiastically or provide a caption for it."
                 ).format(img_prompt)
                 llm_message = "Please describe the image as requested."
                 # [LEGACY HISTORY] save_user_message removed
