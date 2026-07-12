@@ -1120,22 +1120,14 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 elif prompt.startswith("/generate"):
                     intent = "generate"
                     img_prompt = prompt[len("/generate"):].strip()
-                    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
-                        
-                    if not effective_fun:
+                    bypass_safety = ctx.private_mode or ctx.is_unlimited
+                    if not bypass_safety:
                         # Whitelist bypass for explicit content safety check
-                        if ctx.is_unlimited:
-                            safety_result = "SAFE"
-                        else:
-                            logging.info(f"Checking image generation safety: {img_prompt}")
-                            safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                            
+                        logging.info(f"Checking image generation safety: {img_prompt}")
+                        safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
                         if safety_result != "SAFE":
                             logging.info(f"Image generation safety check failed: {safety_result}")
-                            if ctx.private_mode:
-                                warning = "I can not generate this in work mode. Switch to fun mode with /mode fun"
-                            else:
-                                warning = "I can not generate this. Subscribe to Premium plan to enable fun mode."
+                            warning = "I can not generate this. Subscribe to Premium plan to verify your age."
                             yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
                             return
                 elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
