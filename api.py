@@ -1215,7 +1215,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "{}\n\n"
                     "TASK: Roleplay this scene. Continue conversation. Take into account the generated image, your feelings about it and the previous conversation context.\n"
                 ).format(img_prompt)
-                llm_message = "Please describe the image or roleplay as requested."
+                llm_message = prompt
                 # [LEGACY HISTORY] save_user_message removed
             elif intent == "view":
                 # 1️⃣ статус
@@ -1239,7 +1239,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "{}\n\n"
                     "Your TASK: describe the generated image enthusiastically or provide a caption for it."
                 ).format(img_prompt)
-                llm_message = "Please describe the image as requested."
+                llm_message = prompt
                 # [LEGACY HISTORY] save_user_message removed
 
             elif intent == "explain" or intent == "think":    

@@ -134,9 +134,9 @@
       },
       "lora_7": {
         "on": false,
-        "name": "Naomi",
+        "name": "Oriana",
         "type": "character",
-        "lora": "Yvenmistral_-_Realistic_Character_LoRA_V2-000002.safetensors",
+        "lora": "ORIANA-XSTAR-XL-FINAL.safetensors",
         "strength": 1
       },
       "lora_8": {
