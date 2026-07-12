@@ -789,8 +789,9 @@ async def kill_session_task(session_id: str, payload: SessionKillInput | None = 
     return {"status": status}
 
 @app.get("/assistant/loras")
-async def get_loras(mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
+async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
+    ctx.private_mode = is_private_mode(request)
     return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
@@ -1769,8 +1770,8 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
         logging.info(f"[Knowledge] Child session {child_sid} has no content, skipping")
         return
 
-    # 3. Build the knowledge markdown — extract only assistant text content
-    lines = [f"# {title}\n\n"]
+    # 3. Build the knowledge markdown
+    raw_content = ""
     for msg in messages:
         role = msg.get("role", "")
         if role in ("assistant", "user"):
@@ -1784,9 +1785,42 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
                         parts.append(str(p))
                 content = " ".join(parts)
             if content.strip():
-                lines.append(f"{content}\n\n")
+                raw_content += f"{role.upper()}: {content}\n\n"
 
-    lines.append(f"---\n*Source: OpenCode session `{child_sid}`*\n")
+    # Summarize the knowledge to save tokens for future tasks
+    summarized_content = ""
+    try:
+        ctx = user_context.UserContext(type="system", user_id="system", settings={}, history={})
+        model = core_service.get_llm_model(ctx)
+        
+        prompt = (
+            f"You are a knowledge extraction assistant. The following is a raw transcript of a subagent's execution (task: {title}). "
+            "Please extract the key findings, solutions, research results, and any important code snippets or terminal commands. "
+            "Organize the extracted knowledge logically into a concise markdown document so that other agents can quickly read and understand the outcome without reading the full transcript. "
+            "Ignore conversational filler, repeated errors if they were eventually resolved, and unrelated details.\n\n"
+            "RAW TRANSCRIPT:\n"
+            f"{raw_content[:100000]}" # Limit size to prevent overflow
+        )
+        
+        payload = {
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "model": model,
+            "stream": False,
+            "options": {"temperature": 0.3}
+        }
+        
+        data = await core_service.llm_request(payload)
+        if data and "message" in data:
+            summarized_content = data["message"]["content"].strip()
+    except Exception as e:
+        logging.error(f"[Knowledge] Failed to summarize knowledge for {child_sid}: {e}")
+
+    if not summarized_content or len(summarized_content) < 50:
+        summarized_content = raw_content
+
+    lines = [f"# {title}\n\n", f"{summarized_content}\n\n", f"---\n*Source: OpenCode session `{child_sid}`*\n"]
 
     filepath = os.path.join(knowledge_dir, f"{safe_name}.md")
     try:
