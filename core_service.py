@@ -3443,7 +3443,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if not prompt:
         raise Exception("Please explain what do you want to see.")
 
-    if not ctx.storage:
+    if not ctx.storage and not ctx.is_unlimited:
         raise Exception("⚠️ Default storage is not available. Please connect your device.")
 
     user_id = ctx.user_id
@@ -3583,13 +3583,49 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         # Копируем файл в user_data (local)
         os.makedirs(user_folder, exist_ok=True)
         dest_path = os.path.join(user_folder, filename)
-        with open(dest_path, "wb") as f:
-            f.write(img_data)
-        # Save prompt as description (Readme.md)
         readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
         readme_path = os.path.join(user_folder, readme_filename)
-        with open(readme_path, "w", encoding="utf-8") as f:
-            f.write(formatted_readme)
+
+        if not ctx.storage and ctx.is_unlimited and ctx.omd_key:
+            import os as os_lib
+            import hashlib
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import padding
+
+            key = hashlib.sha256(ctx.omd_key.encode('utf-8')).digest()
+
+            # Encrypt Image
+            iv = os_lib.urandom(16)
+            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            encryptor = cipher.encryptor()
+            padder = padding.PKCS7(algorithms.AES.block_size).padder()
+            padded_data = padder.update(img_data) + padder.finalize()
+            encrypted_data = iv + encryptor.update(padded_data) + encryptor.finalize()
+
+            with open(dest_path, "wb") as f:
+                f.write(encrypted_data)
+
+            # Encrypt Readme
+            readme_iv = os_lib.urandom(16)
+            readme_cipher = Cipher(algorithms.AES(key), modes.CBC(readme_iv), backend=default_backend())
+            readme_encryptor = readme_cipher.encryptor()
+            readme_padder = padding.PKCS7(algorithms.AES.block_size).padder()
+            readme_padded = readme_padder.update(formatted_readme.encode('utf-8')) + readme_padder.finalize()
+            readme_encrypted = readme_iv + readme_encryptor.update(readme_padded) + readme_encryptor.finalize()
+
+            with open(readme_path, "wb") as f:
+                f.write(readme_encrypted)
+
+            # Route for gateway
+            filename = f"/ai/user_data/{ctx.user_id}/generated/{filename}"
+            logging.info(f"Saved encrypted locally for unlimited user. Route: {filename}")
+        else:
+            with open(dest_path, "wb") as f:
+                f.write(img_data)
+            with open(readme_path, "w", encoding="utf-8") as f:
+                f.write(formatted_readme)
+                
     return filename, img_title, neutral_description
 
 async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None) -> tuple[str, str, str]:
