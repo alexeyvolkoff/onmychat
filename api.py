@@ -2662,7 +2662,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                     try:
                                         event_data = json.loads(line_str[6:])
                                         event_type = event_data.get("type", "")
-                                        logging.info(f"[OpenCode Proxy] Event read: {event_type}")
+                                        logging.debug(f"[OpenCode Proxy] Event read: {event_type}")
                                         props = event_data.get("properties", {})
                                         info = props.get("info") or {} if isinstance(props.get("info"), dict) else {}
                                         event_sid = str(props.get("sessionID") or props.get("sessionId") or event_data.get("sessionID") or event_data.get("sessionId"))
