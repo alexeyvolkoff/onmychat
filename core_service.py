@@ -67,6 +67,8 @@ COMFY_OUTPUT_DIR = SETTINGS["COMFY_OUTPUT_DIR"]
 AVATAR_DIR = SETTINGS["AVATAR_DIR"]
 APP_ROOT_DIR = SETTINGS["APP_ROOT_DIR"]
 HISTORY_LIMIT = int(SETTINGS["HISTORY_LIMIT"])
+SUMMARY_THRESHOLD = int(SETTINGS.get("SUMMARY_THRESHOLD", 20))
+SUMMARY_TAIL_LIMIT = SUMMARY_THRESHOLD  # хвост = порог суммирования
 GATEWAY_URL = SETTINGS["GATEWAY_URL"]
 REASONONG_SUPPORTED = False
 
@@ -112,6 +114,7 @@ STYLE_MODELS = {
 
 NEGATIVE_PROMPTS = get_json_prompt("negative_prompts.json")
 INTENT_PROMPT = get_prompt("intent.txt")
+CHAT_SUMMARY_PROMPT = get_prompt("chat_summary.txt")
 CONTENT_FILTER_PROMPT = get_prompt("content_filter.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 FUN_PREPHASE = get_prompt("fun_prephase.txt")
@@ -2554,7 +2557,9 @@ async def _perform_prompt_gen(ctx: UserContext,
                          intent: str = "chat",
                          event: str = None,
                          provided_history: list = None,
-                         provided_knowledge: list = None) -> AsyncGenerator:
+                         provided_knowledge: list = None,
+                         chat_summary: str = None,
+                         total_message_count: int = None) -> AsyncGenerator:
 
     mode = ctx.settings.get("content_mode", "work")
     model = get_llm_model(ctx, mode)
@@ -2698,7 +2703,14 @@ async def _perform_prompt_gen(ctx: UserContext,
     # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
     system_prompt += "\n\n" + instruction_prompt
     system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
+
+    # Вставляем суммари чата между system prompt и историей
+    if chat_summary:
+        system_prompt += f"\n\n*Conversation summary:*\n{chat_summary}"
+        # При наличии суммари берём только хвост истории
+        messages = [{"role": "system", "content": system_prompt}] + history[-SUMMARY_TAIL_LIMIT:]
+    else:
+        messages = [{"role": "system", "content": system_prompt}] + history[-HISTORY_LIMIT:]
 
     # Добавляем новый запрос
     user_message = {
@@ -2788,7 +2800,35 @@ async def _perform_prompt_gen(ctx: UserContext,
 
             # [LEGACY HISTORY] Save history removed - handled by frontend/OrbitDB
             pass
-            
+
+        # === ГЕНЕРАЦИЯ СУММАРИ КАЖДЫЕ N СООБЩЕНИЙ ===
+        # Используем total_message_count (реальное кол-во сообщений) вместо len(history)
+        effective_count = total_message_count if total_message_count is not None else len(history)
+        if effective_count > 0 and effective_count % SUMMARY_THRESHOLD == 0:
+            try:
+                model = get_llm_model(ctx)
+                # Кумулятивное суммари: старое суммари + текущий хвост → новое суммари
+                if chat_summary:
+                    summary_input = f"Previous summary:\n{chat_summary}\n\nRecent messages:\n"
+                    for msg in history:
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        if content and role in ("user", "assistant"):
+                            summary_input += f"{role}: {content[:500]}\n"
+                else:
+                    summary_input = None
+                new_summary = await generate_chat_summary(history, model, previous_summary=chat_summary)
+                if new_summary:
+                    response["summary"] = new_summary
+                    # Обновляем титл чата на основе нового суммари
+                    new_title = await generate_updated_title(new_summary, model)
+                    if new_title:
+                        response["new_title"] = new_title
+                        chat_info["title"] = new_title
+                    logging.info(f"Chat summary generated for {chat_name}: {new_summary[:100]}...")
+            except Exception as e:
+                logging.warning(f"Failed to generate chat summary: {e}")
+
         response["chatinfo"] = chat_info
         return response
 
@@ -2961,7 +3001,9 @@ async def perform_prompt(
     event: str|None=None,
     stream: bool=False,
     provided_history: list|None=None,
-    provided_knowledge: list|None=None
+    provided_knowledge: list|None=None,
+    chat_summary: str|None=None,
+    total_message_count: int|None=None
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -2976,7 +3018,9 @@ async def perform_prompt(
         event=event,
         stream=stream,
         provided_history=provided_history,
-        provided_knowledge=provided_knowledge
+        provided_knowledge=provided_knowledge,
+        chat_summary=chat_summary,
+        total_message_count=total_message_count
     )
     
     if stream:
@@ -3030,6 +3074,83 @@ async def generate_chat_title(message: str, model: str) -> str:
     if not data:
         return "New chat"
     return data["message"]["content"].strip() or "New chat"
+
+
+async def generate_chat_summary(history: list, model: str, previous_summary: str = None) -> str:
+    """
+    Сгенерировать краткое суммари чата. Если есть previous_summary — делаем кумулятивное суммари.
+    """
+    if not history or len(history) < 2:
+        return previous_summary or ""
+
+    # Формируем текст истории для суммаризации
+    history_text = ""
+    for msg in history:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if content and role in ("user", "assistant"):
+            # Обрезаем длинные сообщения
+            truncated = content[:500] + "..." if len(content) > 500 else content
+            history_text += f"{role}: {truncated}\n"
+
+    if not history_text.strip():
+        return previous_summary or ""
+
+    if previous_summary:
+        user_content = (
+            f"Previous summary:\n{previous_summary}\n\n"
+            f"New messages since last summary:\n\n{history_text}\n\n"
+            f"Create an updated cumulative summary that incorporates both the previous summary and the new messages. "
+            f"Keep it concise (3-5 sentences). Focus on the most important information."
+        )
+    else:
+        user_content = f"Chat conversation:\n\n{history_text}"
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": CHAT_SUMMARY_PROMPT},
+            {"role": "user", "content": user_content}
+        ],
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.3, "num_ctx": LLM_NUM_CTX}
+    }
+
+    data = await llm_request(payload)
+    if not data:
+        return previous_summary or ""
+    return data["message"]["content"].strip() or previous_summary or ""
+
+
+async def generate_updated_title(summary: str, model: str) -> str:
+    """
+    Обновить титл чата на основе суммари (когда чат уже не про первую тему).
+    """
+    if not summary:
+        return ""
+
+    prompt = (
+        "Generate a short (2-3 words) title for a chat conversation based on this summary. "
+        "The title MUST start with a suitable emoji followed by space and then a short text. "
+        "Format: [emoji] [text]\n"
+        "Return ONLY the title, no quotes, no explanations.\n\n"
+        f"Summary: {summary}"
+    )
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a naming assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.3}
+    }
+
+    data = await llm_request(payload)
+    if not data:
+        return ""
+    return data["message"]["content"].strip() or ""
 
 
 def slugify(text):

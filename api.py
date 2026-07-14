@@ -316,6 +316,8 @@ class ChatStreamInput(BaseModel):
     settings: dict | None = None
     knowledge: list | None = None
     prompt_id: str | None = None
+    chat_summary: str | None = None
+    total_message_count: int | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -397,7 +399,8 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "assistant_model": ctx.settings.get("assistant_model", "Domi"),
             "defaultStorage": ctx.settings.get("defaultStorage", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
-            "omd_key": ctx.omd_key or omd_key
+            "omd_key": ctx.omd_key or omd_key,
+            "summary_threshold": core_service.SUMMARY_THRESHOLD
         }
         return assistant
 
@@ -942,7 +945,9 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         provided_history=data.history,
         provided_settings=data.settings,
         provided_knowledge=data.knowledge,
-        provided_prompt_id=data.prompt_id
+        provided_prompt_id=data.prompt_id,
+        chat_summary=data.chat_summary,
+        total_message_count=data.total_message_count
     )
 
 @app.get("/chat/stream")
@@ -950,7 +955,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       provided_history: list|None = None, 
                       provided_settings: dict|None = None,
                       provided_knowledge: list|None = None,
-                      provided_prompt_id: str|None = None):
+                      provided_prompt_id: str|None = None,
+                      chat_summary: str|None = None,
+                      total_message_count: int|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
@@ -1388,7 +1395,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 event=event,
                 stream=True,
                 provided_history=provided_history,
-                provided_knowledge=provided_knowledge
+                provided_knowledge=provided_knowledge,
+                chat_summary=chat_summary,
+                total_message_count=total_message_count
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
