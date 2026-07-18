@@ -2724,7 +2724,7 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     if b64_image:
         user_message["images"] = [b64_image]
-        model = get_llm_model(ctx)
+        model = VISION_MODEL
         if img_source.startswith("/"):
             user_message["image"] = {"path": img_source}
 
