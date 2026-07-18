@@ -1478,7 +1478,7 @@ async def recognize_endpoint(
 
     try:
         img_bytes = await file.read()
-        result = await core_service.recognize_image(ctx, img_bytes, prompt, chat)
+        result = await core_service.recognize_image(ctx, img_bytes, prompt, chat, provided_history=provided_history)
         return {"response": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

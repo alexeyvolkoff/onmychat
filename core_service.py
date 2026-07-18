@@ -45,6 +45,7 @@ DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
 FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 CODE_MODEL = SETTINGS.get("CODE_MODEL", DEFAULT_MODEL)
+VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
 MCP_MODEL = DEFAULT_MODEL
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
 TEMPERATURE = float(SETTINGS.get("TEMPERATURE", "0.85"))
@@ -3721,7 +3722,7 @@ async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default'
     return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id)
 
 # img is base64 image #
-async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
+async def recognize_image(ctx: UserContext, img, prompt="", chat="default", provided_history=None):
 
     effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
 
@@ -3732,7 +3733,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
 
     try:
-        history = []
+        history = provided_history or []
     except Exception as e:
         logging.error(f"Failed to load history in recognize_image: {e}")
         raise e
@@ -3750,7 +3751,7 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default"):
 
     request_payload = {
         "messages": messages,
-        "model": get_llm_model(ctx),
+        "model": VISION_MODEL,
         "stream": False,
         "options": {
             "temperature": 0.8,
