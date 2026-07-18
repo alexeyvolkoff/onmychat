@@ -1802,13 +1802,46 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
     messages = msgs_data if isinstance(msgs_data, list) else msgs_data.get("messages", [])
     logging.info(f"[Knowledge] Fetched {len(messages)} messages for child {child_sid}")
 
+    # OpenCode messages use "parts" format: { "role": "assistant", "parts": [{"type":"text","text":"..."}] }
+    # Also handle legacy "text"/"content" fields for compatibility.
+    def _extract_text(msg):
+        """Extract text content from a message in any known format."""
+        # 1. Try "parts" array (OpenCode native format)
+        parts = msg.get("parts")
+        if isinstance(parts, list) and parts:
+            texts = []
+            for p in parts:
+                if isinstance(p, dict) and p.get("type") in ("text", "tool-result", None):
+                    t = p.get("text", "")
+                    if t:
+                        texts.append(t)
+            if texts:
+                return "\n".join(texts)
+        # 2. Try direct "text" field
+        t = msg.get("text", "")
+        if t:
+            return t if isinstance(t, str) else str(t)
+        # 3. Try "content" field (may be string or list)
+        c = msg.get("content", "")
+        if isinstance(c, str) and c:
+            return c
+        if isinstance(c, list):
+            texts = []
+            for p in c:
+                if isinstance(p, dict):
+                    texts.append(p.get("text", ""))
+                else:
+                    texts.append(str(p))
+            return " ".join(texts)
+        return ""
+
     # Don't save if there's no meaningful content
     has_content = any(
-        msg.get("role") in ("assistant", "user") and (msg.get("text") or msg.get("content"))
+        msg.get("role") in ("assistant", "user") and _extract_text(msg).strip()
         for msg in messages
     )
     if not has_content:
-        logging.info(f"[Knowledge] Child session {child_sid} has no content, skipping")
+        logging.info(f"[Knowledge] Child session {child_sid} has no content, skipping (checked {len(messages)} messages)")
         return
 
     # 3. Build the knowledge markdown
@@ -1816,15 +1849,7 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
     for msg in messages:
         role = msg.get("role", "")
         if role in ("assistant", "user"):
-            content = msg.get("text", "") or msg.get("content", "") or ""
-            if isinstance(content, list):
-                parts = []
-                for p in content:
-                    if isinstance(p, dict):
-                        parts.append(p.get("text", ""))
-                    else:
-                        parts.append(str(p))
-                content = " ".join(parts)
+            content = _extract_text(msg)
             if content.strip():
                 raw_content += f"{role.upper()}: {content}\n\n"
 
