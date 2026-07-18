@@ -70,7 +70,17 @@ _processed_question_ids: dict[str, set[str]] = {}
 _pending_permissions_metadata: dict[str, dict] = {}
 
 # Track child sessions already saved to .knowledge/ to prevent duplicates
+# Bounded set: pruned when it exceeds MAX_SAVED_KNOWLEDGE_IDS to prevent memory leak
 _saved_knowledge_ids: set[str] = set()
+MAX_SAVED_KNOWLEDGE_IDS = 500
+
+def _prune_saved_knowledge_ids():
+    """Keep _saved_knowledge_ids bounded to prevent memory leak."""
+    if len(_saved_knowledge_ids) > MAX_SAVED_KNOWLEDGE_IDS:
+        # Remove oldest half (set iteration order is insertion order in Python 3.7+)
+        to_remove = len(_saved_knowledge_ids) // 2
+        for _ in range(to_remove):
+            _saved_knowledge_ids.pop()
 
 # Map of frontend nonces (mr...) to backend OpenCode message IDs (msg_...)
 _nonce_to_msg_id: dict[str, str] = {}
@@ -1698,7 +1708,8 @@ session_tasks: dict[str, dict] = {}
 
 # Track subagent (child) session IDs detected during the current SSE stream.
 # Used by _save_child_knowledge to know which sessions are children.
-_child_session_ids: set[str] = set()
+# NOTE: This is now per-request (initialized inside stream_generator).
+# The module-level declaration is only for type documentation.
 
 def resolve_session_directory(directory: str) -> str:
     if not directory:
@@ -1729,9 +1740,33 @@ def resolve_session_directory(directory: str) -> str:
     return os.path.join(home_dir, relative_path)
 
 
+async def _is_child_session(event_sid: str, parent_sid: str) -> bool:
+    """Check via OpenCode API whether event_sid is a child of parent_sid.
+    Used as fallback when SSE events don't carry parentID."""
+    try:
+        sess = await get_proxy_session()
+        async with sess.get(f"{core_service.CODE_BASE_URL}/session/{event_sid}") as resp:
+            if resp.status != 200:
+                return False
+            data = await resp.json()
+            session_info = data.get("session", data)
+            pid = (session_info.get("parentID") or
+                   session_info.get("parent_id") or
+                   session_info.get("parentId") or
+                   session_info.get("info", {}).get("parentID") if isinstance(session_info.get("info"), dict) else None)
+            if pid and str(pid) == str(parent_sid):
+                logging.info(f"[Knowledge] Fallback: session {event_sid} confirmed as child of {parent_sid} via API lookup")
+                return True
+    except Exception as e:
+        logging.warning(f"[Knowledge] Fallback API lookup failed for {event_sid}: {e}")
+    return False
+
+
 async def _save_child_knowledge(child_sid: str, workspace_dir: str):
     """Fetch a completed child session's messages and save as .knowledge/<topic>.md"""
+    logging.info(f"[Knowledge] Starting knowledge save for child {child_sid} in {workspace_dir}")
     if not workspace_dir or not os.path.isdir(workspace_dir):
+        logging.warning(f"[Knowledge] Cannot save: workspace_dir={workspace_dir} is invalid or missing")
         return
     knowledge_dir = os.path.join(workspace_dir, '.knowledge')
     os.makedirs(knowledge_dir, exist_ok=True)
@@ -1765,6 +1800,7 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
         return
 
     messages = msgs_data if isinstance(msgs_data, list) else msgs_data.get("messages", [])
+    logging.info(f"[Knowledge] Fetched {len(messages)} messages for child {child_sid}")
 
     # Don't save if there's no meaningful content
     has_content = any(
@@ -1791,6 +1827,8 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
                 content = " ".join(parts)
             if content.strip():
                 raw_content += f"{role.upper()}: {content}\n\n"
+
+    logging.info(f"[Knowledge] Built raw transcript for {child_sid}: {len(raw_content)} chars")
 
     # Summarize the knowledge to save tokens for future tasks
     summarized_content = ""
@@ -1819,10 +1857,12 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
         data = await core_service.llm_request(payload)
         if data and "message" in data:
             summarized_content = data["message"]["content"].strip()
+            logging.info(f"[Knowledge] Summarized {child_sid}: {len(summarized_content)} chars (from {len(raw_content)} raw)")
     except Exception as e:
         logging.error(f"[Knowledge] Failed to summarize knowledge for {child_sid}: {e}")
 
     if not summarized_content or len(summarized_content) < 50:
+        logging.info(f"[Knowledge] Summarization too short ({len(summarized_content)} chars), falling back to raw content for {child_sid}")
         summarized_content = raw_content
 
     lines = [f"# {title}\n\n", f"{summarized_content}\n\n", f"---\n*Source: OpenCode session `{child_sid}`*\n"]
@@ -1834,6 +1874,54 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
         logging.info(f"[Knowledge] Saved '{title}' → {filepath}")
     except Exception as e:
         logging.error(f"[Knowledge] Failed to write {filepath}: {e}")
+
+
+async def _discover_and_save_unsaved_children(parent_sid: str, workspace_dir: str):
+    """Post-stream fallback: query OpenCode for all sessions, find children of parent_sid
+    that weren't saved to .knowledge/ yet, and save them."""
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        logging.warning(f"[Knowledge] Post-stream save skipped: workspace_dir={workspace_dir} invalid")
+        return
+
+    try:
+        sess = await get_proxy_session()
+        async with sess.get(f"{core_service.CODE_BASE_URL}/session") as resp:
+            if resp.status != 200:
+                logging.warning(f"[Knowledge] Post-stream: failed to list sessions (status {resp.status})")
+                return
+            sessions = await resp.json()
+    except Exception as e:
+        logging.error(f"[Knowledge] Post-stream: failed to list sessions: {e}")
+        return
+
+    if not isinstance(sessions, list):
+        logging.warning(f"[Knowledge] Post-stream: sessions response is not a list: {type(sessions)}")
+        return
+
+    unsaved_children = []
+    for s in sessions:
+        sid = s.get("id")
+        if not sid:
+            continue
+        pid = (s.get("parentID") or s.get("parent_id") or s.get("parentId") or
+               (s.get("info", {}).get("parentID") if isinstance(s.get("info"), dict) else None) or
+               (s.get("info", {}).get("parent_id") if isinstance(s.get("info"), dict) else None) or
+               (s.get("info", {}).get("parentId") if isinstance(s.get("info"), dict) else None))
+        if pid and str(pid) == str(parent_sid) and str(sid) not in _saved_knowledge_ids:
+            unsaved_children.append(str(sid))
+
+    if not unsaved_children:
+        logging.info(f"[Knowledge] Post-stream: no unsaved children found for parent {parent_sid}")
+        return
+
+    logging.info(f"[Knowledge] Post-stream: found {len(unsaved_children)} unsaved children for parent {parent_sid}: {unsaved_children}")
+    for child_id in unsaved_children:
+        _saved_knowledge_ids.add(child_id)
+        _prune_saved_knowledge_ids()
+        try:
+            await _save_child_knowledge(child_id, workspace_dir)
+        except Exception as e:
+            logging.error(f"[Knowledge] Post-stream: failed to save knowledge for child {child_id}: {e}")
 
 
 @app.get("/code/sessions")
@@ -2558,6 +2646,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                         # We track the primary session and any subagent (child) sessions spawned from it
                         authorized_sids = {str(session_id)}
+                        _child_session_ids: set[str] = set()  # Per-request child session tracking
                         last_event_time = asyncio.get_event_loop().time()
                         last_emitted_states = {}
                         primary_message_ids = set()
@@ -2798,13 +2887,25 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                     terminal_event_received = True
                                                 else:
                                                     logging.info(f"[OpenCode Proxy] Subagent session idle: {event_sid}")
-                                                    # Auto-save explore results to .knowledge/
+                                                    # Auto-save child session results to .knowledge/
                                                     eid = str(event_sid)
-                                                    if eid not in _saved_knowledge_ids and eid in _child_session_ids:
-                                                        _saved_knowledge_ids.add(eid)
-                                                        parent_dir = _active_session_directories.get(str(session_id))
-                                                        if parent_dir:
-                                                            asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                    if eid not in _saved_knowledge_ids:
+                                                        is_known_child = eid in _child_session_ids
+                                                        if not is_known_child:
+                                                            # Fallback: SSE event may not carry parentID — verify via API
+                                                            is_known_child = await _is_child_session(eid, str(session_id))
+                                                            if is_known_child:
+                                                                _child_session_ids.add(eid)
+                                                                logging.info(f"[Knowledge] Registered {eid} as child via fallback API lookup")
+                                                        if is_known_child:
+                                                            _saved_knowledge_ids.add(eid)
+                                                            _prune_saved_knowledge_ids()
+                                                            parent_dir = _active_session_directories.get(str(session_id))
+                                                            if parent_dir:
+                                                                logging.info(f"[Knowledge] Triggering knowledge save for child {eid} → {parent_dir}")
+                                                                asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                            else:
+                                                                logging.warning(f"[Knowledge] No workspace_dir for session {session_id}, cannot save knowledge for {eid}")
                                                             
                                             elif event_type == "session.status":
                                                 status_info = props.get("status", {})
@@ -2817,11 +2918,22 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         else:
                                                             logging.info(f"[OpenCode Proxy] Subagent status idle: {event_sid}")
                                                             eid = str(event_sid)
-                                                            if eid not in _saved_knowledge_ids and eid in _child_session_ids:
-                                                                _saved_knowledge_ids.add(eid)
-                                                                parent_dir = _active_session_directories.get(str(session_id))
-                                                                if parent_dir:
-                                                                    asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                            if eid not in _saved_knowledge_ids:
+                                                                is_known_child = eid in _child_session_ids
+                                                                if not is_known_child:
+                                                                    is_known_child = await _is_child_session(eid, str(session_id))
+                                                                    if is_known_child:
+                                                                        _child_session_ids.add(eid)
+                                                                        logging.info(f"[Knowledge] Registered {eid} as child via fallback API lookup (status.idle)")
+                                                                if is_known_child:
+                                                                    _saved_knowledge_ids.add(eid)
+                                                                    _prune_saved_knowledge_ids()
+                                                                    parent_dir = _active_session_directories.get(str(session_id))
+                                                                    if parent_dir:
+                                                                        logging.info(f"[Knowledge] Triggering knowledge save for child {eid} → {parent_dir}")
+                                                                        asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                                    else:
+                                                                        logging.warning(f"[Knowledge] No workspace_dir for session {session_id}, cannot save knowledge for {eid}")
                                                     elif status_type in ["thinking", "running", "generating"]:
                                                         if event_sid == str(session_id):
                                                             logging.info(f"[OpenCode Proxy] Primary SESSION STATUS ACTIVE ({status_type}). Resetting terminal status.")
@@ -2915,6 +3027,21 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         if not post_task.done():
                             await post_task
                         
+                        # Post-stream knowledge save: discover any child sessions that
+                        # completed but whose idle events were missed or never carried parentID.
+                        # Run if we detected children via SSE, OR if the stream was long enough
+                        # that children could have been spawned and completed silently.
+                        parent_dir = _active_session_directories.get(str(session_id))
+                        if parent_dir:
+                            if _child_session_ids:
+                                logging.info(f"[Knowledge] Post-stream: checking for unsaved children of {session_id} (known: {len(_child_session_ids)})")
+                                await _discover_and_save_unsaved_children(str(session_id), parent_dir)
+                            elif active_tool_parts:
+                                # Stream had tool activity but no children detected —
+                                # children may have completed without parentID in events
+                                logging.info(f"[Knowledge] Post-stream: tools were active but no children detected via SSE, running API discovery as safety net")
+                                await _discover_and_save_unsaved_children(str(session_id), parent_dir)
+                        
                         yield b"data: {\"done\": true}\n\n"
                         
             except Exception as e:
@@ -2950,6 +3077,7 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     _pending_permissions_metadata.pop(rid, None)
                 session_tasks.pop(str(session_id), None)
                 _processed_question_ids.pop(str(session_id), None)
+                _active_session_directories.pop(str(session_id), None)
         
         return StreamingResponse(
             stream_generator(),
