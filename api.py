@@ -1786,8 +1786,9 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
 
     title = session_info.get("title") or session_info.get("name") or child_sid
 
-    # Sanitize to a safe filename
-    safe_name = re.sub(r'[^\w\s-]', '', title).strip().lower()
+    # Sanitize to a safe filename — strip agent type suffixes like "(@explore subagent)"
+    clean_title = re.sub(r'\s*\(@[^)]+\)\s*$', '', title).strip()
+    safe_name = re.sub(r'[^\w\s-]', '', clean_title).strip().lower()
     safe_name = re.sub(r'[-\s]+', '-', safe_name)[:80]
 
     # 2. Fetch messages
@@ -1873,6 +1874,12 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
         
         payload = {
             "messages": [
+                {"role": "system", "content": (
+                    "You are a knowledge extraction assistant. Your job is to take raw transcripts "
+                    "of subagent execution sessions and produce concise, well-organized markdown documents "
+                    "that capture the key findings, solutions, code snippets, and terminal commands. "
+                    "Output ONLY the markdown document — no preamble, no explanation."
+                )},
                 {"role": "user", "content": prompt}
             ],
             "model": model,
