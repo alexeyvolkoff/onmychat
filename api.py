@@ -2852,7 +2852,9 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                             continue
                                         
                                         # DYNAMIC REGISTRY: If this session claims our target as parent, authorize it
-                                        parent_sid = props.get("parentID") or info.get("parentID")
+                                        parent_sid = (props.get("parentID") or props.get("parent_id") or props.get("parentId") or
+                                                      info.get("parentID") or info.get("parent_id") or info.get("parentId") or
+                                                      event_data.get("parentID") or event_data.get("parent_id") or event_data.get("parentId"))
                                         if parent_sid and str(parent_sid) in authorized_sids:
                                             if event_sid not in authorized_sids:
                                                 logging.info(f"[OpenCode Proxy] AUTHORIZING SUBAGENT session: {event_sid} (Parent: {parent_sid})")
@@ -2860,6 +2862,28 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                 _child_session_ids.add(event_sid)
                                                 # Notify the frontend about the new child session
                                                 yield f"data: {json.dumps({'action': 'child_session_created', 'childId': event_sid, 'parentId': str(parent_sid)})}\n\n".encode('utf-8')
+
+                                        # PRE-AUTHORIZATION: Handle child session idle events even if the child
+                                        # was never registered via parentID. This catches the case where the child's
+                                        # idle event arrives without parentID, so it was never authorized.
+                                        if event_sid not in authorized_sids and event_sid != str(session_id) and event_sid != "None" and event_sid:
+                                            logging.debug(f"[Knowledge] Event from unknown session: type={event_type} sid={event_sid} parentID={parent_sid}")
+                                            if event_type == "session.idle" or (event_type == "session.status" and isinstance(props.get("status"), dict) and props["status"].get("type") == "idle"):
+                                                eid = str(event_sid)
+                                                if eid not in _saved_knowledge_ids:
+                                                    logging.info(f"[Knowledge] Idle event for unknown session {eid}, checking via API if it's a child of {session_id}")
+                                                    is_child = await _is_child_session(eid, str(session_id))
+                                                    if is_child:
+                                                        authorized_sids.add(event_sid)
+                                                        _child_session_ids.add(eid)
+                                                        _saved_knowledge_ids.add(eid)
+                                                        _prune_saved_knowledge_ids()
+                                                        parent_dir = _active_session_directories.get(str(session_id))
+                                                        if parent_dir:
+                                                            logging.info(f"[Knowledge] Pre-auth: {eid} confirmed child, triggering save → {parent_dir}")
+                                                            asyncio.create_task(_save_child_knowledge(eid, parent_dir))
+                                                        else:
+                                                            logging.warning(f"[Knowledge] Pre-auth: no workspace_dir for session {session_id}")
 
                                         # Only process events for authorized sessions (Primary + Subagents)
                                         logging.debug(f"[OpenCode Proxy] Event: {event_type} | event_sid: {event_sid} | authorized: {event_sid in authorized_sids} | authorized_sids: {list(authorized_sids)}")
@@ -2993,10 +3017,10 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                         status = state_obj.get("status")
                                                         if status in ["success", "error", "finished"]:
                                                             if part_id in active_tool_parts:
-                                                                logging.info(f"[OpenCode Proxy] Tool part {part_id} finished with status: {status}")
+                                                                logging.debug(f"[OpenCode Proxy] Tool part {part_id} finished with status: {status}")
                                                                 active_tool_parts.remove(part_id)
                                                         else:
-                                                            logging.info(f"[OpenCode Proxy] Tool part {part_id} is active (status: {status})")
+                                                            logging.debug(f"[OpenCode Proxy] Tool part {part_id} is active (status: {status})")
                                                             active_tool_parts.add(part_id)
                                                             if event_sid == str(session_id):
                                                                 terminal_event_received = False
