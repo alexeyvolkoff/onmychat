@@ -1802,26 +1802,27 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
     messages = msgs_data if isinstance(msgs_data, list) else msgs_data.get("messages", [])
     logging.info(f"[Knowledge] Fetched {len(messages)} messages for child {child_sid}")
 
-    # OpenCode messages use "parts" format: { "role": "assistant", "parts": [{"type":"text","text":"..."}] }
-    # Also handle legacy "text"/"content" fields for compatibility.
+    # OpenCode message format:
+    # { "info": {"role": "assistant", ...}, "parts": [{"type":"text","text":"..."}] }
+    def _get_role(msg):
+        return msg.get("role") or (msg.get("info", {}) or {}).get("role", "")
+
+    # OpenCode messages use "parts" array: [{type:"text", text:"..."}]
     def _extract_text(msg):
-        """Extract text content from a message in any known format."""
-        # 1. Try "parts" array (OpenCode native format)
         parts = msg.get("parts")
         if isinstance(parts, list) and parts:
             texts = []
             for p in parts:
-                if isinstance(p, dict) and p.get("type") in ("text", "tool-result", None):
+                if isinstance(p, dict) and p.get("type") in ("text", "tool-result", "reasoning", None):
                     t = p.get("text", "")
                     if t:
                         texts.append(t)
             if texts:
                 return "\n".join(texts)
-        # 2. Try direct "text" field
+        # Fallback: direct text/content fields
         t = msg.get("text", "")
         if t:
             return t if isinstance(t, str) else str(t)
-        # 3. Try "content" field (may be string or list)
         c = msg.get("content", "")
         if isinstance(c, str) and c:
             return c
@@ -1837,7 +1838,7 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
 
     # Don't save if there's no meaningful content
     has_content = any(
-        msg.get("role") in ("assistant", "user") and _extract_text(msg).strip()
+        _get_role(msg) in ("assistant", "user") and _extract_text(msg).strip()
         for msg in messages
     )
     if not has_content:
@@ -1847,7 +1848,7 @@ async def _save_child_knowledge(child_sid: str, workspace_dir: str):
     # 3. Build the knowledge markdown
     raw_content = ""
     for msg in messages:
-        role = msg.get("role", "")
+        role = _get_role(msg)
         if role in ("assistant", "user"):
             content = _extract_text(msg)
             if content.strip():
