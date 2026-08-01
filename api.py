@@ -1181,6 +1181,11 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             # Check primary intent or prefixed intent (e.g. import:url)
             check_intent = intent.split(":")[0] if ":" in intent else intent
 
+            if ctx.settings.get("content_mode", "work") == "fun" and check_intent == "explain":
+                logging.info(f"Fun mode: intent 'explain' downgraded to 'chat' (no DB search, RP preserved).")
+                intent = "chat"
+                check_intent = "chat"
+
             if ctx.settings.get("content_mode", "work") == "fun" and check_intent in ["tools", "import", "search", "explain", "think", "doc"]:
                  yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in fun mode.', 'role': 'assistant', 'done': True})}\n\n"
                  return
