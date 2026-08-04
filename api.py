@@ -94,6 +94,12 @@ _nonce_to_msg_id: dict[str, str] = {}
 _recently_answered: dict[str, tuple] = {}
 QUESTION_ANSWER_DEDUP_WINDOW = 60  # seconds
 
+# The question tool must only ever ask ONE question at a time. When the model
+# streams a tool call for the "question" tool, its arguments are rewritten so
+# that only the first question survives. This guarantees a complete reply for
+# every question opencode ever sees (no "Unanswered" placeholders).
+SINGLE_QUESTION_TOOL_NAMES = ("question", "question.v2")
+
 
 
 async def get_proxy_session():
@@ -2222,6 +2228,22 @@ async def proxy_opencode_question_reply(request: Request, request_id: str):
             import urllib.parse
             q_url += "?" + urllib.parse.urlencode(url_params)
             
+        # Defensive: the model may have asked N questions, but the frontend only
+        # ever sees the first one (we forward a single question). If opencode
+        # expects answers for all N, pad the missing ones so the reply is never
+        # interpreted as a rejected/short answer.
+        q_meta = _pending_questions_metadata.get(str(request_id))
+        question_count = (q_meta or {}).get("question_count")
+        if question_count and question_count > 1:
+            answers = payload.get("answers", [])
+            if isinstance(answers, list) and len(answers) < question_count:
+                missing = question_count - len(answers)
+                padded = list(answers) + [["Unanswered"]] * missing
+                payload["answers"] = padded
+                logging.info(
+                    f"[OpenCode Proxy] Padded question reply {request_id}: {len(answers)} -> {question_count} answers"
+                )
+        
         session = await get_proxy_session()
         async with session.post(q_url, json=payload) as q_resp:
             if q_resp.status not in [200, 201, 204]:
@@ -2477,7 +2499,17 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                     _recently_answered.pop(stale, None)
             logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
             target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
-            opencode_payload = {"answers": [[answer]]}
+            # The frontend only ever saw the first question (we forward one), but
+            # opencode may expect answers for all N it asked. Pad defensively so
+            # the reply is not treated as an incomplete/aborted answer.
+            q_meta = _pending_questions_metadata.get(str(rid), {})
+            question_count = q_meta.get("question_count") or 1
+            if question_count > 1:
+                answers_list = [answer] + ["Unanswered"] * (question_count - 1)
+                logging.info(f"[OpenCode Proxy] Padded direct question reply {rid}: 1 -> {question_count} answers")
+            else:
+                answers_list = [answer]
+            opencode_payload = {"answers": [[a] for a in answers_list]}
         else:
             # Fix C (idempotent question answer): if this request carries the exact
             # same answer text that we just sent to a pending question (within the
@@ -2522,6 +2554,20 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                         
                     if system_instructions:
                         opencode_payload["system"] = "\n\n".join(system_instructions)
+                
+                # Unconditional single-question rule: never batch questions into a
+                # single question tool call. Reinforced at the transport layer by
+                # argument rewriting, this prompt guidance reduces how often the
+                # model produces multi-question calls in the first place.
+                single_question_rule = (
+                    "When you need to ask the user a question using the question "
+                    "tool, always ask EXACTLY ONE question at a time. Never pass "
+                    "more than one question in a single question tool call."
+                )
+                if isinstance(opencode_payload.get("system"), str) and opencode_payload["system"]:
+                    opencode_payload["system"] += "\n\n" + single_question_rule
+                else:
+                    opencode_payload["system"] = single_question_rule
                         
                 # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
                 code_model = core_service.CODE_MODEL
@@ -2861,7 +2907,8 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                                                              }
                                                              _pending_questions_metadata[str(req_id)] = {
                                                                  "session_id": str(session_id),
-                                                                 "directory": resolved_dir
+                                                                 "directory": resolved_dir,
+                                                                 "question_count": len(props.get("questions", []) or [])
                                                              }
                                                              logging.info(f"[OpenCode Proxy] Question stored for session {session_id}: id={req_id}, directory={resolved_dir}")
                                                              questions_arr = props.get("questions", [])
@@ -3731,6 +3778,54 @@ async def openai_chat_completions(request: Request):
             accumulated_reasoning = ""
             has_tool_calls = False
             last_chunk_data = None
+            # Tool-call buffers for the question tool. We strip its argument
+            # fragments from the forwarded stream and, once the tool call is
+            # complete, re-emit a single tool_call chunk containing only the
+            # first question. This is the hard guarantee that the model can
+            # never drive a multi-question reply through the pipeline.
+            question_tool_buffers: dict = {}  # tool-call index -> {"name","id","args"}
+
+            def _finalize_question_tool_buffers():
+                nonlocal question_tool_buffers
+                out = []
+                for idx in sorted(question_tool_buffers.keys()):
+                    entry = question_tool_buffers[idx]
+                    args_out = entry["args"]
+                    try:
+                        parsed = json.loads(entry["args"])
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict) and isinstance(parsed.get("questions"), list):
+                        qs = parsed["questions"]
+                        if len(qs) > 1:
+                            parsed["questions"] = [qs[0]]
+                            args_out = json.dumps(parsed, ensure_ascii=False)
+                            logging.info(
+                                f"[OpenAI Proxy] Rewrote {entry['name']} tool call: {len(qs)} questions -> 1"
+                            )
+                    synth = {
+                        "id": last_chunk_data.get("id") if last_chunk_data else "chatcmpl-q",
+                        "object": "chat.completion.chunk",
+                        "created": last_chunk_data.get("created") if last_chunk_data else int(datetime.datetime.now().timestamp()),
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": idx,
+                                    "id": entry["id"],
+                                    "function": {
+                                        "name": entry["name"],
+                                        "arguments": args_out,
+                                    },
+                                }]
+                            },
+                            "finish_reason": None,
+                        }]
+                    }
+                    out.append(f"data: {json.dumps(synth)}\n\n".encode("utf-8"))
+                question_tool_buffers = {}
+                return out
 
             try:
                 async for line in resp.content:
@@ -3740,6 +3835,9 @@ async def openai_chat_completions(request: Request):
                     if line_str.startswith("data:"):
                         raw_data = line_str[5:].strip()
                         if raw_data == "[DONE]":
+                            if question_tool_buffers:
+                                for chunk_bytes in _finalize_question_tool_buffers():
+                                    yield chunk_bytes
                             if accumulated_reasoning and not accumulated_content and not has_tool_calls:
                                 logging.info("[OpenAI Proxy] Injecting spacer chunk to prevent validation error for empty content")
                                 spacer_data = {
@@ -3771,11 +3869,43 @@ async def openai_chat_completions(request: Request):
                                     
                                 if delta.get("tool_calls"):
                                     has_tool_calls = True
+                                    # Strip question-tool argument fragments and
+                                    # buffer them for single-question rewriting.
+                                    filtered_calls = []
+                                    for tc in delta["tool_calls"]:
+                                        idx = tc.get("index", 0)
+                                        fn = tc.get("function", {}) or {}
+                                        name = fn.get("name")
+                                        args = fn.get("arguments")
+                                        call_id = tc.get("id")
+                                        if name and name in SINGLE_QUESTION_TOOL_NAMES:
+                                            entry = question_tool_buffers.setdefault(
+                                                idx, {"name": name, "id": call_id, "args": ""}
+                                            )
+                                            if args:
+                                                entry["args"] += args
+                                            continue
+                                        if idx in question_tool_buffers:
+                                            if args:
+                                                question_tool_buffers[idx]["args"] += args
+                                            continue
+                                        filtered_calls.append(tc)
+                                    if filtered_calls:
+                                        delta["tool_calls"] = filtered_calls
+                                    else:
+                                        delta.pop("tool_calls", None)
                                     
                                 reasoning_val = delta.pop("reasoning", None) or delta.pop("thinking", None)
                                 if reasoning_val is not None:
                                     delta["reasoning_content"] = reasoning_val
                                     accumulated_reasoning += reasoning_val
+
+                            # If the LLM signals the end of tool calls, flush the
+                            # buffered (rewritten) question tool call before the
+                            # finish chunk so opencode sees a complete argument.
+                            if question_tool_buffers and any(c.get("finish_reason") for c in choices):
+                                for chunk_bytes in _finalize_question_tool_buffers():
+                                    yield chunk_bytes
 
                             yield f"data: {json.dumps(data)}\n\n".encode("utf-8")
 
@@ -3811,6 +3941,24 @@ async def openai_chat_completions(request: Request):
                         if reasoning_val and not msg.get("content") and not msg.get("tool_calls"):
                             msg["content"] = " "
                             logging.info("[OpenAI Proxy] Injected spacer into message to prevent empty content error")
+                            
+                        # Rewrite question tool calls to keep only the first question.
+                        tool_calls = msg.get("tool_calls") or []
+                        for tc in tool_calls:
+                            fn = tc.get("function", {}) or {}
+                            name = fn.get("name")
+                            if name and name in SINGLE_QUESTION_TOOL_NAMES:
+                                try:
+                                    parsed = json.loads(fn.get("arguments") or "{}")
+                                except Exception:
+                                    parsed = None
+                                if isinstance(parsed, dict) and isinstance(parsed.get("questions"), list) and len(parsed["questions"]) > 1:
+                                    q_count = len(parsed["questions"])
+                                    parsed["questions"] = [parsed["questions"][0]]
+                                    fn["arguments"] = json.dumps(parsed, ensure_ascii=False)
+                                    logging.info(
+                                        f"[OpenAI Proxy] Rewrote {name} tool call (non-streaming): {q_count} questions -> 1"
+                                    )
                             
                     return JSONResponse(status_code=200, content=data)
                 else:
