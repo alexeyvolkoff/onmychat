@@ -39,6 +39,7 @@ for logger_name in [None, "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi
 import hashlib
 import email.utils
 import datetime
+import time
 import requests
 import aiohttp
 import asyncio
@@ -84,6 +85,14 @@ def _prune_saved_knowledge_ids():
 
 # Map of frontend nonces (mr...) to backend OpenCode message IDs (msg_...)
 _nonce_to_msg_id: dict[str, str] = {}
+
+# Track the last question answer sent per session: { session_id: (timestamp, answer_lower) }.
+# Used to detect duplicate question answers (double-send, frontend retry, or an
+# answer arriving after the pending entry was already consumed) so they are NOT
+# forwarded as a new user message — that would start a second runLoop on top of
+# the already resumed generation (double generation).
+_recently_answered: dict[str, tuple] = {}
+QUESTION_ANSWER_DEDUP_WINDOW = 60  # seconds
 
 
 
@@ -694,6 +703,59 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _teardown_session_stream(session_id: str) -> None:
+    """
+    Synchronously cancel and await teardown of the active proxy stream for a session.
+
+    Guarantees that at most one SSE connection and one POST task exist per session
+    at any point in time. Awaiting completion is essential — otherwise the old
+    stream could keep forwarding the same OpenCode events while the new stream
+    starts, which the frontend renders as two parallel generations.
+    """
+    sid = str(session_id)
+
+    post_task = active_tasks.pop(sid, None)
+    if post_task and not post_task.done():
+        post_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(post_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    info = session_tasks.pop(sid, None)
+    if info:
+        read_task = info.get("read_task")
+        if read_task and not read_task.done():
+            read_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(read_task), timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        sse_session = info.get("sse_session")
+        if sse_session and not sse_session.closed:
+            try:
+                await sse_session.close()
+            except Exception:
+                pass
+
+
+async def _abort_opencode_run(session_id: str, directory: str | None = None) -> None:
+    """Best-effort abort of the currently running OpenCode generation for a session."""
+    try:
+        async with aiohttp.ClientSession() as cleanup_session:
+            abort_url = f"{core_service.CODE_BASE_URL}/session/{session_id}/abort"
+            if directory:
+                import urllib.parse
+                resolved_dir = resolve_session_directory(directory)
+                abort_url += f"?directory={urllib.parse.quote(resolved_dir)}"
+            try:
+                await cleanup_session.post(abort_url, timeout=aiohttp.ClientTimeout(total=2))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 async def _force_kill_session(session_id: str, directory: str | None = None) -> str:
     """
     Forcefully kills all tasks and connections for a session.
@@ -705,38 +767,14 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
     if not directory:
         directory = _active_session_directories.get(sid)
         
-    # 1. Cancel the POST task
-    if sid in active_tasks:
+    # 1. Cancel the POST task and SSE read task synchronously.
+    # Per-session teardown only — this must NOT touch the global proxy session,
+    # otherwise one session's kill would break every other session's connections.
+    if sid in active_tasks or sid in session_tasks:
         had_work = True
-        task = active_tasks.pop(sid, None)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+    await _teardown_session_stream(sid)
     
-    # 2. Cancel the SSE read task and close its session
-    if sid in session_tasks:
-        had_work = True
-        info = session_tasks.pop(sid, None)
-        if info:
-            read_task = info.get("read_task")
-            if read_task and not read_task.done():
-                read_task.cancel()
-                try:
-                    await asyncio.wait_for(read_task, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-            # Force-close the SSE session to break any stuck connection
-            sse_session = info.get("sse_session")
-            if sse_session and not sse_session.closed:
-                try:
-                    await sse_session.close()
-                except Exception:
-                    pass
-    
-    # 4. Clean up pending questions & session directories
+    # 2. Clean up pending questions & session directories
     pq = _pending_questions.pop(sid, None)
     if pq and pq.get("requestID"):
         _pending_questions_metadata.pop(str(pq["requestID"]), None)
@@ -751,31 +789,11 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
         _pending_permissions_metadata.pop(req_id, None)
     _active_session_directories.pop(sid, None)
     _processed_question_ids.pop(sid, None)
+    _recently_answered.pop(sid, None)
     
-    # 4. Reset the global proxy session to break all lingering HTTP connections
-    global _proxy_session
-    if _proxy_session and not _proxy_session.closed:
-        try:
-            await _proxy_session.close()
-        except Exception:
-            pass
-        _proxy_session = None  # Will be recreated on next get_proxy_session() call
-        logging.info(f"[OpenCode Proxy] Global proxy session forcefully reset for session {sid}")
-    
-    # 5. Try to abort on the OpenCode side too
-    try:
-        async with aiohttp.ClientSession() as cleanup_session:
-            abort_url = f"{core_service.CODE_BASE_URL}/session/{sid}/abort"
-            if directory:
-                import urllib.parse
-                resolved_dir = resolve_session_directory(directory)
-                abort_url += f"?directory={urllib.parse.quote(resolved_dir)}"
-            try:
-                await cleanup_session.post(abort_url, timeout=aiohttp.ClientTimeout(total=2))
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # 3. Try to abort on the OpenCode side too (cancels the runLoop and any
+    #    child/subagent background jobs spawned under this session).
+    await _abort_opencode_run(sid, directory)
     
     return "killed" if had_work else "no_active_task"
 
@@ -784,7 +802,7 @@ async def _force_kill_session(session_id: str, directory: str | None = None) -> 
 async def cancel_session_task(session_id: str, payload: SessionKillInput | None = None):
     """
     Cancels an active OpenCode session task.
-    Also resets the global proxy session to break any stuck connections.
+    Per-session teardown: cancels the POST/SSE tasks for this session only.
     """
     directory = payload.directory if payload else None
     return {"status": await _force_kill_session(session_id, directory=directory)}
@@ -794,8 +812,9 @@ async def cancel_session_task(session_id: str, payload: SessionKillInput | None 
 async def kill_session_task(session_id: str, payload: SessionKillInput | None = None):
     """
     Forcefully kills an OpenCode session.
-    More aggressive than /cancel: cancels all tasks, closes SSE connections,
-    resets the global proxy session, and attempts OpenCode-side cleanup.
+    Cancels all tasks and closes SSE connections for THIS session, cleans up its
+    pending state, and aborts the run on the OpenCode side (including subagent
+    background jobs). Never touches the global proxy session.
     """
     directory = payload.directory if payload else None
     status = await _force_kill_session(session_id, directory=directory)
@@ -2442,60 +2461,80 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
         # PENDING QUESTION CHECK: If there is a question awaiting an answer for
         # this session, we reply to the question directly and then start the SSE stream.
         is_question_reply = False
+        is_duplicate_reply = False
         pending_entry = _pending_questions.pop(str(session_id), None)
         
         if pending_entry:
             is_question_reply = True
             answer = prompt_text.strip().lower()
             rid = pending_entry["requestID"]
+            _recently_answered[str(session_id)] = (time.time(), answer)
+            # Keep the dedup map bounded (values are replaced per-session)
+            if len(_recently_answered) > 200:
+                now = time.time()
+                for stale in [k for k, (ts, _a) in _recently_answered.items()
+                              if now - ts > QUESTION_ANSWER_DEDUP_WINDOW]:
+                    _recently_answered.pop(stale, None)
             logging.info(f"[OpenCode Proxy] Replying directly to pending question {rid} for session {session_id} with answer: {answer}")
             target_url = f"{core_service.CODE_BASE_URL}/question/{rid}/reply"
             opencode_payload = {"answers": [[answer]]}
         else:
-            opencode_payload = {
-                "parts": [
-                    {
-                        "type": "text",
-                        "text": prompt_text
-                    }
-                ]
-            }
-            if agent:
-                opencode_payload["agent"] = agent
-            
-            # Inject custom assistant personality & settings directly into OpenCode's system parameters
-            settings = omd_payload.get("settings", {})
-            if settings:
-                system_instructions = []
-                
-                # Map standard OMD settings into OpenCode context guidelines
-                assistant_name = settings.get("assistant_name", "").strip()
-                if assistant_name:
-                    system_instructions.append(f"Your name is {assistant_name}.")
-                    
-                user_name = settings.get("name", "").strip()
-                if user_name:
-                    system_instructions.append(f"The user's name is {user_name}.")
-                    
-                personality = settings.get("system_prompt", "").strip()
-                if personality:
-                    system_instructions.append(f"Personality & Instructions:\n{personality}")
-                    
-                if system_instructions:
-                    opencode_payload["system"] = "\n\n".join(system_instructions)
-                    
-            # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
-            code_model = core_service.CODE_MODEL
-            if "/" in code_model:
-                provider_id, model_id = code_model.split("/", 1)
+            # Fix C (idempotent question answer): if this request carries the exact
+            # same answer text that we just sent to a pending question (within the
+            # dedup window), it is a duplicate — double-send, frontend retry, or a
+            # replay after the pending entry was consumed. Do NOT forward it as a
+            # new user message, which would start a second runLoop.
+            recent = _recently_answered.get(str(session_id))
+            if (recent is not None
+                    and (time.time() - recent[0]) < QUESTION_ANSWER_DEDUP_WINDOW
+                    and prompt_text.strip().lower() == recent[1]):
+                is_duplicate_reply = True
+                logging.info(f"[OpenCode Proxy] Duplicate question answer for session {session_id}, not forwarding as new message")
             else:
-                provider_id = "ollama"
-                model_id = code_model
+                opencode_payload = {
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": prompt_text
+                        }
+                    ]
+                }
+                if agent:
+                    opencode_payload["agent"] = agent
+                
+                # Inject custom assistant personality & settings directly into OpenCode's system parameters
+                settings = omd_payload.get("settings", {})
+                if settings:
+                    system_instructions = []
+                    
+                    # Map standard OMD settings into OpenCode context guidelines
+                    assistant_name = settings.get("assistant_name", "").strip()
+                    if assistant_name:
+                        system_instructions.append(f"Your name is {assistant_name}.")
+                        
+                    user_name = settings.get("name", "").strip()
+                    if user_name:
+                        system_instructions.append(f"The user's name is {user_name}.")
+                        
+                    personality = settings.get("system_prompt", "").strip()
+                    if personality:
+                        system_instructions.append(f"Personality & Instructions:\n{personality}")
+                        
+                    if system_instructions:
+                        opencode_payload["system"] = "\n\n".join(system_instructions)
+                        
+                # Bind the global LLM model strictly formatted per OpenCode JSON schema requirements
+                code_model = core_service.CODE_MODEL
+                if "/" in code_model:
+                    provider_id, model_id = code_model.split("/", 1)
+                else:
+                    provider_id = "ollama"
+                    model_id = code_model
 
-            opencode_payload["model"] = {
-                "providerID": provider_id,
-                "modelID": model_id
-            }
+                opencode_payload["model"] = {
+                    "providerID": provider_id,
+                    "modelID": model_id
+                }
         
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -2516,6 +2555,15 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
             _active_session_directories[str(session_id)] = resolved_dir
         
         async def stream_generator():
+            if is_duplicate_reply:
+                # Fix C: duplicate question answer. The real answer was already
+                # sent and the resumed generation is being streamed by the previous
+                # request. Do nothing here — just terminate this request cleanly
+                # without touching the ongoing stream or OpenCode.
+                logging.info(f"[OpenCode Proxy] Duplicate reply stream: completing immediately for session {session_id}")
+                yield b"data: {\"done\": true}\n\n"
+                return
+
             if prompt_text.strip().startswith("/reset"):
                 subprocess.run(["pkill", "-f", "opencode web"], capture_output=True)
                 msg = {
@@ -2536,32 +2584,22 @@ async def proxy_opencode_prompt(request: Request, session_id: str):
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n".encode('utf-8')
                 await asyncio.sleep(0.05) # Force flush
 
-                # 0.5. Cancel any existing active tasks for this session before starting a new stream.
-                # This prevents duplicate SSE streams and state corruption that can cause infinite loops
-                # (e.g. when a user answers a question and the old stream keeps processing events).
-                existing_post_task = active_tasks.pop(str(session_id), None)
-                if existing_post_task and not existing_post_task.done():
-                    existing_post_task.cancel()
-                    try:
-                        await asyncio.wait_for(existing_post_task, timeout=2.0)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
+                # 0.5. Synchronously tear down any existing stream for this session
+                # before starting a new one. This guarantees a single SSE connection
+                # and a single POST task per session, preventing duplicate streams
+                # and state corruption (e.g. when a user answers a question and the
+                # old stream keeps processing the same events).
+                had_active = (str(session_id) in active_tasks or str(session_id) in session_tasks)
 
-                existing_session = session_tasks.pop(str(session_id), None)
-                if existing_session:
-                    existing_read_task = existing_session.get("read_task")
-                    if existing_read_task and not existing_read_task.done():
-                        existing_read_task.cancel()
-                        try:
-                            await asyncio.wait_for(existing_read_task, timeout=1.0)
-                        except (asyncio.CancelledError, asyncio.TimeoutError):
-                            pass
-                    existing_sse_session = existing_session.get("sse_session")
-                    if existing_sse_session and not existing_sse_session.closed:
-                        try:
-                            await existing_sse_session.close()
-                        except Exception:
-                            pass
+                if had_active and not is_question_reply:
+                    # A new user message arrived while the agent was still generating
+                    # (no pending question). Abort the running generation on the
+                    # OpenCode side first so the new message is handled by a fresh
+                    # runLoop instead of being queued behind the current one.
+                    logging.info(f"[OpenCode Proxy] Aborting active run for session {session_id} before new message")
+                    await _abort_opencode_run(str(session_id), resolved_dir)
+
+                await _teardown_session_stream(str(session_id))
 
                 # 1. Connect to OpenCode's Event Stream FIRST to avoid dropping events
                 event_url = f"{core_service.CODE_BASE_URL}/event?filter_sessionID={session_id}"
