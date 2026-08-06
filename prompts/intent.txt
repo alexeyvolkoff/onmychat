@@ -13,7 +13,7 @@ RULES:
 1. chat: Default for all conversation, roleplay, dialogue, or general requests. 
    - *CRITICAL*: Includes narrative descriptions like "I saw you at the mall", "We are walking", or "You look nice".
 2. show: User explicitly INSTRUCTS or COMMANDS you (assistant) to change your appearance, to show your current appearance, or to take an action in a role play. The assistant/character MUST be the subject of the image.
-   - *CRITICAL*: Must involve the assistant's body, clothing, pose, or expression (e.g., "Put on this dress", "Show me your outfit", "Turn around", "Show how you dance").
+   - *CRITICAL*: Must involve explisit request for showing the assistant's body, or changing the assistant's clothing, pose, or expression (e.g., "Put on this dress", "Show me your outfit", "Turn around", "Show how you dance"). Simple mentions of body parts or outfit (without explicit request to show them) are NOT 'show'. They are 'chat'.
    - *CRITICAL*: If the request is about a SCENE, LANDSCAPE, or OBJECT (not the assistant's body), it is NOT 'show' even if it contains the word "show" or "покажи".
    - *CRITICAL*: Narrative statements, past-tense descriptions, or compliments are NOT 'show'. They are 'chat'.
 3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT directly involving the assistant's body/appearance.
