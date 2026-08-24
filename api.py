@@ -4060,3 +4060,27 @@ async def qa_match(data: dict):
     top_k = data.get("top_k", 1)
     include_score = data.get("include_score", True)
     return memory_index.qa_match_query(question, min_score, top_k, include_score)
+
+
+# --- /ai/* aliases for the new svar frontend (P2P HTTP tunnel) ---
+# Thin wrappers over the existing /code/* OpenCode proxy handlers so the new
+# chat applet can answer questions/permissions without using legacy paths.
+
+@app.post("/ai/question/{request_id}/reply")
+async def ai_question_reply(request: Request, request_id: str):
+    return await proxy_opencode_question_reply(request, request_id)
+
+
+@app.post("/ai/question/{request_id}/reject")
+async def ai_question_reject(request: Request, request_id: str):
+    return await proxy_opencode_question_reject(request, request_id)
+
+
+@app.post("/ai/permission/{permission_id}/reply")
+async def ai_permission_reply(request: Request, permission_id: str):
+    return await proxy_opencode_permission_reply(request, permission_id)
+
+
+@app.post("/ai/permission/{permission_id}/reject")
+async def ai_permission_reject(request: Request, permission_id: str):
+    return await proxy_opencode_permission_reject(request, permission_id)
