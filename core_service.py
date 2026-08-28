@@ -2631,6 +2631,10 @@ async def _perform_prompt_gen(ctx: UserContext,
         if facts_text:
             rag_system_prompt += facts_text
 
+        is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
+        if is_gemma4:
+            rag_system_prompt = f"<|nothink|>\n{rag_system_prompt}"
+
         prep_messages = [
             {"role": "system", "content": rag_system_prompt},
             {"role": "user", "content": message}
@@ -2697,6 +2701,19 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     if fun_mode:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, fun mode"
+
+    # === Gemma 4 Thinking Mode ===
+    is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
+    thinking_intents = ["explain", "think"]
+
+    if is_gemma4:
+        # Включаем режим размышлений только для think и explain в work режиме (в fun режиме всегда выключено)
+        if not fun_mode and intent in thinking_intents:
+            logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent} (mode: {mode})")
+            system_prompt = f"<|think|>\n{system_prompt}"
+        else:
+            logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent} (mode: {mode})")
+            system_prompt = f"<|nothink|>\n{system_prompt}"
 
     # === ОСНОВНОЙ ЗАПРОС ===
     # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
