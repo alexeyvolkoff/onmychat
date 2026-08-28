@@ -2705,15 +2705,19 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === Gemma 4 Thinking Mode ===
     is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
     thinking_intents = ["explain", "think"]
+    allow_thinking = (not fun_mode) and (intent in thinking_intents)
 
     if is_gemma4:
         # Включаем режим размышлений только для think и explain в work режиме (в fun режиме всегда выключено)
-        if not fun_mode and intent in thinking_intents:
+        if allow_thinking:
             logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent} (mode: {mode})")
             system_prompt = f"<|think|>\n{system_prompt}"
         else:
             logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent} (mode: {mode})")
             system_prompt = f"<|nothink|>\n{system_prompt}"
+
+    if not allow_thinking:
+        instruction_prompt += "\nCRITICAL: Respond directly to the user. Do NOT output any internal thinking process, reasoning steps, or analysis preamble."
 
     # === ОСНОВНОЙ ЗАПРОС ===
     # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
@@ -2770,7 +2774,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         llm_response = data["message"]["content"]
         llm_response = clean_response(llm_response)
         llm_think_response = None
-        if data["message"].get("thinking"):
+        if data["message"].get("thinking") and allow_thinking:
             llm_think_response = data["message"]["thinking"]
 
         # result object
@@ -2780,7 +2784,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             response["sources"] = sources
         if strict_fact:    
             response["facts"] = strict_fact
-        if llm_think_response:    
+        if llm_think_response and allow_thinking:    
             response["thinking"] = llm_think_response
         # History entries are now managed via frontend OrbitDB sync.
         # We still return the assistant response for the client to process.
@@ -2803,7 +2807,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                 history_entry["facts"] = strict_fact
             if sources:
                 history_entry["sources"] = sources
-            if llm_think_response:    
+            if llm_think_response and allow_thinking:    
                 history_entry["thinking"] = llm_think_response
 
             history.append(history_entry)
@@ -2927,18 +2931,24 @@ async def _perform_prompt_gen(ctx: UserContext,
                         if ev["type"] == "content":
                             accumulated_response += ev["text"]
                             yield {"delta": ev["text"], "done": False}
-                        else:
+                        elif allow_thinking:
                             accumulated_thinking += ev["text"]
                             yield {"thought_delta": ev["text"], "done": False}
+                        else:
+                            accumulated_thinking += ev["text"]
                             
                     # финал: собираем response на основе всего текста
+                    final_content = accumulated_response
+                    if not final_content.strip() and accumulated_thinking and not allow_thinking:
+                        # Fallback if model put everything in thought tag
+                        final_content = accumulated_thinking
                     full_data = {
                         "message": {
                             "role": "assistant",
-                            "content": accumulated_response
+                            "content": final_content
                         }
                     }
-                    if accumulated_thinking:
+                    if accumulated_thinking and allow_thinking:
                         full_data["message"]["thinking"] = accumulated_thinking
                     response = await process_response(full_data)
                     response["done"] = True
@@ -2948,7 +2958,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                     if data["message"].get("thinking"):
                         delta = data["message"]["thinking"]
                         accumulated_thinking += delta
-                        yield {"thought_delta": delta, "done": False}
+                        if allow_thinking:
+                            yield {"thought_delta": delta, "done": False}
                         continue
 
                     delta = data["message"].get("content", "")
@@ -2967,9 +2978,11 @@ async def _perform_prompt_gen(ctx: UserContext,
                                  logging.warning("Hallucinated Tool block encountered in stream, suppressing remainder.")
                                  suppress_stream = True
                                  break
-                        else:
+                        elif allow_thinking:
                             accumulated_thinking += ev["text"]
                             yield {"thought_delta": ev["text"], "done": False}
+                        else:
+                            accumulated_thinking += ev["text"]
                     
                     if suppress_stream:
                         # Send done so the client doesn't hang
