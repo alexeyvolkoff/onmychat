@@ -2514,6 +2514,12 @@ async def llm_request_stream(payload: dict, headers: dict = None):
                         continue
                     try:
                         data = json.loads(line.decode("utf-8"))
+                        if data.get("error") and "does not support thinking" in str(data.get("error")) and payload.get("think") is not None:
+                            logging.warning(f"Ollama returned thinking error ({data['error']}), retrying without 'think' parameter...")
+                            retry_payload = {k: v for k, v in payload.items() if k != "think"}
+                            async for retry_item in llm_request_stream(retry_payload, headers=headers):
+                                yield retry_item
+                            return
                         yield data
                     except Exception as e:
                         logging.error(f"Stream parse error: {e}")
@@ -2532,7 +2538,12 @@ async def llm_request(payload: dict, headers: dict = None):
                 json=payload
             ) as resp:
                 if "application/json" in resp.headers.get("Content-Type", "").lower():
-                    return await resp.json()
+                    res_json = await resp.json()
+                    if isinstance(res_json, dict) and res_json.get("error") and "does not support thinking" in str(res_json.get("error")) and payload.get("think") is not None:
+                        logging.warning(f"Ollama error ({res_json['error']}), retrying without 'think'...")
+                        retry_payload = {k: v for k, v in payload.items() if k != "think"}
+                        return await llm_request(retry_payload, headers=headers)
+                    return res_json
                 else:
                     text = await resp.text()
                     logging.error(f"LLM error: Unexpected content type {resp.headers.get('Content-Type')}. Body: {text[:200]}")
@@ -2687,19 +2698,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     if fun_mode:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, fun mode"
 
-    # === Gemma 4 Thinking Mode ===
-    is_simple_chat = not chat.startswith("/code/")
-    thinking_intents = ["search", "explain", "think"]
-    is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
-
-    if is_gemma4:
-        if (is_simple_chat and intent in thinking_intents) or not is_simple_chat:
-            logging.info(f"Enabling Gemma 4 Thinking Mode for intent: {intent}")
-            # Ollama API handles the reasoning start logic automatically when 'think': True
-        else:
-            logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent}")
-
-
     # === ОСНОВНОЙ ЗАПРОС ===
     # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
     system_prompt += "\n\n" + instruction_prompt
@@ -2748,12 +2746,6 @@ async def _perform_prompt_gen(ctx: UserContext,
             "num_ctx": LLM_NUM_CTX,
         }
     }
-
-    if is_gemma4:
-        if (is_simple_chat and intent in thinking_intents) or not is_simple_chat:
-            main_payload["think"] = True
-        else:
-            main_payload["think"] = False
 
     #post-processing of response
     async def process_response(data) -> dict: 
