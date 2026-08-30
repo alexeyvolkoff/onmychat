@@ -48,6 +48,14 @@ CODE_MODEL = SETTINGS.get("CODE_MODEL", DEFAULT_MODEL)
 VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
 MCP_MODEL = DEFAULT_MODEL
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
+# Protection: max output tokens (prevents runaway generation that hangs the system)
+LLM_NUM_PREDICT = int(SETTINGS.get("LLM_NUM_PREDICT", "2048"))
+# Protection: unload model from VRAM after N seconds of idle (frees memory, prevents stuck llama-server)
+LLM_KEEP_ALIVE = int(SETTINGS.get("LLM_KEEP_ALIVE", "300"))
+# Protection: max wall-clock seconds for a streaming response before forcibly aborting
+LLM_STREAM_TIMEOUT = int(SETTINGS.get("LLM_STREAM_TIMEOUT", "180"))
+# Protection: max seconds for blocking (non-streaming) LLM call
+LLM_REQUEST_TIMEOUT = int(SETTINGS.get("LLM_REQUEST_TIMEOUT", "120"))
 TEMPERATURE = float(SETTINGS.get("TEMPERATURE", "0.85"))
 TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
 FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.0"))
@@ -2500,9 +2508,15 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
 # === Ollama запрос ===
 async def llm_request_stream(payload: dict, headers: dict = None):
+    """Stream LLM response with hard timeout protection.
+    LLM_STREAM_TIMEOUT = total wall-clock limit. Prevents ollama from hanging indefinitely.
+    """
     try:
-        # 300-second timeout for streaming (long responses from local LLM can take time)
-        timeout = aiohttp.ClientTimeout(total=300, sock_read=120)
+        timeout = aiohttp.ClientTimeout(
+            total=LLM_STREAM_TIMEOUT,
+            connect=30,
+            sock_read=60,  # max silence between chunks — abort if ollama stops responding mid-stream
+        )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"{OLLAMA_URL}/api/chat",
@@ -2523,14 +2537,19 @@ async def llm_request_stream(payload: dict, headers: dict = None):
                         yield data
                     except Exception as e:
                         logging.error(f"Stream parse error: {e}")
+    except aiohttp.ServerTimeoutError as e:
+        logging.error(f"LLM stream TIMEOUT after {LLM_STREAM_TIMEOUT}s — ollama may be stuck: {e}")
+        yield {"error": "⏱️ Response timeout. The model took too long to respond.", "done": True}
     except Exception as e:
         logging.error(f"LLM error: {e}")
 
 
 async def llm_request(payload: dict, headers: dict = None):
+    """Blocking LLM request with hard timeout protection.
+    LLM_REQUEST_TIMEOUT = total limit. Prevents ollama from freezing the event loop.
+    """
     try:
-        # 120-second safety timeout to prevent infinite client hangs if Ollama freezes
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(total=LLM_REQUEST_TIMEOUT, connect=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"{OLLAMA_URL}/api/chat",
@@ -2548,6 +2567,9 @@ async def llm_request(payload: dict, headers: dict = None):
                     text = await resp.text()
                     logging.error(f"LLM error: Unexpected content type {resp.headers.get('Content-Type')}. Body: {text[:200]}")
                     return None
+    except aiohttp.ServerTimeoutError as e:
+        logging.error(f"LLM request TIMEOUT after {LLM_REQUEST_TIMEOUT}s — ollama may be stuck: {e}")
+        return None
     except Exception as e:
         logging.error(f"LLM request exception: {e}")
         return None
@@ -2643,9 +2665,11 @@ async def _perform_prompt_gen(ctx: UserContext,
             "messages": prep_messages,
             "model": model,
             "stream": False,
+            "keep_alive": LLM_KEEP_ALIVE,
             "options": {
                "temperature": 0.1,
                "num_ctx": LLM_NUM_CTX,
+               "num_predict": LLM_NUM_PREDICT,
             }
         }
         data = await llm_request(prep_payload)
@@ -2759,12 +2783,14 @@ async def _perform_prompt_gen(ctx: UserContext,
         "messages": messages,
         "model": model,
         "stream": stream,
+        "keep_alive": LLM_KEEP_ALIVE,
         "options": {
             "temperature": TEMPERATURE,
             "top_p": TOP_P,
             "frequency_penalty": FREQUENCY_PENALTY,
             "presence_penalty": PRESENCE_PENALTY,
             "num_ctx": LLM_NUM_CTX,
+            "num_predict": LLM_NUM_PREDICT,  # hard cap on output tokens — prevents runaway generation
         }
     }
 
@@ -3136,7 +3162,8 @@ async def generate_chat_summary(history: list, model: str, previous_summary: str
         ],
         "model": model,
         "stream": False,
-        "options": {"temperature": 0.3, "num_ctx": LLM_NUM_CTX}
+        "keep_alive": LLM_KEEP_ALIVE,
+        "options": {"temperature": 0.3, "num_ctx": LLM_NUM_CTX, "num_predict": 512}
     }
 
     data = await llm_request(payload)
@@ -3167,7 +3194,8 @@ async def generate_updated_title(summary: str, model: str) -> str:
         ],
         "model": model,
         "stream": False,
-        "options": {"temperature": 0.3}
+        "keep_alive": LLM_KEEP_ALIVE,
+        "options": {"temperature": 0.3, "num_predict": 20}
     }
 
     data = await llm_request(payload)
