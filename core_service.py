@@ -2701,7 +2701,16 @@ async def _perform_prompt_gen(ctx: UserContext,
     # Персонализация
     username = ctx.settings.get("name") or ctx.settings.get("username", "User")
 
-    system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
+    if fun_mode:
+        user_fun_prompt = (ctx.settings.get("fun_system_prompt") or "").strip()
+        if user_fun_prompt:
+            system_prompt += f"\n\n*Fun Guidelines:*\n{user_fun_prompt}"
+        elif ctx.settings.get("system_prompt"):
+            system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
+    else:
+        if ctx.settings.get("system_prompt"):
+            system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
+
     system_prompt += "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
     logging.info(f"Model: {model}\nMode: {mode}\nUser: {username}")
 
