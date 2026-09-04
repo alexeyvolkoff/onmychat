@@ -2252,6 +2252,26 @@ async def get_generated_avatars(ctx: UserContext) -> list:
     return []
 
 
+_comfy_last_check = 0.0
+_comfy_available_cache = False
+
+async def is_comfy_available() -> bool:
+    global _comfy_last_check, _comfy_available_cache
+    if not COMFY_API_URL:
+        return False
+    now = time.time()
+    if now - _comfy_last_check < 30.0:
+        return _comfy_available_cache
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+            async with session.get(f"{COMFY_API_URL}/system_stats") as resp:
+                _comfy_available_cache = (resp.status == 200)
+    except Exception:
+        _comfy_available_cache = False
+    _comfy_last_check = now
+    return _comfy_available_cache
+
+
 async def generate_image_workflow(workflow) -> bytes:
     client_id = str(uuid.uuid4())
     ws_url = f"{COMFY_API_URL.replace('http', 'ws')}/ws?clientId={client_id}"
@@ -3630,12 +3650,9 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
 
 
 
-async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True, prompt_id: str | None = None) -> tuple[str, str, str]:
+async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True, prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
-
-    if not ctx.storage:
-        raise Exception("⚠️ Default storage is not available. Please connect your device.")
 
     user_id = ctx.user_id
 
@@ -3701,14 +3718,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.info(f"Using default LoRA: {assistant_model} ({key})")
 
     # Activate LoRAs and set strength
-    #lora_count = len(active_lora_keys)
-    #target_strength = 1.0
-    #if (style.startswith("perfect") or style.startswith("perfection")) and lora_count > 1:
-    #    target_strength = 0.6
-    
     for key in active_lora_keys:
         workflow_json["103"]["inputs"][key]["on"] = True
-        #workflow_json["103"]["inputs"][key]["strength"] = target_strength
         logging.info(f"Activated LoRA {key} with strength {workflow_json['103']['inputs'][key]['strength']}")
 
     logging.info(f"Generating with model: {model}")
@@ -3722,7 +3733,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         ctx.tokens_consumed = 0.1
 
     # Local user folder (only used if no remote storage)
-    user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated")
+    user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated") if ctx.user_id else None
     
     # Extract title from prompt (prompt may contain "Title: ..." from LLM)
     img_prompt, img_title = extract_title_and_prompt(prompt)
@@ -3748,47 +3759,37 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         if filename.startswith("ComfyUI_temp"):
              filename = f"IMG_{timestamp}.png"
 
-    if ctx.storage and ctx.omd_key:
-        # Копируем файл юзеру на устройство
+    if upload_storage and ctx.storage and ctx.omd_key:
         dest = f"{ctx.storage}/generated"
         logging.info(f"Uploading to storage: {dest}/{filename}")
-        
-        # Since we have bytes, we use upload_data_to_storage (or similar, but upload_data_to_storage handles generic data? check implementation)
-        # utils.upload_data_to_storage handles str or bytes.
         try:
             upload_data_to_storage(ctx.omd_key, dest, filename, img_data, "image/png")
-            
-            # Save prompt as description (Readme.md)
             readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
             upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_readme, "text/markdown")
             logging.info("Upload completed successfully.")
         except Exception as e:
             logging.error(f"Upload to storage failed: {e}")
-            # Fallback to local? Or just fail? 
-            # If upload fails, maybe we should try local save as backup?
-            # For now just log.
-            raise e
+    elif user_folder:    
+        try:
+            os.makedirs(user_folder, exist_ok=True)
+            dest_path = os.path.join(user_folder, filename)
+            with open(dest_path, "wb") as f:
+                f.write(img_data)
+            readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+            readme_path = os.path.join(user_folder, readme_filename)
+            with open(readme_path, "w", encoding="utf-8") as f:
+                f.write(formatted_readme)
+        except Exception as e:
+            logging.warning(f"Local file save skipped: {e}")
 
-    else:    
-        logging.info("No storage/key found, saving locally.")
-        # Копируем файл в user_data (local)
-        os.makedirs(user_folder, exist_ok=True)
-        dest_path = os.path.join(user_folder, filename)
-        with open(dest_path, "wb") as f:
-            f.write(img_data)
-        # Save prompt as description (Readme.md)
-        readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-        readme_path = os.path.join(user_folder, readme_filename)
-        with open(readme_path, "w", encoding="utf-8") as f:
-            f.write(formatted_readme)
-    return filename, img_title, neutral_description
+    return filename, img_title, neutral_description, img_data
 
-async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None) -> tuple[str, str, str]:
-    return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id)
+async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
+    return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # Generate general image, returns full path for further sending or conversion
-async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None) -> tuple[str, str, str]:
-    return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id)
+async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
+    return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # img is base64 image #
 async def recognize_image(ctx: UserContext, img, prompt="", chat="default", provided_history=None):

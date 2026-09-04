@@ -40,6 +40,7 @@ import hashlib
 import email.utils
 import datetime
 import time
+import base64
 import requests
 import aiohttp
 import asyncio
@@ -343,6 +344,8 @@ class ChatStreamInput(BaseModel):
     prompt_id: str | None = None
     chat_summary: str | None = None
     total_message_count: int | None = None
+    image_delivery: str | None = None
+    client: str | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -425,7 +428,11 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "defaultStorage": ctx.settings.get("defaultStorage", ""),
             "avatar_version": await core_service.get_avatar_version(ctx),
             "omd_key": ctx.omd_key or omd_key,
-            "summary_threshold": core_service.SUMMARY_THRESHOLD
+            "summary_threshold": core_service.SUMMARY_THRESHOLD,
+            "capabilities": {
+                "image_generation": await core_service.is_comfy_available(),
+                "chat": True
+            }
         }
         return assistant
 
@@ -982,7 +989,9 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         provided_knowledge=data.knowledge,
         provided_prompt_id=data.prompt_id,
         chat_summary=data.chat_summary,
-        total_message_count=data.total_message_count
+        total_message_count=data.total_message_count,
+        image_delivery=data.image_delivery or (data.settings.get("image_delivery") if data.settings else None),
+        client=data.client or (data.settings.get("client") if data.settings else None)
     )
 
 @app.get("/chat/stream")
@@ -992,11 +1001,22 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       provided_knowledge: list|None = None,
                       provided_prompt_id: str|None = None,
                       chat_summary: str|None = None,
-                      total_message_count: int|None = None):
+                      total_message_count: int|None = None,
+                      image_delivery: str|None = None,
+                      client: str|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = is_private_mode(request)
+
+    is_inline_image = (
+        image_delivery == "inline"
+        or request.headers.get("x-image-delivery") == "inline"
+        or (provided_settings and provided_settings.get("image_delivery") == "inline")
+        or request.headers.get("x-client") == "svar"
+        or client == "svar"
+        or (provided_settings and provided_settings.get("client") == "svar")
+    )
 
     if provided_settings:
         logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
@@ -1249,12 +1269,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # Generate image using prompt, DO NOT save yet
-                path, title, description = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id)
-                
-                # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
-                
-
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
+                res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=(not is_inline_image))
+                path, title, description = res[0], res[1], res[2]
+                img_data = res[3] if len(res) > 3 else None
+                img_payload = {'path': path, 'title': title, 'description': description}
+                if is_inline_image and img_data:
+                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
                 
 
                 #Set specific instructions
@@ -1268,6 +1289,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] save_user_message removed
             elif intent == "view":
                 # 1️⃣ статус
+                yield f"data: {json.dumps({'status': 'generating_image'})}\n\n"
 
                 # 2️⃣ картинка
                 logging.info(f"Generating refined image prompt for: {prompt}")
@@ -1277,9 +1299,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # 3️⃣ Generate image (no character LoRA)
-                
-                path, title, description = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
+                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id)
+                path, title, description = res[0], res[1], res[2]
+                img_data = res[3] if len(res) > 3 else None
+                img_payload = {'path': path, 'title': title, 'description': description}
+                if img_data:
+                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
 
                 #Set specific instructions
                 instruction = (
@@ -1338,22 +1364,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 card = {}
                 if ":" in intent:
                     parts = intent.split(":", 2)
-                    doc_source = parts[1] if len(parts) > 1 else None
-                    collection = parts[2] if len(parts) > 2 else "user"
-                if doc_source:
-                    card = await core_service.import_doc(ctx, doc_source, collection=collection)   
-                try:
-                    if provided_knowledge is not None:
-                        knowledge = provided_knowledge
-                    else:
-                        knowledge = memory_index.load_memories(ctx)
-                except Exception as e:
-                    logging.error(f"Failed to load knowledge: {e}")
-                    knowledge = []
+                    doc_source = parts[1]
+                    if len(parts) > 2:
+                        collection = parts[2]
                 
-                new_knowledge = ""     
-                if card: 
-                    new_knowledge = card.get("text")
+                yield f"data: {json.dumps({'status': 'learning'})}\n\n"
+                new_knowledge, card = await core_service.import_knowledge(ctx, doc_source, prompt, collection=collection)
                 
                 if not new_knowledge:
                     # FALLBACK: If import failed or was a directory, treat as chat so MCP can handle it
@@ -1379,7 +1395,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Ensure chat exists and update timestamp
                 chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
                 
-                # 1️⃣ статус
+                # 1️⃣ Status: generating image
+                yield f"data: {json.dumps({'status': 'generating_image'})}\n\n"
 
                 # 2️⃣ Generate title from raw prompt
                 img_title = await core_service.generate_title_from_prompt(ctx, img_prompt)
@@ -1391,8 +1408,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-                path, title, description = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id)
-                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image':{'path': path, 'title': title, 'description': description}, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
+                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=(not is_inline_image))
+                path, title, description = res[0], res[1], res[2]
+                img_data = res[3] if len(res) > 3 else None
+                img_payload = {'path': path, 'title': title, 'description': description}
+                if is_inline_image and img_data:
+                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
@@ -1525,9 +1547,10 @@ async def generate_character_image(request: Request, data: GenerateInput):
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
-        # generate_image returns (filename, title, description)
+        # generate_image returns (filename, title, description, img_data)
         is_new = data.message_nonce is None and data.message_index is None
-        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id)
+        res = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id)
+        filename, title, description = res[0], res[1], res[2]
         
         # [LEGACY HISTORY] Load history removed
         history = []
@@ -1551,8 +1574,9 @@ async def generate_general_image(request: Request, data: GenerateInput):
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
-        # generate_image returns (filename, title, description)
-        filename, title, description = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
+        # generate_image returns (filename, title, description, img_data)
+        res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
+        filename, title, description = res[0], res[1], res[2]
         return {"image": filename, "description": description, "tokens_consumed": ctx.tokens_consumed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
