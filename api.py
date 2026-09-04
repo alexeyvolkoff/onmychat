@@ -1040,7 +1040,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "/think": "thinking",
                 "/explain": "thinking"
             }
-            immediate_status = "typing"
+            immediate_status = "processing"
             for prefix, status in status_map_immediate.items():
                 if prompt.startswith(prefix):
                     immediate_status = status
@@ -1258,6 +1258,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                      return
 
             if intent == "show":
+                # 1️⃣ статус
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+
                 # 2️⃣ картинка
                 # [LEGACY HISTORY] Load history removed
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
@@ -1289,7 +1292,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] save_user_message removed
             elif intent == "view":
                 # 1️⃣ статус
-                yield f"data: {json.dumps({'status': 'generating_image'})}\n\n"
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
                 # 2️⃣ картинка
                 logging.info(f"Generating refined image prompt for: {prompt}")
@@ -1299,11 +1302,11 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # 3️⃣ Generate image (no character LoRA)
-                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id)
+                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=(not is_inline_image))
                 path, title, description = res[0], res[1], res[2]
                 img_data = res[3] if len(res) > 3 else None
                 img_payload = {'path': path, 'title': title, 'description': description}
-                if img_data:
+                if is_inline_image and img_data:
                     img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
 
@@ -1396,7 +1399,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 chat_info = await core_service.ensure_chat(ctx, chat, img_prompt)
                 
                 # 1️⃣ Status: generating image
-                yield f"data: {json.dumps({'status': 'generating_image'})}\n\n"
+                yield f"data: {json.dumps({'status': 'generating'})}\n\n"
 
                 # 2️⃣ Generate title from raw prompt
                 img_title = await core_service.generate_title_from_prompt(ctx, img_prompt)
