@@ -846,7 +846,10 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
                      sources.append({
                          "title": filename,
                          "owner": owner,
-                         "clickable": False
+                         "clickable": True,
+                         "document_id": doc_id,
+                         "fullPath": doc_id,
+                         "url": f"https://onmydisk.net{doc_id}" if doc_id.startswith('/') else f"https://onmydisk.net/{doc_id}"
                      })
         ctx.temp_sources = sources
         
@@ -2408,6 +2411,8 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                         if success and mimetype:
                             metadata["mimetype"] = clean_mimetype(item_path, mimetype)
                             metadata["clickable"] = True
+                            metadata["url"] = f"{gateway_url}/{owner}/{item_path}"
+                            metadata["fullPath"] = f"/{owner}/{item_path}"
                             return metadata
             except Exception as e:
                 logging.error(f"User access check failed for {path}: {e}")
@@ -2432,6 +2437,8 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
                     if success and mimetype:
                         metadata["mimetype"] = clean_mimetype(item_path, mimetype)
                         metadata["clickable"] = True
+                        metadata["url"] = f"{gateway_url}/{owner}/{item_path}"
+                        metadata["fullPath"] = f"/{owner}/{item_path}"
                         return metadata
         except Exception as e:
             logging.error(f"Master access check failed for {path}: {e}")
@@ -2478,7 +2485,10 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                         sources_map[key] = {
                             "title": filename,
                             "owner": owner,
-                            "clickable": False,
+                            "clickable": True,
+                            "document_id": doc_id,
+                            "fullPath": doc_id,
+                            "url": f"https://onmydisk.net{doc_id}" if doc_id.startswith('/') else f"https://onmydisk.net/{doc_id}"
                         }
 
         # Личные проиндексированные файлы (omd_search)

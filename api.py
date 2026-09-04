@@ -1009,7 +1009,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
         try:
             nonlocal chat
 
-            # 0. IMMEDIATE STATUS FOR SLASH COMMANDS
+            # 0. IMMEDIATE STATUS CONFIRMATION
             status_map_immediate = {
                 "/show": "generating",
                 "/view": "generating", "/imagine": "generating",
@@ -1020,11 +1020,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "/think": "thinking",
                 "/explain": "thinking"
             }
+            immediate_status = "typing"
             for prefix, status in status_map_immediate.items():
                 if prompt.startswith(prefix):
-                    yield f"data: {json.dumps({'status': status})}\n\n"
-                    await asyncio.sleep(0.1) # Force yield to loop and flush
+                    immediate_status = status
                     break
+            yield f"data: {json.dumps({'status': immediate_status})}\n\n"
+            await asyncio.sleep(0.05) # Force yield to loop and flush
 
             # defaults
             intent = "chat"
