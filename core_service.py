@@ -3604,9 +3604,8 @@ async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
     return title
 
 
-async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
-    """Generate a safe, neutral description for the image prompt."""
-    
+async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) -> tuple[str, str]:
+    """Generate a safe, neutral title and description for the image prompt."""
     mode = ctx.settings.get("content_mode", "work")
     model = get_llm_model(ctx, mode)
     if ctx.private_mode and mode == "fun":
@@ -3627,26 +3626,30 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
     
     try:
         data = await llm_request(payload)
-        if data and "message" in data:
-             return data["message"]["content"].strip()
+        if data and "message" in data and "content" in data["message"]:
+            raw_content = data["message"]["content"].strip()
+            lines = [l.strip() for l in raw_content.split("\n") if l.strip()]
+            title = ""
+            desc_lines = []
+            for line in lines:
+                if line.lower().startswith("title:"):
+                    title = line[6:].strip().strip('"*# ')
+                elif line.lower().startswith("description:"):
+                    desc_lines.append(line[12:].strip())
+                else:
+                    desc_lines.append(line)
+            desc = " ".join(desc_lines).strip()
+            return title, desc or raw_content
     except Exception as e:
         logging.error(f"Failed to generate neutral description: {e}")
         
-    return "Generated image" # Fallback
+    return "", "Generated image"
 
-    try:
-        data = await llm_request(payload)
-        if data and "message" in data and "content" in data["message"]:
-            title = data["message"]["content"].strip()
-            logging.info(f"Generated title from raw prompt: {title}")
-            return title
-        else:
-            # Fallback to first few words if LLM fails
-            return ' '.join(words[:4])
-    except Exception as e:
-        logging.warning(f"Title generation failed: {e}")
-        # Fallback to first few words
-        return ' '.join(words[:4])
+
+async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
+    """Generate a safe, neutral description for the image prompt (backward compatibility)."""
+    _, desc = await generate_neutral_description_and_title(ctx, prompt)
+    return desc
 
 
 
@@ -3736,13 +3739,20 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     user_folder = os.path.join(APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated") if ctx.user_id else None
     
     # Extract title from prompt (prompt may contain "Title: ..." from LLM)
-    img_prompt, img_title = extract_title_and_prompt(prompt)
+    img_prompt, initial_title = extract_title_and_prompt(prompt)
     
-    # Format for markdown file
-    formatted_prompt = f"#{img_title}\n\n{img_prompt}"
+    # Generate safe neutral title and description via NSFW-neutral filter
+    neutral_title, neutral_description = await generate_neutral_description_and_title(ctx, img_prompt)
     
-    # Generate neutral description for public Readme and history
-    neutral_description = await generate_neutral_description(ctx, img_prompt)
+    # Determine final safe title (never a crude 4-word slice of SDXL tags)
+    raw_tag_prefix = ' '.join([w for w in img_prompt.replace('<', '').replace('>', '').split() if not w.startswith('<')][:4])
+    if neutral_title:
+        img_title = neutral_title
+    elif initial_title and initial_title != raw_tag_prefix:
+        img_title = initial_title
+    else:
+        img_title = await generate_title_from_prompt(ctx, neutral_description or img_prompt)
+        
     formatted_readme = f"#{img_title}\n\n{neutral_description}"
     
     # Create unique filename by appending timestamp to index

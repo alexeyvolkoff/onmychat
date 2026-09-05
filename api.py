@@ -1276,7 +1276,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
                 storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
                 
 
@@ -1304,7 +1304,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
                 storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
 
                 #Set specific instructions
@@ -1411,7 +1411,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
                 storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
@@ -1558,7 +1558,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
              # but we don't save it to local disk anymore.
              pass
 
-        return {"image": filename, "description": description, "tokens_consumed": ctx.tokens_consumed}
+        return {"image": filename, "title": title, "description": description, "tokens_consumed": ctx.tokens_consumed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1575,7 +1575,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
         # generate_image returns (filename, title, description, img_data)
         res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
         filename, title, description = res[0], res[1], res[2]
-        return {"image": filename, "description": description, "tokens_consumed": ctx.tokens_consumed}
+        return {"image": filename, "title": title, "description": description, "tokens_consumed": ctx.tokens_consumed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
