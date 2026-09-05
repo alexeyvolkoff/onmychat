@@ -1045,6 +1045,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 if prompt.startswith(prefix):
                     immediate_status = status
                     break
+
             yield f"data: {json.dumps({'status': immediate_status})}\n\n"
             await asyncio.sleep(0.05) # Force yield to loop and flush
 
@@ -1272,12 +1273,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # Generate image using prompt, DO NOT save yet
-                res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=(not is_inline_image))
+                res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
-                img_data = res[3] if len(res) > 3 else None
-                img_payload = {'path': path, 'title': title, 'description': description}
-                if is_inline_image and img_data:
-                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
                 
 
@@ -1302,12 +1301,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # 3️⃣ Generate image (no character LoRA)
-                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=(not is_inline_image))
+                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
-                img_data = res[3] if len(res) > 3 else None
-                img_payload = {'path': path, 'title': title, 'description': description}
-                if is_inline_image and img_data:
-                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
 
                 #Set specific instructions
@@ -1411,12 +1408,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=(not is_inline_image))
+                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=True)
                 path, title, description = res[0], res[1], res[2]
-                img_data = res[3] if len(res) > 3 else None
-                img_payload = {'path': path, 'title': title, 'description': description}
-                if is_inline_image and img_data:
-                    img_payload['data'] = "data:image/png;base64," + base64.b64encode(img_data).decode("ascii")
+                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
