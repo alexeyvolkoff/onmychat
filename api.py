@@ -1677,7 +1677,14 @@ async def generate_character_image(request: Request, data: GenerateInput):
              # but we don't save it to local disk anymore.
              pass
 
-        return {"image": filename, "title": title, "description": description, "tokens_consumed": ctx.tokens_consumed}
+        return {
+            "image": filename,
+            "path": filename,
+            "url": f"/chat/image/{filename}",
+            "title": title,
+            "description": description,
+            "tokens_consumed": ctx.tokens_consumed
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1694,7 +1701,14 @@ async def generate_general_image(request: Request, data: GenerateInput):
         # generate_image returns (filename, title, description, img_data)
         res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
         filename, title, description = res[0], res[1], res[2]
-        return {"image": filename, "title": title, "description": description, "tokens_consumed": ctx.tokens_consumed}
+        return {
+            "image": filename,
+            "path": filename,
+            "url": f"/chat/image/{filename}",
+            "title": title,
+            "description": description,
+            "tokens_consumed": ctx.tokens_consumed
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

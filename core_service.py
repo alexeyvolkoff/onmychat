@@ -3707,34 +3707,60 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     
     # Dynamic LoRA activation
     lora_map = {}
-    # Build map from name to key
+    lora_nodes = {}
+    # Build map from name/filename to key
     if "103" in workflow_json and "inputs" in workflow_json["103"]:
         for key, value in workflow_json["103"]["inputs"].items():
             if isinstance(value, dict) and "name" in value:
-                lora_map[value["name"].lower()] = key
+                lora_nodes[key] = value
+                raw_name = value["name"].lower()
+                lora_map[raw_name] = key
+                lora_map[raw_name.replace(" ", "_")] = key
+                lora_map[raw_name.replace(" ", "-")] = key
+                lora_map[raw_name.replace(" ", "")] = key
+                if "lora" in value:
+                    lora_filename = value["lora"].lower()
+                    lora_map[lora_filename] = key
+                    lora_map[lora_filename.split(".")[0]] = key
 
     # Find tags in prompt
-    active_lora_keys = []
+    active_lora_keys = set()
     tags = re.findall(r"<([^>]+)>", prompt)
     for tag in tags:
-        tag_lower = tag.lower()
+        tag_lower = tag.lower().strip()
         if tag_lower in lora_map:
             key = lora_map[tag_lower]
-            active_lora_keys.append(key)
-            logging.info(f"Found LoRA tag: {tag} ({key})")
+            active_lora_keys.add(key)
+            logging.info(f"Found LoRA tag in prompt: {tag} -> {key} ({lora_nodes[key].get('name')})")
 
-    # Fallback to assistant_model if no tags found
-    if not active_lora_keys and use_default_lora:
-        assistant_model = ctx.settings.get("assistant_model", "").lower()
-        if assistant_model in lora_map:
-            key = lora_map[assistant_model]
-            active_lora_keys.append(key)
-            logging.info(f"Using default LoRA: {assistant_model} ({key})")
+    # If character LoRA is expected (use_default_lora=True), ensure character LoRA is active
+    if use_default_lora:
+        has_character_lora = any(
+            lora_nodes.get(k, {}).get("type") == "character"
+            for k in active_lora_keys
+        )
+        if not has_character_lora:
+            # Check character_lora, then assistant_model in settings
+            for setting_key in ("character_lora", "assistant_model"):
+                candidate = ctx.settings.get(setting_key, "").lower().strip("<> ")
+                if candidate:
+                    matched_key = (
+                        lora_map.get(candidate)
+                        or lora_map.get(candidate.replace(" ", "_"))
+                        or lora_map.get(candidate.replace(" ", ""))
+                    )
+                    if matched_key:
+                        active_lora_keys.add(matched_key)
+                        logging.info(f"Using LoRA from settings ({setting_key}={candidate}): {matched_key} ({lora_nodes[matched_key].get('name')})")
+                        break
 
-    # Activate LoRAs and set strength
-    for key in active_lora_keys:
-        workflow_json["103"]["inputs"][key]["on"] = True
-        logging.info(f"Activated LoRA {key} with strength {workflow_json['103']['inputs'][key]['strength']}")
+    # Reset all loras to off, then activate active ones
+    for key, val in lora_nodes.items():
+        if key in active_lora_keys:
+            val["on"] = True
+            logging.info(f"Activated LoRA {key} ({val.get('name')}) with strength {val.get('strength', 1.0)}")
+        else:
+            val["on"] = False
 
     logging.info(f"Generating with model: {model}")
     img_data, filename = await generate_image_workflow(workflow_json)
