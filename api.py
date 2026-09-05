@@ -1387,6 +1387,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
                 await asyncio.sleep(0.05)
+                yield f"data: {json.dumps({'status': 'typing'})}\n\n"
+                await asyncio.sleep(0.05)
 
                 #Set specific instructions
                 instruction = (
@@ -1417,6 +1419,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
+                await asyncio.sleep(0.05)
+                yield f"data: {json.dumps({'status': 'typing'})}\n\n"
                 await asyncio.sleep(0.05)
 
                 #Set specific instructions

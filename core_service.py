@@ -3803,6 +3803,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.info(f"[PrivateMode] Saved generated image locally on host: {dest_path}")
         except Exception as e:
             logging.warning(f"[PrivateMode] Local file save failed: {e}")
+        from api import store_ephemeral_image
+        store_ephemeral_image(filename, img_data)
     else:
         # Public Mode: Guest or Paid Subscriber -> ZERO CONTACT with foreign data!
         # Do NOT save to disk. Store solely in ephemeral in-memory cache for API delivery.
