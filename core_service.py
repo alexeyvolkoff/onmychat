@@ -2338,6 +2338,17 @@ async def generate_image_workflow(workflow) -> bytes:
                                                 final_image_data = await img_resp.read()
                                                 final_filename = filename
                                                 logging.info(f"Image fetched: {len(final_image_data)} bytes")
+                                                
+                                                # Clean up ComfyUI temp file so it doesn't linger on host disk
+                                                comfy_base = os.path.dirname(COMFY_OUTPUT_DIR) if COMFY_OUTPUT_DIR else ""
+                                                if comfy_base:
+                                                    for temp_cand in [os.path.join(comfy_base, "temp", filename), os.path.join("/tmp", filename)]:
+                                                        if os.path.isfile(temp_cand):
+                                                            try:
+                                                                os.remove(temp_cand)
+                                                                logging.info(f"Cleaned ComfyUI temp file: {temp_cand}")
+                                                            except Exception:
+                                                                pass
                                             else:
                                                 logging.error(f"Failed to fetch image: {img_resp.status}")
                         
@@ -3769,31 +3780,35 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         if filename.startswith("ComfyUI_temp"):
              filename = f"IMG_{timestamp}.png"
 
-    effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anon" else "")
-    if upload_storage and effective_storage and ctx.omd_key:
-        dest = f"{effective_storage}/generated"
-        logging.info(f"Uploading to storage: {dest}/{filename}")
+    if ctx.private_mode:
+        # Private Mode: Node Owner or explicitly authorized user on device.
+        # Save directly to local storage on host relative to user's home directory.
+        home_dir = os.path.expanduser("~")
+        clean_storage = (ctx.storage or ctx.settings.get("defaultStorage", "") or "OnMyChat").strip("/")
+        if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
+            clean_storage = clean_storage[len(ctx.user_id) + 1:]
+        elif ctx.user_id and clean_storage == ctx.user_id:
+            clean_storage = "OnMyChat"
+
+        target_dir = os.path.join(home_dir, clean_storage, "generated")
         try:
-            upload_data_to_storage(ctx.omd_key, dest, filename, img_data, "image/png")
-            readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-            upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_readme, "text/markdown")
-            logging.info("Upload completed successfully.")
-            if not ctx.storage:
-                ctx.storage = effective_storage
-        except Exception as e:
-            logging.error(f"Upload to storage failed: {e}")
-    elif user_folder:    
-        try:
-            os.makedirs(user_folder, exist_ok=True)
-            dest_path = os.path.join(user_folder, filename)
+            os.makedirs(target_dir, exist_ok=True)
+            dest_path = os.path.join(target_dir, filename)
             with open(dest_path, "wb") as f:
                 f.write(img_data)
             readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-            readme_path = os.path.join(user_folder, readme_filename)
+            readme_path = os.path.join(target_dir, readme_filename)
             with open(readme_path, "w", encoding="utf-8") as f:
                 f.write(formatted_readme)
+            logging.info(f"[PrivateMode] Saved generated image locally on host: {dest_path}")
         except Exception as e:
-            logging.warning(f"Local file save skipped: {e}")
+            logging.warning(f"[PrivateMode] Local file save failed: {e}")
+    else:
+        # Public Mode: Guest or Paid Subscriber -> ZERO CONTACT with foreign data!
+        # Do NOT save to disk. Store solely in ephemeral in-memory cache for API delivery.
+        from api import store_ephemeral_image
+        store_ephemeral_image(filename, img_data)
+        logging.info(f"[PublicMode] Stored image {filename} in RAM buffer only (Zero Contact).")
 
     return filename, img_title, neutral_description, img_data
 

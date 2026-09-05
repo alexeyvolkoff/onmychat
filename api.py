@@ -241,7 +241,54 @@ def not_authorized(request: Request):
         
     return False # Authorized if no AI_TOKEN is configured
 
-def is_private_mode(request: Request) -> bool:
+_ephemeral_image_cache: dict[str, dict] = {}
+
+def store_ephemeral_image(filename: str, data: bytes, ttl: int = 300):
+    cleanup_ephemeral_images()
+    _ephemeral_image_cache[filename] = {
+        "data": data,
+        "expires_at": time.time() + ttl
+    }
+
+def get_ephemeral_image(filename: str) -> bytes | None:
+    cleanup_ephemeral_images()
+    item = _ephemeral_image_cache.get(filename)
+    if item:
+        return item["data"]
+    return None
+
+def cleanup_ephemeral_images():
+    now = time.time()
+    expired = [k for k, v in _ephemeral_image_cache.items() if v["expires_at"] < now]
+    for k in expired:
+        _ephemeral_image_cache.pop(k, None)
+
+def is_private_mode(request: Request, ctx: user_context.UserContext | None = None) -> bool:
+    # 1. Explicit header from gateway or P2P client (e.g. isOwner || isSharedTo)
+    pm_header = request.headers.get("X-OMD-Private-Mode")
+    if pm_header is not None:
+        return pm_header == "1" or pm_header.lower() == "true"
+
+    # 2. If token balance is provided and > 0, it's a paid external subscriber (Public Mode)
+    token_balance = float(request.headers.get("x-omd-token-balance", "0.0") or "0.0")
+    if token_balance > 0.0:
+        return False
+
+    # 3. Check if ctx matches local node owner
+    import getpass
+    node_owner = SETTINGS.get("NODE_OWNER") or getpass.getuser()
+    if ctx and ctx.user_id and ctx.user_id == node_owner:
+        return True
+
+    # 4. Localhost connection (direct local embedded client on node)
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "::1", "localhost"):
+        # If client is authenticated as someone other than node owner, it's NOT private mode
+        if ctx and ctx.user_id and ctx.user_id not in ("anon", "system", "") and ctx.user_id != node_owner:
+            return False
+        return True
+
+    # 5. Token match without balance
     ai_token = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
     return bool(AI_TOKEN and ai_token == AI_TOKEN)
 
@@ -631,6 +678,63 @@ async def assistant_avatar(
         return serve_default_avatar(default_path, request, size=size)
 
 
+@app.get("/chat/image/{filename}")
+@app.get("/generated/{filename}")
+async def get_chat_image(
+    filename: str,
+    request: Request,
+    size: int | None = None,
+    omd_key: str | None = Depends(get_omd_key)
+):
+    ctx = get_ctx(omd_key)
+    safe_filename = os.path.basename(filename)
+
+    # 1. Check in-memory ephemeral cache first (Zero Contact / Subscriber mode)
+    ephemeral_data = get_ephemeral_image(safe_filename)
+    if ephemeral_data:
+        if size:
+            try:
+                img = Image.open(io.BytesIO(ephemeral_data))
+                img.thumbnail((size, size))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                ephemeral_data = buf.getvalue()
+            except Exception as e:
+                logging.warning(f"Failed to resize in-memory image: {e}")
+        return Response(content=ephemeral_data, media_type="image/png")
+
+    # 2. Local storage candidates (Private Mode / Owner on device)
+    candidates = []
+    home_dir = os.path.expanduser("~")
+    clean_storage = (ctx.storage or "OnMyChat").strip("/")
+    if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
+        clean_storage = clean_storage[len(ctx.user_id) + 1:]
+    elif ctx.user_id and clean_storage == ctx.user_id:
+        clean_storage = "OnMyChat"
+
+    candidates.append(os.path.join(home_dir, clean_storage, "generated", safe_filename))
+    candidates.append(os.path.join(home_dir, "OnMyChat", "generated", safe_filename))
+    if ctx.user_id:
+        candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated", safe_filename))
+    candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, "default", "generated", safe_filename))
+    candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, "anon", "generated", safe_filename))
+    candidates.append(os.path.join(core_service.APP_ROOT_DIR, "generated", safe_filename))
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return serve_file(c, request, size=size)
+
+    base_user_data = os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR)
+    if os.path.isdir(base_user_data):
+        for root, dirs, files in os.walk(base_user_data):
+            if safe_filename in files:
+                target = os.path.join(root, safe_filename)
+                if os.path.isfile(target):
+                    return serve_file(target, request, size=size)
+
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
 @app.post("/assistant/avatar/generate")
 async def generate_avatar_endpoint(data: AvatarGenerateInput):
     ctx = get_ctx(data.omd_key)
@@ -836,7 +940,7 @@ async def kill_session_task(session_id: str, payload: SessionKillInput | None = 
 @app.get("/assistant/loras")
 async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
@@ -1007,7 +1111,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
 
     is_inline_image = (
         image_delivery == "inline"
@@ -1262,6 +1366,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             if intent == "show":
                 # 1️⃣ статус
                 yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+                await asyncio.sleep(0.05)
 
                 # 2️⃣ картинка
                 # [LEGACY HISTORY] Load history removed
@@ -1275,12 +1380,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # Generate image using prompt, DO NOT save yet
-                res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=True)
+                upload_storage_flag = not is_inline_image
+                res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
-                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
+                image_url = f"/chat/image/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
-                
+                await asyncio.sleep(0.05)
 
                 #Set specific instructions
                 instruction = (
@@ -1294,6 +1400,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             elif intent == "view":
                 # 1️⃣ статус
                 yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+                await asyncio.sleep(0.05)
 
                 # 2️⃣ картинка
                 logging.info(f"Generating refined image prompt for: {prompt}")
@@ -1304,11 +1411,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 # 3️⃣ Generate image (no character LoRA)
-                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=True)
+                upload_storage_flag = not is_inline_image
+                res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
-                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
+                image_url = f"/chat/image/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
+                await asyncio.sleep(0.05)
 
                 #Set specific instructions
                 instruction = (
@@ -1400,6 +1509,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 
                 # 1️⃣ Status: generating image
                 yield f"data: {json.dumps({'status': 'generating'})}\n\n"
+                await asyncio.sleep(0.05)
 
                 # 2️⃣ Generate title from raw prompt
                 img_title = await core_service.generate_title_from_prompt(ctx, img_prompt)
@@ -1411,11 +1521,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
-                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=True)
+                upload_storage_flag = not is_inline_image
+                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
-                storage_url = f"/{ctx.storage.strip('/')}/generated/{path}" if ctx.storage else f"/generated/{path}"
-                img_payload = {'path': path, 'title': title, 'description': description, 'url': storage_url, 'prompt': img_prompt}
+                image_url = f"/chat/image/{path}"
+                img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
+                await asyncio.sleep(0.05)
                 
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
@@ -1515,7 +1627,7 @@ async def recognize_endpoint(
 ):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     if settings:
         try:
             provided_settings = json.loads(settings)
@@ -1543,7 +1655,7 @@ async def recognize_endpoint(
 async def generate_character_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -1570,7 +1682,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
 async def generate_general_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -1590,7 +1702,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
 async def generate_character_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -1607,7 +1719,7 @@ async def generate_character_image_prompt(request: Request, data: GenerateInput)
 async def generate_general_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request)
+    ctx.private_mode = is_private_mode(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
