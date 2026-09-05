@@ -1021,7 +1021,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     if provided_settings:
         logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         ctx.settings.update(provided_settings)
-        ctx.storage = ctx.settings.get("defaultStorage", "")
+        if provided_settings.get("defaultStorage"):
+            ctx.storage = provided_settings["defaultStorage"]
     else:
         logging.info(f"NO provided_settings received for {ctx.user_id}")
 
@@ -1267,7 +1268,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Generate prompt using loaded history, but DO NOT save yet (atomic update later)
                 history = provided_history or []
                 logging.info(f"Generating refined image prompt for: {prompt}")
-                img_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
+                raw_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
+                img_prompt, _ = core_service.extract_title_and_prompt(raw_prompt)
 
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
@@ -1295,7 +1297,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
 
                 # 2️⃣ картинка
                 logging.info(f"Generating refined image prompt for: {prompt}")
-                img_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
+                raw_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
+                img_prompt, _ = core_service.extract_title_and_prompt(raw_prompt)
 
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))

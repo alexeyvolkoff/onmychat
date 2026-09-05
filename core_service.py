@@ -3769,14 +3769,17 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         if filename.startswith("ComfyUI_temp"):
              filename = f"IMG_{timestamp}.png"
 
-    if upload_storage and ctx.storage and ctx.omd_key:
-        dest = f"{ctx.storage}/generated"
+    effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anon" else "")
+    if upload_storage and effective_storage and ctx.omd_key:
+        dest = f"{effective_storage}/generated"
         logging.info(f"Uploading to storage: {dest}/{filename}")
         try:
             upload_data_to_storage(ctx.omd_key, dest, filename, img_data, "image/png")
             readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
             upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_readme, "text/markdown")
             logging.info("Upload completed successfully.")
+            if not ctx.storage:
+                ctx.storage = effective_storage
         except Exception as e:
             logging.error(f"Upload to storage failed: {e}")
     elif user_folder:    

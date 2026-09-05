@@ -64,6 +64,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
         group = user_info.get("group", "")
         # Могут быть и другие группы или список групп в будущем
         groups = [group] if group else []
+        user_storage = storage or user_info.get("defaultStorage", "") or ""
         return UserContext(
             type="omd", 
             user_id=username, 
@@ -72,7 +73,7 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
             settings=load_user_settings(), 
             history=[], 
             omd_key=account_id, 
-            storage=storage,
+            storage=user_storage,
             is_unlimited=(user_info.get("status") == "Unlimited")
         )
 
