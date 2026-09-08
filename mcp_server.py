@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 from typing import Optional
+import requests
 
 # Setup minimal logging to stderr since stdout is used for MCP stdio
 logging.basicConfig(
@@ -124,6 +125,136 @@ async def modify_odt_file(template_path: str, output_path: str, replacements: di
     """
     ctx = get_current_user_context()
     return await core_service.modify_odt_file(ctx, template_path, output_path, replacements)
+
+
+def _make_plane_headers(token: str) -> dict:
+    return {
+        "X-API-Key": token,
+        "Content-Type": "application/json"
+    }
+
+
+def _make_plane_urls(workspace: str, project_id: str) -> tuple:
+    base_url = "https://api.plane.so/api/v1"
+    return f"{base_url}/workspaces/{workspace}/projects/{project_id}/work-items/", f"{base_url}/workspaces/{workspace}/projects/{project_id}/states/"
+
+@mcp.tool()
+async def list_plane_workspaces(token: str) -> str:
+    """
+    List all workspaces available for the user in Plane.
+    Use this FIRST when you need to work with Plane but don't know the workspace slug.
+    After getting the list, use the workspace slug to list projects.
+
+    Args:
+        token: Plane API key (Personal Access Token)
+    """
+    headers = _make_plane_headers(token)
+    url = "https://api.plane.so/api/v1/workspaces/"
+    response = requests.get(url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        return f"Error getting workspaces from Plane: {response.status_code}"
+    
+    workspaces = response.json().get("results", [])
+    if not workspaces:
+        return "You have no workspaces in Plane."
+    
+    return "Your workspaces in Plane:\n\n" + "\n".join(
+        f"{ws['name']} (slug: {ws['slug']})" for ws in workspaces
+    )
+
+
+@mcp.tool()
+async def list_plane_projects(token: str, workspace: str) -> str:
+    """
+    List all projects in a specific Plane workspace.
+    Use this when you know the workspace slug but need to choose a project.
+    After getting the list, use the project ID to list issues.
+
+    Args:
+        token: Plane API key (Personal Access Token)
+        workspace: The workspace slug
+    """
+    headers = _make_plane_headers(token)
+    url = f"https://api.plane.so/api/v1/workspaces/{workspace}/projects/"
+    response = requests.get(url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        return f"Error getting projects from Plane: {response.status_code}"
+    
+    projects = response.json().get("results", [])
+    if not projects:
+        return f"You have no projects in workspace '{workspace}'."
+    
+    return f"Your projects in '{workspace}':\n\n" + "\n".join(
+        f"{project['name']} (ID: {project['id']})" for project in projects
+    )
+
+@mcp.tool()
+async def list_plane_issues(token: str, workspace: str, project_id: str) -> str:
+    """
+    List all tasks from a Plane project.
+    Use this when the user asks about their tasks or what to do next.
+
+    Args:
+        token: Plane API key (Personal Access Token)
+        workspace: The workspace slug
+        project_id: The project ID
+    """
+    headers = _make_plane_headers(token)
+    issues_url, _ = _make_plane_urls(workspace, project_id)
+    response = requests.get(issues_url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        return f"Error getting tasks from Plane: {response.status_code}"
+    
+    issues = response.json().get("results", [])
+    if not issues:
+        return "You have no tasks in this Plane project."
+    
+    return "Your tasks in Plane:\n" + "\n".join(
+        f"{issue['name']} (ID: {issue['id']})" for issue in issues
+    )
+
+@mcp.tool()
+async def report_and_close_plane_issue(token: str, workspace: str, project_id: str, issue_id: str) -> str:
+    """
+    Generate a report for a Plane task and then close it (move to Done).
+    Use this when the user asks to write a report for a task, complete it, or close it.
+
+    Args:
+        token: Plane API key (Personal Access Token)
+        workspace: The workspace slug
+        project_id: The project ID
+        issue_id: The ID of the task, e.g. "4bb74be5"
+    """
+    headers = _make_plane_headers(token)
+    issues_url, states_url = _make_plane_urls(workspace, project_id)
+    issues_response = requests.get(issues_url, headers=headers, timeout=10)
+    if issues_response.status_code != 200:
+        return f"Error getting tasks from Plane: {issues_response.status_code}"
+    issues = issues_response.json().get("results", [])
+
+    issue = next((i for i in issues if i["id"].startswith(issue_id)), None)
+    if issue is None:
+        return f"Task with code '{issue_id}' not found."
+
+    states_response = requests.get(states_url, headers=headers, timeout=10)
+    if states_response.status_code != 200:
+        return f"Error getting statuses: {states_response.status_code}"
+    states = states_response.json().get("results", [])
+
+    done_state = next((s for s in states if s["group"] == "completed"), None)
+    if done_state is None:
+        return "Done status not found, cannot close the task."
+
+    close_response = requests.patch(f"{issues_url}{issue['id']}/", headers=headers, json={"state": done_state["id"]}, timeout=10)
+    if close_response.status_code not in (200, 201):
+        return f"Error closing the task: {close_response.status_code}"
+
+    report = (
+        f"Name: {issue.get('name', 'No name')}\n"
+        f"ID: {issue.get('id')}\n"
+        "Result: the task has been closed (moved to Done)."
+    )
+    return report
 
 
 if __name__ == "__main__":
