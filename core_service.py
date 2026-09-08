@@ -823,52 +823,45 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
 
 async def search_memory_tool(ctx: UserContext, query: str) -> str:
     try:
-        collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-        
-        # 1. Search semantic memory/knowledge base
-        mem_results = search_memories(ctx, query, collection=collection, top_k=3)
-        
-        # 2. Search indexed files
-        file_results = search_indexed_files(ctx, query, top_k=3)
-        
-        all_results = mem_results + file_results
-        
+        # RAG 3.0: unified search across memory cards + file chunks
+        all_results = unified_memory.search_for_rag(
+            query,
+            private_mode=ctx.private_mode,
+            owner=ctx.user_id if ctx.private_mode else None,
+            top_k=5,
+        )
+
         # Collect sources for the frontend widget (cached on UserContext)
         sources = []
         for res in all_results:
-             doc_id = res.get('document_id', '')
-             title = res.get('title', '')
-             owner = res.get('owner', 'alexey')
-             if doc_id or title:
-                 # Deduplicate sources
-                 filename = title or doc_id.split("/")[-1]
-                 if not any(s['title'] == filename and s['owner'] == owner for s in sources):
-                     sources.append({
-                         "title": filename,
-                         "owner": owner,
-                         "clickable": True,
-                         "document_id": doc_id,
-                         "fullPath": doc_id,
-                         "url": f"https://onmydisk.net{doc_id}" if doc_id.startswith('/') else f"https://onmydisk.net/{doc_id}"
-                     })
+            doc_id = res.get("document_id", "")
+            title  = res.get("title", "") or (doc_id.split("/")[-1] if doc_id else "")
+            owner  = res.get("owner", "alexey")
+            if doc_id or title:
+                if not any(s["title"] == title and s["owner"] == owner for s in sources):
+                    full_path = doc_id if doc_id.startswith("/") else f"/{doc_id}"
+                    sources.append({
+                        "title":       title,
+                        "owner":       owner,
+                        "clickable":   True,
+                        "document_id": doc_id,
+                        "fullPath":    full_path,
+                        "url":         f"https://onmydisk.net{full_path}",
+                    })
         ctx.temp_sources = sources
-        
+
         if not all_results:
             return "No relevant knowledge or files found."
-            
+
         output = f"Knowledge & Indexed Files Search Results for '{query}':\n"
         for i, res in enumerate(all_results, 1):
-             text = res.get('text', '')
-             source = res.get('source', 'unknown')
-             doc_id = res.get('document_id', '')
-             title = res.get('title', '')
-             
-             header = f"Source: {source}"
-             if doc_id or title:
-                 header += f" ({title or doc_id})"
-                 
-             output += f"{i}. [{header}]\n{text}\n\n"
-             
+            text    = res.get("text", "")
+            doc_id  = res.get("document_id", "")
+            title   = res.get("title", "") or (doc_id.split("/")[-1] if doc_id else "unknown")
+            rec_type = res.get("type", "")
+            header  = f"{'File' if rec_type == 'file_chunk' else 'Memory'}: {title}"
+            output += f"{i}. [{header}]\n{text}\n\n"
+
         return output.strip()
     except Exception as e:
         return f"Error searching memory/files: {e}"
@@ -2650,8 +2643,9 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === ВСПОМНИМ ФАКТЫ ===
     strict_fact = ""
     facts_text = ""
-    collection = ctx.settings.get("kb_id", DEFAULT_KB_ID)
-    logging.debug(f"Loading facts: {collection} {is_rag}")
+    # RAG 3.0: kb_id — это тег в unified index, не отдельная база
+    kb_tag = ctx.settings.get("kb_id", "omd")
+    logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
     # === Facts injection ===
     if intent == "search":
         # Search results are already packed into 'instruction' inside api.py
@@ -2664,12 +2658,12 @@ async def _perform_prompt_gen(ctx: UserContext,
             except AttributeError:
                 pass
     elif intent == "show":
-        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
     elif intent in ("view", "chat"):
         # Plain chat and scene generation don't need RAG file search
-        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
     else:
-        facts, sources = await inject_facts(ctx, message, collection, mem_id, provided_knowledge=provided_knowledge)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge)
     
     # Yield sources immediately for the frontend widget
     if sources:
@@ -2679,7 +2673,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
-        logging.info(f"RAG request: {collection}")
+        logging.info(f"RAG request: tag={kb_tag}")
         prep_prompt = (
             "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
