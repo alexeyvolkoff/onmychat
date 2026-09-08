@@ -31,12 +31,12 @@ from memory_index import (
     add_memory_card,
     fetch_document_text,
     chunk_and_vectorize_to_file,
+    # legacy search kept for any remaining callers during transition
     search_memories,
-    search_indexed_files
+    search_indexed_files,
 )
 
-
-DEFAULT_KB_ID = SETTINGS["DEFAULT_KB_ID"]
+import unified_memory
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
@@ -2479,71 +2479,67 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
-    document_ids = []
-    
-    # Load RAG_TOP_K from SETTINGS
+    sources_map = {}
+
     rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
 
-    # Force skip_db if fun mode is enabled to exclude working knowledge base search and only use frontend-provided facts
+    # Fun mode: skip DB entirely, use only frontend-provided facts
     if ctx.settings.get("content_mode", "work") == "fun":
-        logging.info("[memory] Fun mode enabled: skipping working database and indexed files search, using provided knowledge only.")
+        logging.info("[memory] Fun mode: skipping DB search, using provided knowledge only.")
         skip_db = True
 
-    # Личные воспоминания (только если предоставлены фронтендом)
+    # 1. Карточки памяти, переданные фронтендом (из GunDB)
     if provided_knowledge is not None:
-        # If knowledge is provided via frontend, it fully replaces EXISTING personal memory access.
         for m in provided_knowledge:
             text = m.get("text", "") if isinstance(m, dict) else str(m)
             if text:
                 facts.append(f"• {text}")
                 doc_id = m.get("document_id") if isinstance(m, dict) else None
                 if doc_id:
-                    document_ids.append(doc_id)
-
-    # Общие знания — если есть collection
-    sources_map = {} # To avoid duplicates
-    if not skip_db:
-        if collection:
-            shared = search_memories(ctx, query, collection=collection, mem_id=mem_id, top_k=rag_top_k)
-            for m in shared:
-                facts.append(f"• {m['text']}")
-                doc_id = m.get("document_id")
-                owner = m.get("owner", "alexey")
-                if doc_id:
-                    key = f"{owner}:{doc_id}"
+                    key = f"provided:{doc_id}"
                     if key not in sources_map:
-                        filename = doc_id.split("/")[-1]
                         sources_map[key] = {
-                            "title": filename,
-                            "owner": owner,
-                            "clickable": True,
+                            "title":       doc_id.split("/")[-1],
+                            "owner":       ctx.user_id or "alexey",
+                            "clickable":   True,
                             "document_id": doc_id,
-                            "fullPath": doc_id,
-                            "url": f"https://onmydisk.net{doc_id}" if doc_id.startswith('/') else f"https://onmydisk.net/{doc_id}"
+                            "fullPath":    doc_id,
                         }
 
-        # Личные проиндексированные файлы (omd_search)
-        user_files = search_indexed_files(ctx, query, owner=ctx.user_id, top_k=rag_top_k)
-        for f in user_files:
-            facts.append(f"• [From file {f['title']}]: {f['text']}")
-            key = f"file:{f['document_id']}"
-            if key not in sources_map:
-                sources_map[key] = {
-                    "title": f['title'],
-                    "owner": f['owner'],
-                    "clickable": True,
-                    "url": f"https://onmydisk.net{f['document_id']}",
-                    "fullPath": f['document_id']
-                }
+    # 2. Поиск по unified ChromaDB (если не пропускаем)
+    if not skip_db:
+        try:
+            db_results = unified_memory.search_for_rag(
+                query,
+                private_mode=ctx.private_mode,
+                owner=ctx.user_id if ctx.private_mode else None,
+                top_k=rag_top_k,
+            )
+            for r in db_results:
+                rec_type  = r.get("type", "")
+                doc_id    = r.get("document_id", "")
+                title     = r.get("title", doc_id.split("/")[-1] if doc_id else "")
+                owner_val = r.get("owner", ctx.user_id or "alexey")
 
+                if rec_type == "file_chunk":
+                    facts.append(f"• [From file {title}]: {r['text']}")
+                else:
+                    facts.append(f"• {r['text']}")
 
-    # Fetch metadata for all sources
-    for key, source in sources_map.items():
-        if not source.get("clickable"): # Already has metadata if clickable
-             owner = source.get("owner", "alexey")
-             doc_id = key.split(":", 1)[1] if ":" in key else key
-             meta = await get_source_metadata(ctx, owner, doc_id)
-             source.update(meta)
+                if doc_id:
+                    key = f"{owner_val}:{doc_id}"
+                    if key not in sources_map:
+                        full_path = doc_id if doc_id.startswith("/") else f"/{doc_id}"
+                        sources_map[key] = {
+                            "title":       title,
+                            "owner":       owner_val,
+                            "clickable":   True,
+                            "document_id": doc_id,
+                            "fullPath":    full_path,
+                            "url":         f"https://onmydisk.net{full_path}",
+                        }
+        except Exception as e:
+            logging.error(f"[memory] unified search error in inject_facts: {e}")
 
     return facts, list(sources_map.values())
 
@@ -3965,7 +3961,6 @@ async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 800
     :param raw_text: исходный текст документа
     :param limit: максимальное количество символов для передачи модели (по умолчанию ~8000)
     """
-    # Усечём текст, если длиннее лимита
     text_to_process = raw_text[:limit]
 
     messages = [
@@ -3977,14 +3972,11 @@ async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 800
         "messages": messages,
         "model": get_llm_model(ctx),
         "stream": False,
-        "options": {
-            "temperature": 0.1,
-        }
+        "options": {"temperature": 0.1},
     }
 
     data = await llm_request(request_payload)
 
-    # Универсальное извлечение текста
     if isinstance(data, dict):
         if "message" in data and isinstance(data["message"], dict) and "content" in data["message"]:
             response = data["message"]["content"]
@@ -3993,11 +3985,49 @@ async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 800
     else:
         response = str(data)
 
-    logging.info(f"Summary: {response}")    
-
+    logging.info(f"Summary: {response}")
     return response.strip()
 
-    return response.strip()
+
+async def extract_tags_from_text(ctx: UserContext, raw_text: str, limit: int = 4000) -> list:
+    """
+    Генерирует теги для документа через LLM.
+    Возвращает список тегов без # (для хранения в unified_memory).
+    """
+    text_to_process = raw_text[:limit]
+
+    prompt = (
+        "Extract 3-7 short topic tags from the following text. "
+        "Return ONLY the tags as a comma-separated list, lowercase, no # prefix, no explanation.\n\n"
+        f"Text:\n{text_to_process}"
+    )
+
+    messages = [
+        {"role": "system", "content": "You extract concise keyword tags from text. Reply only with comma-separated tags."},
+        {"role": "user", "content": prompt},
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": get_llm_model(ctx),
+        "stream": False,
+        "options": {"temperature": 0.1, "num_predict": 64},
+    }
+
+    try:
+        data = await llm_request(request_payload)
+        if isinstance(data, dict):
+            raw = data.get("message", {}).get("content", "") or data.get("content", "")
+        else:
+            raw = str(data)
+        # Парсим теги: убираем #, лишние пробелы, пустые
+        tags = [t.strip().lstrip("#").lower() for t in raw.replace("\n", ",").split(",")]
+        tags = [t for t in tags if t and len(t) < 30]
+        return tags[:7]
+    except Exception as e:
+        logging.error(f"[extract_tags] error: {e}")
+        return []
+
 
 # === Web Search Tool ===
 async def search_web(ctx: UserContext, query: str) -> str:
@@ -4229,34 +4259,37 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
                 "text": f"Error during conversion: {e}"
             }
 
-    # Векторизация и сохранение чанков (только для общих коллекций)
-    if collection != "user":
-        chunk_and_vectorize_to_file(
-            ctx,
-            text=raw_text,
-            document_id=url_or_path,
-            collection=collection
-        )
-    else:
-        logging.info(f"[import] Skipping backend vectorization for user collection.")
+    # ─── Векторизация в unified_memory ────────────────────────────────────────
+    # Теги: collection передаётся как основной тег (напр. "omd"), плюс "docs"
+    doc_tags = list({t for t in [collection, "docs"] if t and t != "user"})
 
-    # Добавление краткой аннотации в память (только для общих коллекций)
+    n_chunks = unified_memory.chunk_and_index_document(
+        raw_text,
+        document_id=url_or_path,
+        owner=ctx.user_id or "alexey",
+        tags=doc_tags,
+        title=url_or_path.split("/")[-1].split("?")[0],
+    )
+    logging.info(f"[import] Indexed {n_chunks} chunks for {url_or_path}, tags={doc_tags}")
+
+    # ─── Аннотация ────────────────────────────────────────────────────────────
     card_text = await summarize_for_memory(ctx, raw_text)
-    if collection != "user":
-        mem_id = add_memory_card(
-            ctx,
-            text=card_text,
-            document_id=url_or_path,
-            collection=collection
-        )
-    else:
-        logging.info(f"[import] Skipping backend memory card for user collection. Frontend handles personal knowledge.")
-        mem_id = f"user_{url_or_path}"
+
+    # Сохраняем аннотацию-карточку в unified_memory как memory_card
+    mem_id = unified_memory.upsert_memory_card(
+        card_text,
+        owner=ctx.user_id or "alexey",
+        tags=doc_tags,
+        title=url_or_path.split("/")[-1].split("?")[0],
+        document_id=url_or_path,
+        relevance="permanent",
+    )
+    logging.info(f"[import] Saved annotation card {mem_id} for {url_or_path}")
 
     mem_card = {
-        "id": mem_id,
-        "text": card_text,
-        "full_text": raw_text
+        "id":        mem_id,
+        "text":      card_text,
+        "full_text": raw_text,
     }
     return mem_card
 

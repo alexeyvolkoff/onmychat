@@ -110,6 +110,7 @@ async def get_proxy_session():
     return _proxy_session
 
 import memory_index
+import unified_memory
 from config import USER_DATA_DIR
 from config import BASE_INDEX_DIR
 from config import SETTINGS
@@ -127,21 +128,24 @@ app.add_middleware(
 )
 
 
-# Search Node Initialization
+AI_TOKEN = SETTINGS.get("AI_TOKEN", "")
+
+# Search Node (legacy, kept for /indexer/from_crawl backward compat)
 try:
     from search_node import SearchNode
-    AI_TOKEN = SETTINGS.get("AI_TOKEN", "") # Ensure this key exists in config or is empty
     search_node = SearchNode(storage_path=BASE_INDEX_DIR, model=memory_index.get_model(), token=AI_TOKEN)
-    logging.info("[api] SearchNode initialized in BASE_INDEX_DIR")
-    
-    # Run legacy migration on the server side (disabled as legacy files are obsolete)
-    # memory_index.migrate_legacy_data()
-except ImportError as e:
-    logging.error(f"[api] SearchNode initialization failed: Missing dependency - {e}. Please run 'pip install chromadb' in the venv.")
-    search_node = None
+    logging.info("[api] SearchNode initialized (legacy compat)")
 except Exception as e:
-    logging.error(f"[api] Error initializing SearchNode: {e}")
+    logging.error(f"[api] SearchNode init failed: {e}")
     search_node = None
+
+@app.on_event("startup")
+async def on_startup():
+    """Initialize unified_memory on startup."""
+    try:
+        unified_memory.init()
+    except Exception as e:
+        logging.error(f"[api] unified_memory init error: {e}")
 
 # PeARS-compatible endpoints
 
@@ -176,33 +180,205 @@ async def indexer_from_crawl(request: Request, background_tasks: BackgroundTasks
 async def delete_url(request: Request):
     path = request.query_params.get("path") or request.headers.get("path")
     if not path:
-         raise HTTPException(status_code=422, detail="path is required in query or headers")
-
+        raise HTTPException(status_code=422, detail="path is required")
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
-        
-    if not search_node:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
-        
-    result = search_node.delete_path(path)
-    return result
+    unified_memory.delete_document(path)
+    return {"status": "ok", "path": path}
 
 @app.get("/api/urls/move")
 async def move_url(request: Request):
-    src = request.query_params.get("src") or request.headers.get("src")
+    src    = request.query_params.get("src")    or request.headers.get("src")
     target = request.query_params.get("target") or request.headers.get("target")
-        
     if not src or not target:
-         raise HTTPException(status_code=422, detail="src and target are required in query or headers")
+        raise HTTPException(status_code=422, detail="src and target are required")
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    unified_memory.move_file(src, target)
+    return {"status": "ok", "src": src, "target": target}
 
+
+# ─── RAG 3.0: новые эндпоинты ────────────────────────────────────────────────
+
+@app.get("/api/convert")
+async def convert_document(request: Request):
+    """
+    Конвертирует файл/URL в markdown-текст.
+    Вызывается через P2P data channel (WebRTCDataChannelDrive.sendRequest).
+    Заменяет шлюзовый ?totext для клиентского /learn.
+    """
+    path = request.query_params.get("path") or request.headers.get("path")
+    if not path:
+        raise HTTPException(status_code=422, detail="path is required")
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    if not search_node:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
-        
-    result = search_node.move_path(src, target)
-    return result
+    omd_key = get_omd_key(request)
+    try:
+        text = await core_service.fetch_document_text(
+            path if path.startswith("http") else f"{GATEWAY_URL}{path}",
+            token=omd_key
+        )
+        return {"text": text, "path": path}
+    except Exception as e:
+        logging.error(f"[api/convert] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/learn")
+async def learn_document(request: Request, background_tasks: BackgroundTasks):
+    """
+    Векторизует и индексирует документ в unified_memory.
+    Принимает уже конвертированный markdown-текст + теги.
+    Возвращает аннотацию + облако тегов.
+    Вызывается через P2P data channel.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body     = await request.json()
+    path     = body.get("path", "")
+    text     = body.get("text", "")
+    tags     = body.get("tags", [])     # уже распарсенные теги (без #)
+    question = body.get("question", "") # необязательный вопрос для ответа
+
+    if not text or not path:
+        raise HTTPException(status_code=422, detail="path and text are required")
+
+    ctx = await _build_ctx_from_request(request)
+
+    async def _do_learn():
+        try:
+            n = unified_memory.chunk_and_index_document(
+                text,
+                document_id=path,
+                owner=ctx.user_id or "alexey",
+                tags=tags,
+                title=path.split("/")[-1].split("?")[0],
+            )
+            logging.info(f"[api/learn] Indexed {n} chunks for {path}, tags={tags}")
+        except Exception as e:
+            logging.error(f"[api/learn] chunk error: {e}")
+
+    background_tasks.add_task(_do_learn)
+
+    # Аннотация — синхронно (небольшой документ)
+    try:
+        annotation = await core_service.summarize_for_memory(ctx, text)
+        ai_tags    = await core_service.extract_tags_from_text(ctx, text)
+    except Exception as e:
+        logging.error(f"[api/learn] summarize error: {e}")
+        annotation = text[:500]
+        ai_tags    = tags
+
+    # Сохраняем аннотацию-карточку
+    mem_id = unified_memory.upsert_memory_card(
+        annotation,
+        owner=ctx.user_id or "alexey",
+        tags=tags or ai_tags,
+        title=path.split("/")[-1].split("?")[0],
+        document_id=path,
+        relevance="permanent",
+    )
+
+    return {
+        "status":     "learning_started",
+        "mem_id":     mem_id,
+        "annotation": annotation,
+        "tags":       ai_tags,
+        "question":   question,
+    }
+
+
+@app.get("/api/learn_preview")
+async def learn_preview(request: Request):
+    """
+    Preview: конвертирует документ и генерирует аннотацию + облако тегов.
+    НЕ сохраняет в ChromaDB — только для MemoryCardModal (preview перед сохранением).
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    path    = request.query_params.get("path", "")
+    omd_key = get_omd_key(request)
+
+    if not path:
+        raise HTTPException(status_code=422, detail="path is required")
+
+    ctx = await _build_ctx_from_request(request)
+    try:
+        text = await core_service.fetch_document_text(
+            path if path.startswith("http") else f"{GATEWAY_URL}{path}",
+            token=omd_key
+        )
+        annotation = await core_service.summarize_for_memory(ctx, text)
+        ai_tags    = await core_service.extract_tags_from_text(ctx, text)
+        return {"annotation": annotation, "tags": ai_tags, "path": path}
+    except Exception as e:
+        logging.error(f"[api/learn_preview] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/indexer/index_share")
+async def index_share(request: Request, background_tasks: BackgroundTasks):
+    """
+    Индексирует конкретную шару (вызывается C++ нодой напрямую через localhost).
+    Заменяет /indexer/from_crawl для шар OMD 3.0.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    share   = request.query_params.get("share", "")
+    path    = request.query_params.get("path",  "")
+    tag     = request.query_params.get("tag",   share)
+    is_async = request.query_params.get("async", "true").lower() == "true"
+
+    if not path:
+        raise HTTPException(status_code=422, detail="path is required")
+
+    # Строим URL для индексации
+    gateway = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
+    url = path if path.startswith("http") else f"{gateway}/{path.lstrip('/')}"
+    tags = [t for t in [tag, share] if t]
+
+    def _do_index_share():
+        try:
+            if search_node:
+                search_node.index_url(url, collection=tag or share)
+            logging.info(f"[indexer/share] Indexed share={share} path={path} tags={tags}")
+        except Exception as e:
+            logging.error(f"[indexer/share] error: {e}")
+
+    if is_async:
+        background_tasks.add_task(_do_index_share)
+        return {"status": "indexing_started", "share": share, "path": path}
+    else:
+        _do_index_share()
+        return {"status": "ok", "share": share, "path": path}
+
+
+@app.delete("/indexer/remove_path")
+async def remove_path(request: Request):
+    """Удаляет путь из unified индекса (вызывается C++ при удалении файла/шары)."""
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    path = request.query_params.get("path", "")
+    if not path:
+        raise HTTPException(status_code=422, detail="path is required")
+    unified_memory.delete_path_prefix(path)
+    return {"status": "ok", "path": path}
+
+
+async def _build_ctx_from_request(request: Request):
+    """Строит UserContext из заголовков запроса."""
+    omd_key = get_omd_key(request)
+    ctx = user_context.UserContext(
+        user_id  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", ""),
+        omd_key  = omd_key,
+        settings = {},
+    )
+    ctx.private_mode = is_private_mode(request, ctx)
+    return ctx
 
 def not_authorized(request: Request):
     # The gateway forwards the original client's Authorization header
