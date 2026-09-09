@@ -47,6 +47,7 @@ import asyncio
 import json
 import subprocess
 import numpy as np
+from urllib.parse import urlparse
 from typing import List, Optional
 
 import core_service
@@ -208,14 +209,15 @@ async def learn_document(request: Request, background_tasks: BackgroundTasks):
 
     async def _do_learn():
         try:
+            doc_id = _norm_doc_path(path)
             n = unified_memory.chunk_and_index_document(
                 text,
-                document_id=path,
+                document_id=doc_id,
                 owner=ctx.user_id or "alexey",
                 tags=tags,
-                title=path.split("/")[-1].split("?")[0],
+                title=doc_id.split("/")[-1],
             )
-            logging.info(f"[api/learn] Indexed {n} chunks for {path}, tags={tags}")
+            logging.info(f"[api/learn] Indexed {n} chunks for {doc_id}, tags={tags}")
         except Exception as e:
             logging.error(f"[api/learn] chunk error: {e}")
 
@@ -236,7 +238,7 @@ async def learn_document(request: Request, background_tasks: BackgroundTasks):
         owner=ctx.user_id or "alexey",
         tags=tags or ai_tags,
         title=path.split("/")[-1].split("?")[0],
-        document_id=path,
+        document_id=_norm_doc_path(path),
         relevance="permanent",
     )
 
@@ -247,6 +249,247 @@ async def learn_document(request: Request, background_tasks: BackgroundTasks):
         "tags":       ai_tags,
         "question":   question,
     }
+
+# ─── RAG 3.0 (docs/RAG_3_0.md §2): пути нормализуем срезанием префикса юзера ─
+
+def _norm_doc_path(path: str) -> str:
+    """Локальный путь-/home/<user>/<share>/... или itemPath /<user>/<share>/... → /<share>/...; http — как есть."""
+    if not path:
+        return path
+    if path.startswith("http"):
+        return path
+    s = "/" + path.strip("/")
+    if s.startswith("/home/"):
+        # realPath ноды: /home/<user>/<share>/...
+        parts = s.split("/", 3)
+        return f"/{parts[3]}" if len(parts) == 4 else s.rstrip("/")
+    # виртуальный itemPath: /<user>/<share>/...
+    parts = s.split("/", 2)
+    return f"/{parts[2]}" if len(parts) == 3 else s.rstrip("/")
+
+
+RAG_INDEX_STATUS = {}   # path → {"indexed": n, "pending": n, "failed": n, "lastError": ..., "done": bool}
+
+def _rag_scope_tags(body_tags, scope: str) -> list:
+    tags = [t for t in (body_tags or []) if t]
+    if scope == "public" and "public" not in tags:
+        tags.append("public")
+    return tags
+
+
+@app.post("/rag/import")
+async def rag_import_endpoint(request: Request):
+    """
+    RAG 3.0 контракт: импорт одного документа/ссылки/заметки (вызывает svar через HttpDrive).
+    source — виртуальный itemPath или URL; text — уже конвертированный текст (необязательно).
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body  = await request.json()
+    source = (body.get("source") or "").strip()
+    raw_text = (body.get("text") or "").strip()
+    scope = body.get("scope") or request.headers.get("X-OMD-RAG-Scope", "private")
+    owner = body.get("owner") or ""
+    tags_in = body.get("tags") or []
+
+    if raw_text:
+        doc_id = _norm_doc_path(source) if source else f"user:note:{body.get('title') or 'note'}"
+    elif source:
+        doc_id = _norm_doc_path(source)
+    else:
+        raise HTTPException(status_code=422, detail="source or text is required")
+
+    ctx = await _build_ctx_from_request(request)
+    owner = owner or ctx.user_id or "alexey"
+    title = body.get("title") or doc_id.split("/")[-1].split("?")[0].lstrip("/")
+    tags = _rag_scope_tags(tags_in, scope)
+
+    if not raw_text:
+        doc_url = source if source.startswith("http") else f"{GATEWAY_URL}{doc_id}"
+        raw_text = await core_service.fetch_document_text(doc_url, token=get_omd_key(request) or AI_TOKEN)
+        if not raw_text or raw_text.startswith("Failed to fetch"):
+            raise HTTPException(status_code=422, detail=f"Could not fetch or convert document: {source}")
+
+    # Векторизация (sync — нужен chunkCount в ответе)
+    try:
+        n_chunks = unified_memory.chunk_and_index_document(
+            raw_text,
+            document_id=doc_id,
+            owner=owner,
+            tags=tags,
+            title=title,
+        )
+    except Exception as e:
+        logging.error(f"[rag/import] chunk error: {e}")
+        n_chunks = 0
+
+    # Аннотация + теги от LLM
+    try:
+        annotation = await core_service.summarize_for_memory(ctx, raw_text)
+        ai_tags = await core_service.extract_tags_from_text(ctx, raw_text)
+    except Exception as e:
+        logging.error(f"[rag/import] summarize error: {e}")
+        annotation = raw_text[:500]
+        ai_tags = []
+
+    all_tags = sorted(set(tags) | set(ai_tags or []))
+    disk_mem_id = unified_memory.upsert_memory_card(
+        annotation,
+        owner=owner,
+        tags=all_tags,
+        title=title,
+        document_id=source or doc_id,
+        relevance="permanent",
+    )
+
+    logging.info(f"[rag/import] doc={doc_id} chunks={n_chunks} tags={all_tags} owner={owner}")
+    return {
+        "docId":       doc_id,
+        "documentId":  doc_id,
+        "title":       title,
+        "annotation":  annotation,
+        "tags":        all_tags,
+        "chunkCount":  n_chunks,
+        "mem_id":      disk_mem_id,
+    }
+
+
+@app.post("/rag/index")
+async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks):
+    """
+    RAG 3.0 контракт: crawl шары/пути (вызывает C++ нода: локальный realPath).
+    path-/home/<user>/<share>/... нормализуется до /<share>/... и обходится через gateway XML-index.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    source_path = (body.get("path") or "").strip()
+    if not source_path:
+        raise HTTPException(status_code=422, detail="path is required")
+    force = bool(body.get("force", False))
+    scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
+
+    doc_root = _norm_doc_path(source_path)          # /<share>/...
+    crawl_url = source_path if source_path.startswith("http") else f"{GATEWAY_URL}{doc_root}"
+    ctx = await _build_ctx_from_request(request)
+    owner = ctx.user_id or "alexey"
+    tags = _rag_scope_tags(body.get("tags") or [], scope)
+
+    RAG_INDEX_STATUS[doc_root] = {"indexed": 0, "pending": 0, "failed": 0, "lastError": None, "done": False}
+
+    async def _crawl():
+        status = RAG_INDEX_STATUS[doc_root]
+        from lxml import etree
+        queue = [crawl_url if crawl_url.endswith("/") else crawl_url + "/"]
+        visited = set()
+        blacklist = ["node_modules", ".git", ".venv", "venv", "__pycache__", "site-packages",
+                     "bin", "obj", "target", "dist", "build", ".cache", ".idea", ".vscode",
+                     ".pytest_cache", ".npm", ".yarn", "node_modules/"]
+        exact_blacklist = {"proc", "sys", "system", "data", "dev", "run", "etc", "boot",
+                           "lib", "lib64", "opt", "srv", ".local", ".config", ".cache"}
+        token = get_omd_key(request) or AI_TOKEN
+
+        async def fetch(url, params=""):
+            try:
+                full = url + params
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+                    async with s.get(full, headers={"Authorization": f"token:{token}"}) as r:
+                        if r.status == 200:
+                            return await r.text()
+                        return None
+            except Exception as e:
+                status["failed"] += 1
+                status["lastError"] = str(e)
+                return None
+
+        while queue and not RAG_INDEX_STATUS.get(doc_root, {}).get("abort", False):
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+
+            xml = await fetch(current, "?index")
+            if not xml or "<omd_index>" not in xml:
+                status["lastError"] = f"no index xml: {current}"
+                continue
+
+            try:
+                root_doc = etree.fromstring(xml.encode("utf-8"), etree.XMLParser(recover=True))
+            except Exception as e:
+                status["failed"] += 1
+                status["lastError"] = f"xml parse: {e}"
+                continue
+
+            for doc in root_doc.findall(".//doc"):
+                name = doc.get("url") or ""
+                if not name or name.startswith("?"):
+                    continue
+                item_url = current.rstrip("/") + "/" + name
+                item_path = urlparse(item_url).path
+                doc_id = _norm_doc_path(item_path)
+                if doc.get("contentType") == "folder":
+                    low = name.lower().strip("/")
+                    if low in exact_blacklist or any(b in low for b in blacklist):
+                        continue
+                    queue.append(item_url)
+                    continue
+
+                last_modified = doc.get("last_modified") or ""
+                if not force and unified_memory.has_document(doc_id, source_stamp=last_modified):
+                    logging.info(f"[rag/index] skip unchanged {doc_id}")
+                    continue
+
+                raw = await core_service.fetch_document_text(item_url, token=token)
+                if not raw or raw.startswith("Failed to fetch"):
+                    status["failed"] += 1
+                    status["lastError"] = raw or "empty"
+                    continue
+                try:
+                    n = unified_memory.chunk_and_index_document(
+                        raw,
+                        document_id=doc_id,
+                        owner=owner,
+                        tags=tags,
+                        title=doc_id.split("/")[-1],
+                        source_stamp=last_modified,
+                    )
+                    status["indexed"] += 1
+                    logging.info(f"[rag/index] {doc_id}: {n} chunks")
+                except Exception as e:
+                    status["failed"] += 1
+                    status["lastError"] = str(e)
+
+        status["done"] = True
+
+    background_tasks.add_task(_crawl)
+    return {"status": "indexing_started", "path": doc_root, "crawl_url": crawl_url}
+
+
+@app.get("/rag/status")
+async def rag_status_endpoint(request: Request, path: str = "", docId: str = ""):
+    """Прогресс индексации пути (RAG 3.0 §2)."""
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    key = _norm_doc_path(path or docId)
+    entry = RAG_INDEX_STATUS.get(key, {})
+    return {"path": key, **entry}
+
+
+@app.post("/rag/delete")
+async def rag_delete_endpoint(request: Request):
+    """Удаление документа/потоков из индекса (source — itemPath/URL/docId)."""
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    body = await request.json()
+    source = (body.get("source") or body.get("docId") or "").strip()
+    if not source:
+        raise HTTPException(status_code=422, detail="source or docId is required")
+    doc_id = _norm_doc_path(source)
+    unified_memory.delete_document(doc_id)
+    logging.info(f"[rag/delete] {doc_id}")
+    return {"deleted": 1, "path": doc_id}
 
 
 @app.get("/api/learn_preview")

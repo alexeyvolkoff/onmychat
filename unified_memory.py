@@ -336,6 +336,19 @@ def delete_document(document_id: str):
 
 # ─── Индексация файловых чанков ───────────────────────────────────────────────
 
+def has_document(document_id: str, source_stamp: str = None) -> bool:
+    """Есть ли в индексе чанки документа; source_stamp — для проверки неизменённости."""
+    try:
+        where = {"document_id": {"$eq": document_id}}
+        if source_stamp:
+            where = {"$and": [where, {"source_stamp": {"$eq": source_stamp}}]}
+        res = get_collection().get(where=where, include=["metadatas"], limit=1)
+        return bool(res.get("ids"))
+    except Exception as e:
+        logger.error(f"[unified] has_document error: {e}")
+        return False
+
+
 def chunk_and_index_document(
     text: str,
     document_id: str,
@@ -344,6 +357,7 @@ def chunk_and_index_document(
     title="",
     chunk_size=500,
     overlap=50,
+    source_stamp=None,
 ) -> int:
     """
     Разбивает текст на чанки и индексирует в unified коллекцию.
@@ -383,6 +397,7 @@ def chunk_and_index_document(
             "title":       title,
             "relevance":   "document_chunk",
             "timestamp":   ts,
+            **({"source_stamp": source_stamp} if source_stamp else {}),
             **tags_dict,
         }
         for idx in range(len(chunks))

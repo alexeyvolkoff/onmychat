@@ -2861,8 +2861,8 @@ async def _perform_prompt_gen(ctx: UserContext,
         # result object
         response = {}
         response["content"] = llm_response.strip()
-        if sources:  # добавляем блок только если есть источники
-            response["sources"] = sources
+        # sources уже отправлены early-событием (yield {"sources": ...}) —
+        # не дублируем их в финальном ответе, иначе widget получит двойной список
         if strict_fact:    
             response["facts"] = strict_fact
         if llm_think_response and allow_thinking:    
