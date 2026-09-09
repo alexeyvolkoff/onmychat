@@ -3526,15 +3526,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
                 final_prompt = f"{clean_appearance_text}, {clean_prompt}"
 
     # 2. Collect all style and model/LoRA tags to append to the end of the prompt
+    # No automatic style injection — only tags explicitly set by the user
+    # (style_lora(s) in settings or typed on the client side)
     tags_to_add = []
-    
-    # Add style tag (for all prompt types)
-    style = ctx.settings.get("style", "realistic")
-    if style:
-        style_tag = f"<{style}>"
-        if style_tag not in tags_to_add:
-            tags_to_add.append(style_tag)
-            
+
     # Add model/LoRA tags (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
         # Assistant persona: new clients set assistant_model; character_lora is
@@ -3546,12 +3541,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         if model_tag not in tags_to_add:
             tags_to_add.append(model_tag)
 
-    # Style LoRAs: default for realistic mode or from settings
-    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
-    if style == "realistic" and not effective_fun:
-        if "<Real Humans>" not in tags_to_add and "<real humans>" not in tags_to_add:
-            tags_to_add.append("<Real Humans>")
-
+    # Style LoRAs explicitly set by the user in settings
     for sk in ("style_lora", "style_loras"):
         val = ctx.settings.get(sk)
         if val:
@@ -3568,6 +3558,11 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # 3. Append the tags to the prompt
     if tags_to_add:
+        # Remove tags we are re-appending ourselves (LLM may have copied them
+        # from history earlier or into the refined text) to avoid duplicates
+        for t in tags_to_add:
+            t_name = re.escape(t.strip("<>"))
+            final_prompt = re.sub(rf"\s*<{t_name}>", "", final_prompt, flags=re.IGNORECASE)
         tag_suffix = " " + " ".join(tags_to_add)
         if "Image:" in final_prompt:
              lines = final_prompt.split("\n")
@@ -3859,13 +3854,6 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
                 active_lora_keys.add(cand_key)
                 has_style_lora = True
                 logging.info(f"Using style LoRA from settings: {cand_key} ({lora_nodes[cand_key].get('name')})")
-
-        # If still no style LoRA and in realistic style, activate default style LoRA for work mode
-        if not has_style_lora and style == "realistic" and not effective_fun:
-            work_style_key = lora_map.get("real humans") or lora_map.get("real_humans")
-            if work_style_key and work_style_key in lora_nodes:
-                active_lora_keys.add(work_style_key)
-                logging.info(f"Using default style LoRA for realistic work mode: {work_style_key} ({lora_nodes[work_style_key].get('name')})")
 
     # Reset all loras to off, then activate active ones
     for key, val in lora_nodes.items():
