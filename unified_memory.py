@@ -104,20 +104,34 @@ def get_collection():
 
 # ─── Вспомогательные ─────────────────────────────────────────────────────────
 
-def _tags_str(tags: list) -> str:
-    """['omd', '#docs'] -> 'omd,docs'"""
-    return ",".join(t.strip().lstrip("#").lower() for t in tags if t.strip())
+def _normalize_tag(t: str) -> str:
+    """' #OMD  ' -> 'omd'"""
+    return t.strip().lstrip("#").lower()
+
+
+def _tags_meta(tags: list) -> dict:
+    """
+    ['omd', '#docs'] -> {'t_omd': 1, 't_docs': 1, 'tags': 'omd,docs'}
+    Каждый тег — отдельное поле t_<tag>: 1 (для $eq-фильтрации).
+    Поле 'tags' сохраняется как человекочитаемая строка.
+    """
+    clean = [_normalize_tag(t) for t in tags if t.strip()]
+    meta = {"tags": ",".join(clean)}
+    for t in clean:
+        meta[f"t_{t}"] = 1
+    return meta
 
 
 def _tags_match_filter(tags_filter: list) -> dict:
     """
-    Строит ChromaDB where-фильтр: хотя бы один из тегов присутствует в поле tags.
+    ChromaDB where-фильтр: хотя бы один из тегов присутствует.
+    Использует отдельные t_<tag> поля с $eq (обход бага $contains в ChromaDB 1.5.x).
     """
     if not tags_filter:
         return {}
     if len(tags_filter) == 1:
-        return {"tags": {"$contains": tags_filter[0]}}
-    return {"$or": [{"tags": {"$contains": t}} for t in tags_filter]}
+        return {f"t_{_normalize_tag(tags_filter[0])}": {"$eq": 1}}
+    return {"$or": [{f"t_{_normalize_tag(t)}": {"$eq": 1}} for t in tags_filter]}
 
 
 # ─── Поиск ───────────────────────────────────────────────────────────────────
@@ -216,12 +230,12 @@ def upsert_memory_card(
 
     metadata = {
         "type":      "memory_card",
-        "tags":      _tags_str(tags or []),
         "owner":     owner,
         "title":     title,
         "relevance": relevance,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    metadata.update(_tags_meta(tags or []))
     if document_id:
         metadata["document_id"] = document_id
 
@@ -265,7 +279,7 @@ def get_all_memory_cards(owner=None) -> list:
                 "_id": doc_id,
                 "text": results["documents"][i],
                 **meta,
-                "tags": [t for t in meta.get("tags", "").split(",") if t],
+                "tags": [k[2:] for k in meta if k.startswith("t_")],
             })
         return out
     except Exception as e:
@@ -307,7 +321,7 @@ def chunk_and_index_document(
     if not chunks:
         return 0
 
-    tags_str = _tags_str(tags or [])
+    tags_dict = _tags_meta(tags or [])
     ts = datetime.now().isoformat(timespec="seconds")
     title = title or document_id.split("/")[-1]
 
@@ -316,13 +330,13 @@ def chunk_and_index_document(
     metadatas  = [
         {
             "type":        "file_chunk",
-            "tags":        tags_str,
             "owner":       owner,
             "document_id": document_id,
             "chunk_id":    str(idx),
             "title":       title,
             "relevance":   "document_chunk",
             "timestamp":   ts,
+            **tags_dict,
         }
         for idx in range(len(chunks))
     ]
@@ -411,7 +425,7 @@ def load_qa_entries(entries: list) -> int:
     ids        = [f"qa:{i}" for i in range(len(questions))]
     embeddings = get_model().encode(questions, show_progress_bar=False).tolist()
     metadatas  = [
-        {"type": "qa", "answer": a, "tags": "qa", "owner": "system"}
+        {"type": "qa", "answer": a, "owner": "system", "t_qa": 1, "t_omd": 1, "tags": "qa,omd"}
         for a in answers
     ]
     coll.upsert(ids=ids, embeddings=embeddings, documents=questions, metadatas=metadatas)
@@ -440,18 +454,23 @@ def search_for_rag(
     private_mode: bool = False,
     owner=None,
     top_k=None,
+    tags_filter=None,
 ) -> list:
     """
     Поиск для RAG-инъекции:
-    - private_mode=True  -> вся база (владелец)
-    - private_mode=False -> только PUBLIC_TAGS (гость)
+    - tags_filter (хештеги из промпта) -> только эти теги
+    - private_mode=True + нет тегов  -> вся база (владелец)
+    - private_mode=False + нет тегов -> только PUBLIC_TAGS (гость)
     """
     if top_k is None:
         top_k = RAG_TOP_K
-    tags_filter = None if private_mode else PUBLIC_TAGS
+    if tags_filter:
+        tag_filter = tags_filter
+    else:
+        tag_filter = None if private_mode else PUBLIC_TAGS
     return search(
         query,
-        tags_filter=tags_filter,
+        tags_filter=tag_filter,
         owner=owner if private_mode else None,
         top_k=top_k,
         threshold=RAG_THRESHOLD,

@@ -822,11 +822,13 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
 async def search_memory_tool(ctx: UserContext, query: str) -> str:
     try:
         # RAG 3.0: unified search across memory cards + file chunks
+        prompt_tags = _extract_hashtags(query)
         all_results = unified_memory.search_for_rag(
             query,
             private_mode=ctx.private_mode,
             owner=ctx.user_id if ctx.private_mode else None,
             top_k=5,
+            tags_filter=prompt_tags or None,
         )
 
         # Collect sources for the frontend widget (cached on UserContext)
@@ -2467,6 +2469,18 @@ async def get_source_metadata(ctx: UserContext, owner: str, path: str) -> dict:
 
     return metadata
 
+def _extract_hashtags(text: str, limit: int = 7) -> list:
+    """Извлекает хештеги #omd, #docs из текста промпта. Возвращает ['omd', 'docs']."""
+    tags = []
+    for m in re.findall(r"#([\w\-]+)", text or ""):
+        t = m.strip().lstrip("#").lower()
+        if t and t not in tags:
+            tags.append(t)
+        if len(tags) >= limit:
+            break
+    return tags
+
+
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
@@ -2500,11 +2514,14 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     # 2. Поиск по unified ChromaDB (если не пропускаем)
     if not skip_db:
         try:
+            # Хештеги из промпта переопределяют дефолтный фильтр
+            prompt_tags = _extract_hashtags(query)
             db_results = unified_memory.search_for_rag(
                 query,
                 private_mode=ctx.private_mode,
                 owner=ctx.user_id if ctx.private_mode else None,
                 top_k=rag_top_k,
+                tags_filter=prompt_tags or None,
             )
             for r in db_results:
                 rec_type  = r.get("type", "")
