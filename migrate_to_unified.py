@@ -48,11 +48,22 @@ def map_old_meta(meta: dict, record_type: str, tags: str) -> dict:
         "timestamp": meta.get("timestamp", ""),
     }
 
+    if not meta.get("document_id"):
+        # Старая база omd_search хранила путь в itemPath
+        if meta.get("itemPath"):
+            new_meta["document_id"] = meta["itemPath"]
+        elif meta.get("url"):
+            new_meta["document_id"] = meta["url"]
+
     if meta.get("document_id"):
         new_meta["document_id"] = meta["document_id"]
 
     if meta.get("chunk_id") is not None:
         new_meta["chunk_id"] = str(meta["chunk_id"])
+
+    # timestamp — из last_modified, если не задан
+    if not new_meta["timestamp"] and meta.get("last_modified"):
+        new_meta["timestamp"] = meta["last_modified"]
 
     # title — из имени файла или из старого title
     title = meta.get("title", "")
@@ -198,11 +209,11 @@ def main():
         log.info(f"\n[2/3] Старая база 'omd_search': {count_search} записей")
 
         if count_search > 0:
-            # Файловые чанки — все как file_chunk с тегом "omd"
+            # Личные документы пользователя — без тегов (searchindex без тегов)
             migrated = migrate_collection(
                 src_search, dst,
                 record_type="file_chunk",
-                tags="omd",
+                tags="",
                 id_prefix="migrated_search_",
                 label="omd_search",
             )
