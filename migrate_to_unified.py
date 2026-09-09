@@ -55,6 +55,9 @@ def map_old_meta(meta: dict, record_type: str, tags: str) -> dict:
         elif meta.get("url"):
             new_meta["document_id"] = meta["url"]
 
+    if new_meta.get("document_id") and not new_meta["document_id"].startswith("http"):
+        new_meta["document_id"] = norm_document_path(new_meta["document_id"])
+
     if meta.get("document_id"):
         new_meta["document_id"] = meta["document_id"]
 
@@ -78,6 +81,13 @@ def map_old_meta(meta: dict, record_type: str, tags: str) -> dict:
     new_meta["tags"] = ",".join(tag_list)
 
     return new_meta
+
+
+def norm_document_path(path: str) -> str:
+    """Убирает префикс владельца: /alexey/beelink/doc.txt -> /beelink/doc.txt."""
+    if path.startswith("/") and path.count("/") >= 2:
+        return "/" + path.lstrip("/").split("/", 1)[1]
+    return path
 
 
 def migrate_collection(

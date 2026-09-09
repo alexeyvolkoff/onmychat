@@ -1081,8 +1081,6 @@ def _device_cards_response():
             c["created"] = c.get("timestamp", "") or ""
         if not c.get("title"):
             c["title"] = (c.get("document_id") or "").split("/")[-1]
-        if c.get("type") == "document" and not c.get("text"):
-            c["text"] = f"{c.get('chunks', 0)} chunks"
         out.append(c)
     return out
 
@@ -1382,8 +1380,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                           return
 
             logging.info(f"Check intent: {check_intent}")
-            if check_intent in ["tools", "search"]:
-                 status_msg = "searching" if check_intent == "search" else "executing"
+            if check_intent in ["tools", "search", "explain", "think"]:
+                 # Пока ищем в unified_memory — статус thinking
+                 status_msg = "executing" if check_intent == "tools" else "thinking"
                  logging.info(f"Yielding {status_msg} status")
                  yield f"data: {json.dumps({'status': status_msg})}\n\n"
                  
@@ -1464,37 +1463,49 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 llm_message = prompt
                 # [LEGACY HISTORY] save_user_message removed
 
-            elif intent == "explain" or intent == "think":    
-                instruction=(
-                    "If Known facts are provided and they are relevant to user's query, you must strictly base your response only on them. "
-                    "Do not invent or speculate. If no *Strict facts* are provided, do not guess, clearly separate what is factual from what is uncertain, and explicitly state the limitations."
-                    "If no relevant Known facts are provided, respond freely as a helpful conversational assistant."
-                )
-                llm_message = prompt
-            elif intent == "search":
-                # Extract query from prompt (remove /search prefix if present)
+            elif intent == "explain" or intent == "think" or intent == "search":
+                # Единый пайплайн: сначала unified_memory (личные знания),
+                # и только если релевантных источников нет — веб-поиск.
                 search_query = prompt
                 if prompt.lower().startswith("/search"):
                     search_query = prompt[7:].strip()
-                
-                # 1. First search internal memory and indexed files
+
+                # 1. Поиск в unified_memory (internal memory + indexed files)
                 search_results = await core_service.search_memory_tool(ctx, search_query)
-                
-                # 2. Fall back to web search if nothing found internally
+                source = "internal"
+
+                # 2. Фолбэк на веб-поиск, если внутри ничего релевантного
                 if "No relevant knowledge or files found." in search_results:
                     logging.info(f"No internal results for '{search_query}'. Falling back to web search.")
+                    yield f"data: {json.dumps({'status': 'searching'})}\n\n"
                     web_results = await core_service.search_web(ctx, search_query)
-                    search_results = f"Web Search Results:\n{web_results}"
-                
-                # [LEGACY HISTORY] Load history removed
-                history = provided_history or []
-                
-                instruction = (
-                    f"The user asked to search for information. Here are the REAL search results (from internal knowledge or web):\n\n"
-                    f"{search_results}\n\n"
-                    "Summarize these results for the user in a helpful way. "
-                    "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
-                )
+                    if web_results and "No results found" not in web_results and not web_results.startswith("Error"):
+                        search_results = f"Web Search Results:\n{web_results}"
+                        source = "web"
+                    else:
+                        source = "none"
+
+                if source == "internal":
+                    instruction = (
+                        "The user asked a question. Relevant knowledge was found in the user's personal unified memory "
+                        "(documents, files, knowledge cards):\n\n"
+                        f"{search_results}\n\n"
+                        "Base your answer ONLY on this material where it is relevant, and mention the file paths it comes from. "
+                        "Do not invent information."
+                    )
+                elif source == "web":
+                    instruction = (
+                        "The user asked a question. No relevant internal knowledge was found, so web search results are provided:\n\n"
+                        f"{search_results}\n\n"
+                        "Summarize these results for the user in a helpful way. "
+                        "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
+                    )
+                else:
+                    instruction = (
+                        "No relevant information was found in the user's personal memory or on the web. "
+                        "Respond as a helpful conversational assistant: clearly separate facts from assumptions, "
+                        "state the limitations honestly, and do not invent specific data."
+                    )
                 llm_message = search_query
             elif intent.startswith("recognize"): 
 
