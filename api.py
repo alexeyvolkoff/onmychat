@@ -1194,6 +1194,9 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/assistant/loras")
+async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     ctx.private_mode = is_private_mode(request, ctx)
     return core_service.get_available_loras(ctx, mode=mode)
@@ -1229,6 +1232,15 @@ async def get_assistant_avatars_endpoint(omd_key: str | None = Depends(get_omd_k
     ctx = get_ctx(omd_key)
     avatars = await core_service.get_generated_avatars(ctx)
     return {"status": "ok", "avatars": avatars}
+
+
+@app.post("/chats/{chat}/archive")
+async def archive_chat(chat: str, omd_key: str | None = Depends(get_omd_key)):
+    return {"status": "ok", "chat": chat or "default"}
+
+@app.post("/chats/{chat}/restore")
+async def restore_chat(chat: str, omd_key: str | None = Depends(get_omd_key)):
+    return {"status": "ok", "chat": chat or "default"}
 
 
 # [LEGACY HISTORY] /history endpoints removed
