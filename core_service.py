@@ -3923,7 +3923,26 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         if filename.startswith("ComfyUI_temp"):
              filename = f"IMG_{timestamp}.png"
 
-    if ctx.private_mode:
+    gateway_uploaded = False
+    if upload_storage and ctx.omd_key:
+        # Old frontend (filemanager) delivery: image must land in the user's
+        # storage through the gateway, it renders /<storage>/generated/<file>
+        effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anon" else "")
+        if effective_storage:
+            dest = f"{effective_storage}/generated"
+            logging.info(f"Uploading to storage: {dest}/{filename}")
+            try:
+                upload_data_to_storage(ctx.omd_key, dest, filename, img_data, "image/png")
+                readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+                upload_data_to_storage(ctx.omd_key, dest, readme_filename, formatted_readme, "text/markdown")
+                logging.info("Upload completed successfully.")
+                if not ctx.storage:
+                    ctx.storage = effective_storage
+                gateway_uploaded = True
+            except Exception as e:
+                logging.error(f"Upload to storage failed: {e}")
+
+    if ctx.private_mode and not gateway_uploaded:
         # Private Mode: Node Owner or explicitly authorized user on device.
         # Save directly to local storage on host relative to user's home directory.
         home_dir = os.path.expanduser("~")
@@ -3948,7 +3967,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.warning(f"[PrivateMode] Local file save failed: {e}")
         from api import store_ephemeral_image
         store_ephemeral_image(filename, img_data)
-    else:
+    elif not gateway_uploaded:
         # Public Mode: Guest or Paid Subscriber -> ZERO CONTACT with foreign data!
         # Do NOT save to disk. Store solely in ephemeral in-memory cache for API delivery.
         from api import store_ephemeral_image
