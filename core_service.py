@@ -3537,18 +3537,14 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
             
     # Add model/LoRA tags (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
+        # Assistant persona: new clients set assistant_model; character_lora is
+        # a legacy alias kept by old frontend settings blobs — never send both
         assistant_model = ctx.settings.get("assistant_model") or ctx.settings.get("character_lora") or user_context.DEFAULT_ASSISTANT_MODEL
         if assistant_model.lower() == "june":
             assistant_model = user_context.DEFAULT_ASSISTANT_MODEL
         model_tag = assistant_model if assistant_model.startswith("<") else f"<{assistant_model}>"
         if model_tag not in tags_to_add:
             tags_to_add.append(model_tag)
-                
-        character_lora = ctx.settings.get("character_lora", "")
-        if character_lora and character_lora.lower() != "june" and character_lora != assistant_model:
-            lora_tag = character_lora if character_lora.startswith("<") else f"<{character_lora}>"
-            if lora_tag not in tags_to_add:
-                tags_to_add.append(lora_tag)
 
     # Style LoRAs: default for realistic mode or from settings
     effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
@@ -3818,8 +3814,8 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
         )
         if not has_character_lora:
             matched_key = None
-            # Check character_lora, then assistant_model in settings
-            for setting_key in ("character_lora", "assistant_model"):
+            # Check assistant_model first, character_lora is a legacy alias
+            for setting_key in ("assistant_model", "character_lora"):
                 candidate = ctx.settings.get(setting_key, "").lower().strip("<> ")
                 if candidate:
                     matched_key = (
