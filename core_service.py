@@ -3135,9 +3135,52 @@ async def perform_prompt(
 # === Генерация картинок ===
 
 # === Chats naming ==== #
+# Emoji enforcement for chat titles
+_CHAT_EMOJI_RE = re.compile(
+    r'[\u2190-\u2BFF\u2600-\u27BF\uFE0F\u200D\U0001F000-\U0001FAFF\U0001FB00-\U0001FFFD]'
+)
+_CHAT_EMOJI_START_RE = re.compile(
+    r'^[\u2190-\u2BFF\u2600-\u27BF\uFE0F\u200D\U0001F000-\U0001FAFF\U0001FB00-\U0001FFFD]'
+)
+
+_TITLE_EMOJI_MAP = {
+    "code": "💻", "program": "💻", "python": "💻", "javascript": "💻", "script": "💻",
+    "bug": "🐛", "error": "⚠️", "debug": "🐛", "exception": "⚠️", "crash": "💥",
+    "write": "✍️", "draft": "✍️", "document": "📄", "letter": "📄", "report": "📊",
+    "translate": "🌍", "language": "🌍",
+    "meeting": "📅", "plan": "🗓️", "schedule": "🗓️", "calendar": "📅",
+    "todo": "✅", "task": "✅", "list": "📝",
+    "travel": "✈️", "trip": "🧳", "flight": "✈️",
+    "recipe": "🍳", "cook": "🍳", "food": "🍔", "coffee": "☕",
+    "photo": "📷", "picture": "🖼️", "image": "🖼️", "video": "🎬", "music": "🎵",
+    "install": "🔧", "setup": "🔧", "config": "⚙️", "settings": "⚙️", "network": "🌐",
+    "security": "🔒", "password": "🔑", "encrypt": "🔒",
+    "hello": "👋", "привет": "👋", "greet": "👋", "help": "🆘", "помощь": "🆘",
+    "idea": "💡", "brainstorm": "💡", "research": "🔬", "study": "📚", "learn": "📚", "book": "📚",
+    "price": "💰", "budget": "💰", "shopping": "🛒", "buy": "🛒",
+    "weather": "🌤️", "health": "🍀", "doctor": "🩺", "sport": "🏋️",
+    "server": "🖥️", "docker": "🐳", "database": "🗄️",
+}
+
+
+def title_starts_with_emoji(text: str) -> bool:
+    return bool(_CHAT_EMOJI_START_RE.match(text or ""))
+
+
+def pick_title_emoji(message: str) -> str:
+    low = (message or "").lower()
+    for kw, emo in _TITLE_EMOJI_MAP.items():
+        if re.search(r'\b' + re.escape(kw), low):
+            return emo
+    return "💬"
+
+
 async def generate_chat_title(message: str, model: str) -> str:
     """
     Спросить у LLM короткое имя для чата.
+    Гарантирует, что заголовок начинается с эмодзи, даже если модель
+    его не вернула: emoji добавляется в коде по ключевым словам
+    первого сообщения (💬 по умолчанию).
     """
     prompt = (
         "Generate a short (2-3 words) title for a chat conversation based on the first message. "
@@ -3154,15 +3197,23 @@ async def generate_chat_title(message: str, model: str) -> str:
             {"role": "system", "content": "You are a naming assistant."},
             {"role": "user", "content": prompt}
         ],
-        "model": model, 
+        "model": model,
         "stream": False,
         "options": {"temperature": 0.3}
     }
 
     data = await llm_request(payload)
-    if not data:
-        return "New chat"
-    return data["message"]["content"].strip() or "New chat"
+    title = data["message"]["content"].strip() if data else ""
+    # models sometimes wrap the title in quotes
+    title = title.strip().strip('"').strip("'")
+    if not title:
+        return "💬 New chat"
+    if not title_starts_with_emoji(title):
+        # drop an emoji that the model placed mid-title so we keep exactly one leading one
+        title = _CHAT_EMOJI_RE.sub('', title, count=1) if _CHAT_EMOJI_RE.search(title[:3]) else title
+        title = f"{pick_title_emoji(message)} {title.strip()}"
+    return title
+
 
 
 async def generate_chat_summary(history: list, model: str, previous_summary: str = None) -> str:
@@ -3264,7 +3315,8 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
                 chat_title = await generate_chat_title(first_message, model)
             except Exception as e:
                 logging.warning(f"Failed to generate chat title: {e}")
-                chat_title = first_message[:30] + "..." if len(first_message) > 30 else first_message
+                chat_title = (first_message[:30] + "..." if len(first_message) > 30 else first_message)
+                chat_title = f"{pick_title_emoji(first_message)} {chat_title}"
                 
         # 2. Generate new chat name (ID) using slugified title
         title_slug = slugify(chat_title)
