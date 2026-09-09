@@ -1135,6 +1135,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     )
 
     if provided_settings:
+        # Strip heavy fields that backend never reads — avoids sending base64 avatar every request
+        provided_settings.pop("assistant_avatar", None)
         logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         ctx.settings.update(provided_settings)
         if provided_settings.get("defaultStorage"):
@@ -1187,154 +1189,128 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             token_balance = float(request.headers.get("x-omd-token-balance", "0.0"))
 
 
-            # perform commands
-            if prompt.startswith("/mode"):
-                args = prompt[len("/mode"):].strip().split(maxsplit=1)
-                new_mode = "work"
-
-                if args:
-                    if args[0].lower() == "fun":
-                        new_mode = "fun"
-                    elif args[0].lower() == "work":
-                        new_mode = "work"
-
-                llm_message = "get ready to play" if new_mode == "fun" else "calm down for now"
-
-                if len(args) > 1:
-                    llm_message = args[1].strip()
+            # 1. Broad Intent Detection First
             
+            # Check for explicit slash commands
+            explicit_map = {
+                "/show": "show",
+                "/view": "view", "/imagine": "view",
+                "/generate": "generate",
+                "/import": "import", "/learn": "import",
+                "/recognize": "recognize", "/detect": "recognize",
+                "/think": "think",
+                "/explain": "explain",
+                "/search": "search",
+                "/doc": "doc",
+                "/mcp": "doc"
+            }
+            
+            intent = "chat"
+            raw_intent = ""
+            
+            for prefix, mapped_intent in explicit_map.items():
+                if prompt.startswith(prefix):
+                    intent = mapped_intent
+                    raw_intent = f"Explicit command: {intent}"
+                    break
+            
+            if not raw_intent:
 
-                ctx.settings["content_mode"] = new_mode
-                logging.info(f"User: {ctx.user_id} switched mode to {new_mode}")
-                user_context.save_user_settings(ctx)
-                instruction = (
-                    "User has switched mode to '{}'.\nPlease, act accordingly."
-                ).format(new_mode)
+                # Check for RAG intent independently 
+                # (so we don't accidentally class it as a tool if it isn't meant to be)
+                raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
+                lines = raw_intent.strip().split("\n", 1)
+                intent_raw = lines[0].strip().lower()
                 
-                event = 'reload_chats'
-                # 1. Broad Intent Detection First
-                # 1. Broad Intent Detection First
-                
-                # Check for explicit slash commands
-                explicit_map = {
-                    "/show": "show",
-                    "/view": "view", "/imagine": "view",
-                    "/generate": "generate",
-                    "/import": "import", "/learn": "import",
-                    "/recognize": "recognize", "/detect": "recognize",
-                    "/think": "think",
-                    "/explain": "explain",
-                    "/search": "search",
-                    "/doc": "doc",
-                    "/mcp": "doc"
-                }
-                
-                intent = "chat"
-                raw_intent = ""
-                
-                for prefix, mapped_intent in explicit_map.items():
-                    if prompt.startswith(prefix):
-                        intent = mapped_intent
-                        raw_intent = f"Explicit command: {intent}"
+                # Whitelist and sanitize intent
+                allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search"]
+                for allowed in allowed_intents:
+                    if intent_raw.startswith(allowed):
+                        intent = allowed
                         break
-                
-                if not raw_intent:
+            
+            # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
+            # This ensures chat is in the index and has a title
+            if intent != "chat": # perform_prompt handles chat intent
+                 # Only if we are branching away from perform_prompt
+                 try:
+                      chat_info = await core_service.ensure_chat(ctx, chat, prompt)
+                      chat = chat_info.get("name", chat)
+                 except Exception as e:
+                      logging.error(f"Failed to ensure chat for intent {intent}: {e}")
+            
+            logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
+            
+            # Yield specialized status if it matches (overwrite thinking)
+            status_map_detected = {
+                "show": "generating",
+                "view": "generating",
+                "generate": "generating",
+                "explain": "thinking",
+                "think": "thinking",
+                "search": "searching",
+                "recognize": "thinking",
+                "import": "learning"
+            }
+            check_intent_status = intent.split(":")[0] if ":" in intent else intent
+            if check_intent_status in status_map_detected:
+                logging.info(f"Notifying frontend about new status: {status_map_detected[check_intent_status]}")
+                yield f"data: {json.dumps({'status': status_map_detected[check_intent_status]})}\n\n"
 
-                    # Check for RAG intent independently 
-                    # (so we don't accidentally class it as a tool if it isn't meant to be)
-                    raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
-                    lines = raw_intent.strip().split("\n", 1)
-                    intent_raw = lines[0].strip().lower()
-                    
-                    # Whitelist and sanitize intent
-                    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search"]
-                    for allowed in allowed_intents:
-                        if intent_raw.startswith(allowed):
-                            intent = allowed
-                            break
-                
-                # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
-                # This ensures chat is in the index and has a title
-                if intent != "chat": # perform_prompt handles chat intent
-                     # Only if we are branching away from perform_prompt
-                     try:
-                          chat_info = await core_service.ensure_chat(ctx, chat, prompt)
-                          chat = chat_info.get("name", chat)
-                     except Exception as e:
-                          logging.error(f"Failed to ensure chat for intent {intent}: {e}")
-                
-                logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
-                
-                # Yield specialized status if it matches (overwrite thinking)
-                status_map_detected = {
-                    "show": "generating",
-                    "view": "generating",
-                    "generate": "generating",
-                    "explain": "thinking",
-                    "think": "thinking",
-                    "search": "searching",
-                    "recognize": "thinking",
-                    "import": "learning"
-                }
-                check_intent_status = intent.split(":")[0] if ":" in intent else intent
-                if check_intent_status in status_map_detected:
-                    logging.info(f"Notifying frontend about new status: {status_map_detected[check_intent_status]}")
-                    yield f"data: {json.dumps({'status': status_map_detected[check_intent_status]})}\n\n"
+            # 2. Extract Memory Facts immediately (from the combined intent/memory string)
+            memory_fact = memory_index.extract_memory_from_response(raw_intent)
+            if memory_fact:
+                try:
+                    logging.info(f"Notifying frontend about new fact: {memory_fact}")
+                    # memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="contextual")
+                    yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
+                except Exception as e:
+                    logging.error(f"Error sending fact notification: {e}")
 
-                # 2. Extract Memory Facts immediately (from the combined intent/memory string)
-                memory_fact = memory_index.extract_memory_from_response(raw_intent)
-                if memory_fact:
-                    try:
-                        logging.info(f"Notifying frontend about new fact: {memory_fact}")
-                        # memory_index.add_memory_card(ctx, memory_fact, collection="user", relevance="contextual")
-                        yield f"data: {json.dumps({'newFact': memory_fact})}\n\n"
-                    except Exception as e:
-                        logging.error(f"Error sending fact notification: {e}")
+            # 3. Handle Special Primary Intents (Slash overrides)
+            if prompt.startswith("/show"):
+                intent = "show"
+            elif prompt.startswith("/generate"):
+                intent = "generate"
+                img_prompt = prompt[len("/generate"):].strip()
+                bypass_safety = ctx.private_mode or ctx.is_unlimited
+                if not bypass_safety:
+                    # Whitelist bypass for explicit content safety check
+                    logging.info(f"Checking image generation safety: {img_prompt}")
+                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                    if safety_result != "SAFE":
+                        logging.info(f"Image generation safety check failed: {safety_result}")
+                        warning = "I can not generate this. Subscribe to Premium plan to verify your age."
+                        yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
+                        return
+            elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
+                intent = "view"
+            elif prompt.startswith("/tools"):
+                # Provide an immediate, reliable list of tools
+                mode = ctx.settings.get("content_mode", "work")
+                tools_list = await core_service.list_supported_tools(ctx, mode=mode)
 
-                # 3. Handle Special Primary Intents (Slash overrides)
-                if prompt.startswith("/show"):
-                    intent = "show"
-                elif prompt.startswith("/generate"):
-                    intent = "generate"
-                    img_prompt = prompt[len("/generate"):].strip()
-                    bypass_safety = ctx.private_mode or ctx.is_unlimited
-                    if not bypass_safety:
-                        # Whitelist bypass for explicit content safety check
-                        logging.info(f"Checking image generation safety: {img_prompt}")
-                        safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                        if safety_result != "SAFE":
-                            logging.info(f"Image generation safety check failed: {safety_result}")
-                            warning = "I can not generate this. Subscribe to Premium plan to verify your age."
-                            yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
-                            return
-                elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
-                    intent = "view"
-                elif prompt.startswith("/tools"):
-                    # Provide an immediate, reliable list of tools
-                    mode = ctx.settings.get("content_mode", "work")
-                    tools_list = await core_service.list_supported_tools(ctx, mode=mode)
+                # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
 
-                    # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
-
-                    yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
-                    return
-                elif prompt.startswith("/import") or prompt.startswith("/learn"):  
-                    m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))(?:\s+(\S+))?', prompt)
-                    file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-                    collection = m.group(4) if m else "user"
-                    if file_path_or_url:
-                        intent = f"import:{file_path_or_url}:{collection}"
-                elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
-                    m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
-                    file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
-                    if file_path_or_url:
-                        intent = f"recognize:{file_path_or_url}"
-                elif prompt.startswith("/think"):  
-                    intent = "think"
-                elif prompt.startswith("/explain"):
-                    intent = "explain"
-                elif prompt.startswith("/search"):
-                    intent = "search"
+                yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
+                return
+            elif prompt.startswith("/import") or prompt.startswith("/learn"):  
+                m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))(?:\s+(\S+))?', prompt)
+                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                collection = m.group(4) if m else "user"
+                if file_path_or_url:
+                    intent = f"import:{file_path_or_url}:{collection}"
+            elif prompt.startswith("/recognize") or prompt.startswith("/detect"):  
+                m = re.match(r'^/(?:recognize|detect)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))', prompt)
+                file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
+                if file_path_or_url:
+                    intent = f"recognize:{file_path_or_url}"
+            elif prompt.startswith("/think"):  
+                intent = "think"
+            elif prompt.startswith("/explain"):
+                intent = "explain"
+            elif prompt.startswith("/search"):
+                intent = "search"
         
             restricted_intents = ["tools", "doc"]
             
