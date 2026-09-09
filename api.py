@@ -1068,6 +1068,48 @@ async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── On-device memory cards (unified ChromaDB, только владелец AI-ноды) ─────
+
+def _device_cards_response():
+    """Карточки проиндексированных документов из unified базы (memory_card, не чанки)."""
+    cards = unified_memory.get_all_memory_cards()
+    out = []
+    for c in cards:
+        c["onDevice"] = True
+        c["source"] = "device"
+        if not c.get("created"):
+            c["created"] = c.get("timestamp", "") or ""
+        if not c.get("title"):
+            c["title"] = (c.get("document_id") or "").split("/")[-1]
+        out.append(c)
+    return out
+
+
+@app.get("/api/device_memory")
+async def device_memory_endpoint(request: Request, omd_key: str | None = Depends(get_omd_key)):
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        return {"memories": []}
+    try:
+        return {"memories": _device_cards_response()}
+    except Exception as e:
+        logging.error(f"[device_memory] list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/device_memory/{mem_id}")
+async def delete_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        unified_memory.delete_memory_card(mem_id=mem_id)
+        return {"status": "deleted", "memory_id": mem_id}
+    except Exception as e:
+        logging.error(f"[device_memory] delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # [LEGACY HISTORY] /chats endpoints removed
 
