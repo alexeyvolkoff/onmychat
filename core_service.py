@@ -822,14 +822,8 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
 async def search_memory_tool(ctx: UserContext, query: str) -> str:
     try:
         # RAG 3.0: unified search across memory cards + file chunks
-        prompt_tags = _extract_hashtags(query)
-        all_results = unified_memory.search_for_rag(
-            query,
-            private_mode=ctx.private_mode,
-            owner=ctx.user_id if ctx.private_mode else None,
-            top_k=5,
-            tags_filter=prompt_tags or None,
-        )
+        all_results = await search_memory_results(ctx, query)
+        ctx.temp_search_distance = min((r.get("distance", 1.0) for r in all_results), default=1.0)
 
         # Collect sources for the frontend widget (cached on UserContext)
         sources = []
@@ -865,6 +859,19 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
         return output.strip()
     except Exception as e:
         return f"Error searching memory/files: {e}"
+
+KNOWLEDGE_STRONG_DISTANCE = float(SETTINGS.get("KNOWLEDGE_STRONG_DISTANCE", "0.55"))
+
+async def search_memory_results(ctx: UserContext, query: str) -> list:
+    """Raw unified memory search with relevance data (distance: lower=better)."""
+    prompt_tags = _extract_hashtags(query)
+    return unified_memory.search_for_rag(
+        query,
+        private_mode=ctx.private_mode,
+        owner=ctx.user_id if ctx.private_mode else None,
+        top_k=5,
+        tags_filter=prompt_tags or None,
+    )
 
 async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
     if not ctx.omd_key or not ctx.storage:

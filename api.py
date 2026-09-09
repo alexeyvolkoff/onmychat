@@ -1719,26 +1719,36 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] save_user_message removed
 
             elif intent == "explain" or intent == "think" or intent == "search":
-                # Единый пайплайн: сначала unified_memory (личные знания),
-                # и только если релевантных источников нет — веб-поиск.
+                # Единый пайплайн: unified_memory (личные знания) vs веб-поиск.
+                # Веб используется если внутри пусто или хиты слаборелевантны.
                 search_query = prompt
                 if prompt.lower().startswith("/search"):
                     search_query = prompt[7:].strip()
 
                 # 1. Поиск в unified_memory (internal memory + indexed files)
                 search_results = await core_service.search_memory_tool(ctx, search_query)
-                source = "internal"
+                best_distance = getattr(ctx, "temp_search_distance", 1.0)
+                internal_found = (
+                    search_results
+                    and "No relevant knowledge or files found." not in search_results
+                    and not search_results.startswith("Error")
+                )
+                internal_strong = internal_found and best_distance <= core_service.KNOWLEDGE_STRONG_DISTANCE
+                source = "internal" if internal_found else "none"
 
-                # 2. Фолбэк на веб-поиск, если внутри ничего релевантного
-                if "No relevant knowledge or files found." in search_results:
-                    logging.info(f"No internal results for '{search_query}'. Falling back to web search.")
+                # 2. Веб-поиск: если внутри пусто или хиты слабые
+                if not internal_strong:
+                    logging.info(
+                        f"Internal search {'empty' if not internal_found else f'weak (best distance {best_distance:.2f})'}"
+                        f" for '{search_query}'. Trying web search."
+                    )
                     yield f"data: {json.dumps({'status': 'searching'})}\n\n"
                     web_results = await core_service.search_web(ctx, search_query)
                     if web_results and "No results found" not in web_results and not web_results.startswith("Error"):
+                        if internal_found:
+                            ctx.temp_sources = []  # ответ будет из веба, не показывать внутренние источники
                         search_results = f"Web Search Results:\n{web_results}"
                         source = "web"
-                    else:
-                        source = "none"
 
                 if source == "internal":
                     instruction = (
@@ -1748,9 +1758,14 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         "Base your answer ONLY on this material where it is relevant, and mention the file paths it comes from. "
                         "Do not invent information."
                     )
+                    if not internal_strong:
+                        instruction += (
+                            "\nIMPORTANT: The material above is only loosely related to the question. "
+                            "If it does not actually answer the question, say so plainly instead of improvising."
+                        )
                 elif source == "web":
                     instruction = (
-                        "The user asked a question. No relevant internal knowledge was found, so web search results are provided:\n\n"
+                        "The user asked a question. Search results from the web are provided:\n\n"
                         f"{search_results}\n\n"
                         "Summarize these results for the user in a helpful way. "
                         "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
