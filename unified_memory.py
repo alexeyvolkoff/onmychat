@@ -287,6 +287,53 @@ def get_all_memory_cards(owner=None) -> list:
         return []
 
 
+def get_indexed_documents(owner=None) -> list:
+    """Возвращает проиндексированные документы (file_chunk), сгруппированные по document_id."""
+    coll = get_collection()
+    try:
+        where = {"type": {"$eq": "file_chunk"}}
+        if owner:
+            where = {"$and": [where, {"owner": {"$eq": owner}}]}
+        results = coll.get(where=where, include=["metadatas"])
+        docs: dict = {}
+        for i, rid in enumerate(results.get("ids", [])):
+            meta = results["metadatas"][i]
+            doc_id = meta.get("document_id") or "(no path)"
+            title = meta.get("title") or doc_id.split("/")[-1]
+            d = docs.setdefault(doc_id, {
+                "memory_id": f"document::{doc_id}",
+                "type": "document",
+                "document_id": doc_id,
+                "title": title,
+                "owner": meta.get("owner", ""),
+                "timestamp": meta.get("timestamp", ""),
+                "tags_list": set(),
+                "chunks": 0,
+            })
+            d["chunks"] += 1
+            d["tags_list"].update(k[2:] for k in meta if k.startswith("t_"))
+            ts = meta.get("timestamp", "")
+            if ts and ts > d["timestamp"]:
+                d["timestamp"] = ts
+        for d in docs.values():
+            d["tags"] = sorted(d.pop("tags_list"))
+        return list(docs.values())
+    except Exception as e:
+        logger.error(f"[unified] get_indexed_documents error: {e}")
+        return []
+
+
+def delete_document(document_id: str):
+    """Удаляет все чанки документа (по document_id)."""
+    if not document_id:
+        return
+    coll = get_collection()
+    try:
+        coll.delete(where={"document_id": {"$eq": document_id}})
+    except Exception as e:
+        logger.error(f"[unified] delete_document error: {e}")
+
+
 # ─── Индексация файловых чанков ───────────────────────────────────────────────
 
 def chunk_and_index_document(
