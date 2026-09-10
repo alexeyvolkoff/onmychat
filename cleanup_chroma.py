@@ -6,7 +6,7 @@
 Использование:
     python3 cleanup_chroma.py                   # dry-run (покажет что будет удалено)
     python3 cleanup_chroma.py --apply           # реальная очистка
-    python3 cleanup_chroma.py --owner=alexey    # задать owner явно
+    python3 cleanup_chroma.py --owner=<user_id>  # задать owner явно
 """
 import sys
 import os

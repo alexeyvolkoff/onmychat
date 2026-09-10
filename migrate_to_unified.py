@@ -10,6 +10,7 @@ import os
 import sys
 import logging
 import chromadb
+import user_context
 from chromadb.config import Settings
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ def map_old_meta(meta: dict, record_type: str, tags: str) -> dict:
     """Преобразует старую metadata в формат unified_memory (с t_ полями для тегов)."""
     new_meta = {
         "type":      record_type,
-        "owner":     meta.get("owner", "alexey"),
+        "owner":     meta.get("owner") or user_context.node_owner(),
         "relevance": meta.get("relevance", "contextual"),
         "timestamp": meta.get("timestamp", ""),
     }
@@ -84,7 +85,7 @@ def map_old_meta(meta: dict, record_type: str, tags: str) -> dict:
 
 
 def norm_document_path(path: str) -> str:
-    """Убирает префикс владельца: /alexey/beelink/doc.txt -> /beelink/doc.txt."""
+    """Убирает префикс владельца: /<user>/beelink/doc.txt -> /beelink/doc.txt."""
     if path.startswith("/") and path.count("/") >= 2:
         return "/" + path.lstrip("/").split("/", 1)[1]
     return path

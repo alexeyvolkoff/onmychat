@@ -581,15 +581,15 @@ def match_qa(question: str, min_score: float = 0.8, top_k: int = 1) -> dict:
 def search_for_rag(
     query: str,
     private_mode: bool = False,
-    owner=None,
     top_k=None,
     tags_filter=None,
 ) -> list:
     """
     Поиск для RAG-инъекции:
     - tags_filter (хештеги из промпта) -> только эти теги
-    - private_mode=True + нет тегов  -> вся база (владелец)
-    - private_mode=False + нет тегов -> только PUBLIC_TAGS (гость)
+    - private_mode=True  + нет тегов   -> вся база (владелец ноды, все владельцы)
+    - private_mode=False + нет тегов   -> только PUBLIC_TAGS (гость)
+    owner-фильтра больше нет: в private-режиме видны записи всех владельцев ноды.
     """
     if top_k is None:
         top_k = RAG_TOP_K
@@ -600,7 +600,6 @@ def search_for_rag(
     return search(
         query,
         tags_filter=tag_filter,
-        owner=owner if private_mode else None,
         top_k=top_k,
         threshold=RAG_THRESHOLD,
         record_types=["file_chunk", "memory_card"],
