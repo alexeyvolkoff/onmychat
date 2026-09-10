@@ -59,6 +59,39 @@ TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
 FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.0"))
 PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.0"))
 
+HUB_URL = SETTINGS.get("HUB_URL", "https://direct.onmydisk.net:8765")
+
+
+def _simple_hash(s: str) -> str:
+    """DJB2-like hash matching JS simpleHash in omd-key.js."""
+    if not s:
+        return "empty"
+    normalized = s.lower().strip()
+    h = 0
+    for ch in normalized:
+        h = ((h << 5) - h) + ord(ch)
+        h = h & 0xFFFFFFFF  # simulate 32-bit int
+    # JS: hash = hash & hash (converts to signed 32-bit), then Math.abs
+    if h >= 0x80000000:
+        h -= 0x100000000
+    return format(abs(h), 'x')
+
+
+async def _fetch_chunks_from_hub(token_hash: str, memory_id: str) -> list:
+    """Fetch document chunks from GunDB hub for chunk-level RAG."""
+    try:
+        url = f"{HUB_URL}/api/chunks?tokenHash={token_hash}&memoryId={memory_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return data.get("chunks", []) if data.get("ok") else []
+    except Exception as e:
+        logging.warning(f"[hub] fetch_chunks failed for {memory_id}: {e}")
+        return []
+
+
 def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode is None:
         mode = ctx.settings.get("content_mode", "work")
@@ -2517,6 +2550,42 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                             "document_id": doc_id,
                             "fullPath":    doc_id,
                         }
+
+        # 1b. Chunk-level relevance: fetch chunks from hub for top cards
+        if ctx.omd_key:
+            token_hash = _simple_hash(ctx.omd_key)
+            for m in provided_knowledge[:3]:  # top 3 cards only
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("id") or m.get("memory_id")
+                if not mid:
+                    continue
+                chunks = await _fetch_chunks_from_hub(token_hash, mid)
+                if not chunks:
+                    continue
+                # Embed query, find most relevant chunk
+                try:
+                    query_emb = unified_memory.embed(query)
+                    chunk_texts = [c.get("text", "") for c in chunks if c.get("text")]
+                    if not chunk_texts:
+                        continue
+                    chunk_embs = unified_memory.get_model().encode(chunk_texts, show_progress_bar=False).tolist()
+                    best_score = -1
+                    best_chunk = ""
+                    for ct, ce in zip(chunk_texts, chunk_embs):
+                        score = sum(q * c for q, c in zip(query_emb, ce))
+                        norm_q = sum(q * q for q in query_emb) ** 0.5
+                        norm_c = sum(c * c for c in ce) ** 0.5
+                        sim = score / (norm_q * norm_c) if norm_q * norm_c > 0 else 0
+                        if sim > best_score:
+                            best_score = sim
+                            best_chunk = ct
+                    if best_chunk and best_score > 0.3:
+                        title = m.get("title", "document")
+                        facts.append(f"• [Relevant chunk from {title}]: {best_chunk}")
+                        logging.info(f"[inject_facts] chunk-level: card={mid} score={best_score:.3f}")
+                except Exception as e:
+                    logging.warning(f"[inject_facts] chunk relevance error: {e}")
 
     # 2. Поиск по unified ChromaDB (если не пропускаем)
     if not skip_db:

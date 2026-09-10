@@ -186,12 +186,11 @@ async def convert_document(request: Request):
 
 
 @app.post("/api/learn")
-async def learn_document(request: Request, background_tasks: BackgroundTasks):
+async def learn_document(request: Request):
     """
-    Векторизует и индексирует документ в unified_memory.
-    Принимает уже конвертированный markdown-текст + теги.
-    Возвращает аннотацию + облако тегов.
-    Вызывается через P2P data channel.
+    Stateless /learn: аннотация + теги + эмбеддинги.
+    Ничего не пишет в ChromaDB — фронт сохраняет в GunDB.
+    Возвращает.annotation, tags, annotation_embedding, chunks с эмбеддингами.
     """
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -207,23 +206,10 @@ async def learn_document(request: Request, background_tasks: BackgroundTasks):
 
     ctx = await _build_ctx_from_request(request)
 
-    async def _do_learn():
-        try:
-            doc_id = _norm_doc_path(path)
-            n = unified_memory.chunk_and_index_document(
-                text,
-                document_id=doc_id,
-                owner=ctx.user_id or "alexey",
-                tags=tags,
-                title=doc_id.split("/")[-1],
-            )
-            logging.info(f"[api/learn] Indexed {n} chunks for {doc_id}, tags={tags}")
-        except Exception as e:
-            logging.error(f"[api/learn] chunk error: {e}")
+    doc_id = _norm_doc_path(path) if path else path
+    title  = path.split("/")[-1].split("?")[0]
 
-    background_tasks.add_task(_do_learn)
-
-    # Аннотация — синхронно (небольшой документ)
+    # Аннотация + теги (stateless, LLM)
     try:
         annotation = await core_service.summarize_for_memory(ctx, text)
         ai_tags    = await core_service.extract_tags_from_text(ctx, text)
@@ -232,22 +218,33 @@ async def learn_document(request: Request, background_tasks: BackgroundTasks):
         annotation = text[:500]
         ai_tags    = tags
 
-    # Сохраняем аннотацию-карточку
-    mem_id = unified_memory.upsert_memory_card(
-        annotation,
-        owner=ctx.user_id or "alexey",
-        tags=tags or ai_tags,
-        title=path.split("/")[-1].split("?")[0],
-        document_id=_norm_doc_path(path),
-        relevance="permanent",
-    )
+    all_tags = sorted(set(tags) | set(ai_tags or []))
+
+    # Аннотационный эмбеддинг (теги активно участвуют в embed)
+    annotation_text = annotation + " " + " ".join(all_tags)
+    annotation_embedding = unified_memory.embed(annotation_text)
+
+    # Чанки + эмбеддинги чанков
+    chunks_texts = unified_memory.chunk_document(text)
+    chunks = []
+    if chunks_texts:
+        chunk_embeddings = unified_memory.get_model().encode(chunks_texts, show_progress_bar=False).tolist()
+        chunks = [
+            {"text": ct, "embedding": ce}
+            for ct, ce in zip(chunks_texts, chunk_embeddings)
+        ]
+
+    logging.info(f"[api/learn] Stateless: doc={doc_id} chunks={len(chunks)} tags={all_tags}")
 
     return {
-        "status":     "learning_started",
-        "mem_id":     mem_id,
-        "annotation": annotation,
-        "tags":       ai_tags,
-        "question":   question,
+        "annotation":          annotation,
+        "tags":                all_tags,
+        "annotation_embedding": annotation_embedding,
+        "chunks":              chunks,
+        "documentId":          doc_id,
+        "title":               title,
+        "chunkCount":          len(chunks),
+        "question":            question,
     }
 
 # ─── RAG 3.0 (docs/RAG_3_0.md §2): пути нормализуем срезанием префикса юзера ─
@@ -277,11 +274,40 @@ def _rag_scope_tags(body_tags, scope: str) -> list:
     return tags
 
 
+HUB_URL = SETTINGS.get("HUB_URL", "https://direct.onmydisk.net:8765")
+
+async def fetch_chunks_from_hub(token_hash: str, memory_id: str) -> list:
+    """Fetch document chunks from GunDB hub for chunk-level RAG."""
+    try:
+        import aiohttp
+        url = f"{HUB_URL}/api/chunks?tokenHash={token_hash}&memoryId={memory_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return data.get("chunks", []) if data.get("ok") else []
+    except Exception as e:
+        logging.warning(f"[hub] fetch_chunks failed for {memory_id}: {e}")
+        return []
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    """Compute cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    denom = norm_a * norm_b
+    return dot / denom if denom > 0 else 0.0
+
+
 @app.post("/rag/import")
 async def rag_import_endpoint(request: Request):
     """
-    RAG 3.0 контракт: импорт одного документа/ссылки/заметки (вызывает svar через HttpDrive).
-    source — виртуальный itemPath или URL; text — уже конвертированный текст (необязательно).
+    Stateless RAG 3.0 импорт: аннотация + теги + эмбеддинги + чанки.
+    Ничего не пишет в ChromaDB — фронт сохраняет в GunDB.
     """
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -311,20 +337,7 @@ async def rag_import_endpoint(request: Request):
         if not raw_text or raw_text.startswith("Failed to fetch"):
             raise HTTPException(status_code=422, detail=f"Could not fetch or convert document: {source}")
 
-    # Векторизация (sync — нужен chunkCount в ответе)
-    try:
-        n_chunks = unified_memory.chunk_and_index_document(
-            raw_text,
-            document_id=doc_id,
-            owner=owner,
-            tags=tags,
-            title=title,
-        )
-    except Exception as e:
-        logging.error(f"[rag/import] chunk error: {e}")
-        n_chunks = 0
-
-    # Аннотация + теги от LLM
+    # Аннотация + теги (stateless, LLM)
     try:
         annotation = await core_service.summarize_for_memory(ctx, raw_text)
         ai_tags = await core_service.extract_tags_from_text(ctx, raw_text)
@@ -334,25 +347,53 @@ async def rag_import_endpoint(request: Request):
         ai_tags = []
 
     all_tags = sorted(set(tags) | set(ai_tags or []))
-    disk_mem_id = unified_memory.upsert_memory_card(
-        annotation,
-        owner=owner,
-        tags=all_tags,
-        title=title,
-        document_id=source or doc_id,
-        relevance="permanent",
-    )
 
-    logging.info(f"[rag/import] doc={doc_id} chunks={n_chunks} tags={all_tags} owner={owner}")
+    # Аннотационный эмбеддинг (теги активно участвуют)
+    annotation_text = annotation + " " + " ".join(all_tags)
+    annotation_embedding = unified_memory.embed(annotation_text)
+
+    # Чанки + эмбеддинги чанков
+    chunks_texts = unified_memory.chunk_document(raw_text)
+    chunks = []
+    if chunks_texts:
+        chunk_embeddings = unified_memory.get_model().encode(chunks_texts, show_progress_bar=False).tolist()
+        chunks = [
+            {"text": ct, "embedding": ce}
+            for ct, ce in zip(chunks_texts, chunk_embeddings)
+        ]
+
+    logging.info(f"[rag/import] Stateless: doc={doc_id} chunks={len(chunks)} tags={all_tags} owner={owner}")
+
     return {
-        "docId":       doc_id,
-        "documentId":  doc_id,
-        "title":       title,
-        "annotation":  annotation,
-        "tags":        all_tags,
-        "chunkCount":  n_chunks,
-        "mem_id":      disk_mem_id,
+        "docId":               doc_id,
+        "documentId":          doc_id,
+        "title":               title,
+        "annotation":          annotation,
+        "tags":                all_tags,
+        "annotation_embedding": annotation_embedding,
+        "chunks":              chunks,
+        "chunkCount":          len(chunks),
     }
+
+
+@app.post("/embed")
+async def embed_endpoint(request: Request):
+    """
+    Stateless embedding: {text: ""} → {embedding: []}.
+    Для фронта: эмбеддит вопрос при отправке (cosine vs annotation_embedding карточек).
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is required")
+    try:
+        embedding = unified_memory.embed(text)
+    except Exception as e:
+        logging.error(f"[embed] error: {e}")
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
+    return {"embedding": embedding}
 
 
 @app.post("/rag/index")
@@ -2435,6 +2476,50 @@ async def ollama_generate(request: Request):
     """
     target_url = f"{core_service.OLLAMA_URL}/api/generate"
     return await proxy_request(target_url, request, method="POST")
+
+@app.post("/api/cleanup-chroma")
+async def cleanup_chroma_endpoint(request: Request):
+    """
+    Удаляет из ChromaDB гостевые данные (owner != node_owner && !t_omd).
+    Требует AI_TOKEN. Принимает {owner: "alexey", apply: true}.
+    Без apply=true — dry-run (покажет что будет удалено).
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token_raw = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
+    token = token_raw.replace("Bearer ", "").replace("token:", "").strip()
+    if not AI_TOKEN or token != AI_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin token required")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    owner = body.get("owner", SETTINGS.get("NODE_OWNER", ""))
+    apply = body.get("apply", False)
+
+    if not owner:
+        coll = unified_memory.get_collection()
+        results = coll.get(include=["metadatas"])
+        owners = {}
+        for meta in results.get("metadatas", []):
+            o = meta.get("owner", "(none)")
+            has_omd = meta.get("t_omd", 0) == 1
+            key = f"{o}{' [omd]' if has_omd else ''}"
+            owners[key] = owners.get(key, 0) + 1
+        return {"status": "no_owner", "owners": owners, "hint": "Pass {owner: 'alexey', apply: true}"}
+
+    if not apply:
+        coll = unified_memory.get_collection()
+        results = coll.get(include=["metadatas"])
+        would_delete = sum(1 for m in results.get("metadatas", [])
+                         if m.get("owner", "") != owner and m.get("t_omd", 0) != 1)
+        return {"status": "dry_run", "owner": owner, "would_delete": would_delete,
+                "total": coll.count(), "hint": "Pass {apply: true} to execute"}
+
+    deleted = unified_memory.cleanup_guest_data([owner])
+    return {"status": "done", "deleted": deleted, "owner": owner}
+
 
 @app.get("/api/tags")
 async def ollama_tags(request: Request):

@@ -560,6 +560,45 @@ def search_files_for_ui(
     )
 
 
+def chunk_document(text: str, chunk_size=500, overlap=50) -> list[str]:
+    """Разбивает текст на чанки (без индексации). Используется stateless /learn."""
+    words = text.split()
+    chunks = []
+    i = 0
+    while i < len(words):
+        chunks.append(" ".join(words[i : i + chunk_size]))
+        i += chunk_size - overlap
+    return chunks
+
+
+def cleanup_guest_data(owners_to_keep: list[str]) -> int:
+    """
+    Удаляет из ChromaDB все записи, чей owner НЕ в owners_to_keep,
+    за исключением записей с t_omd=1 (публичные знания владельца).
+    Возвращает количество удалённых записей.
+    """
+    coll = get_collection()
+    if coll.count() == 0:
+        return 0
+    try:
+        results = coll.get(include=["metadatas"])
+    except Exception as e:
+        logger.error(f"[unified] cleanup_guest_data get error: {e}")
+        return 0
+
+    ids_to_delete = []
+    for i, meta in enumerate(results.get("metadatas", [])):
+        owner = meta.get("owner", "")
+        has_omd = meta.get("t_omd", 0) == 1
+        if owner not in owners_to_keep and not has_omd:
+            ids_to_delete.append(results["ids"][i])
+
+    if ids_to_delete:
+        coll.delete(ids=ids_to_delete)
+        logger.info(f"[unified] Cleanup: deleted {len(ids_to_delete)} guest records (kept owners={owners_to_keep})")
+    return len(ids_to_delete)
+
+
 # ─── Инициализация ────────────────────────────────────────────────────────────
 
 def init():
