@@ -2697,8 +2697,13 @@ async def _perform_prompt_gen(ctx: UserContext,
     if sources:
         yield {"sources": sources, "done": False}
 
+    # Имя пользователя и дата — в самое начало секции Known facts
+    username = ctx.settings.get("name") or ctx.settings.get("username") or ctx.user_id or "User"
+    facts_text += "\n\n*Known facts:*\n"
+    facts_text += f"- User name: {username}\n"
+    facts_text += f"- Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     if facts:
-        facts_text += "\n\n*Known facts:*\n" + "\n".join(facts)
+        facts_text += "\n" + "\n".join(facts)
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         logging.info(f"RAG request: tag={kb_tag}")
@@ -2758,8 +2763,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     chat_name = chat_info.get("name", chat or "default")
 
     # Персонализация
-    username = ctx.settings.get("name") or ctx.settings.get("username") or ctx.user_id or "User"
-
     if fun_mode:
         user_fun_prompt = (ctx.settings.get("fun_system_prompt") or "").strip()
         if user_fun_prompt:
@@ -2769,8 +2772,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     else:
         if ctx.settings.get("system_prompt"):
             system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
-
-    system_prompt += "\n\n*User name:*\n" + username
 
     system_prompt += "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
     logging.info(f"Model: {model}\nMode: {mode}\nUser: {username}")
@@ -2816,7 +2817,6 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === ОСНОВНОЙ ЗАПРОС ===
     # Merge instruction_prompt directly into the initial system_prompt so there is only one system message at the start.
     system_prompt += "\n\n" + instruction_prompt
-    system_prompt +=  f"\nCurrent local date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
     # Вставляем суммари чата между system prompt и историей
     if chat_summary:
