@@ -2796,13 +2796,9 @@ async def _perform_prompt_gen(ctx: UserContext,
     kb_tag = ctx.settings.get("kb_id", "omd")
     logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
     # === Facts injection ===
-    if intent in ("view", "show"):
-        # Scene generation doesn't need RAG file search
+    if intent in ("view", "show", "chat"):
+        # Plain chat and scene generation don't need RAG file search
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
-    elif intent == "chat":
-        # Обычный чат тоже знаниями, иначе каждый вопрос придётся формулировать коряво;
-        # в fun режиме inject_facts сам пропускает DB (skip_db=True).
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=fun_mode)
     else:
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge)
 
