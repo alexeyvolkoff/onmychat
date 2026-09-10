@@ -173,7 +173,7 @@ async def convert_document(request: Request):
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    omd_key = get_omd_key(request)
+    omd_key = _extract_omd_key(request)
     try:
         text = await core_service.fetch_document_text(
             path if path.startswith("http") else f"{GATEWAY_URL}{path}",
@@ -333,7 +333,7 @@ async def rag_import_endpoint(request: Request):
 
     if not raw_text:
         doc_url = source if source.startswith("http") else f"{GATEWAY_URL}{doc_id}"
-        raw_text = await core_service.fetch_document_text(doc_url, token=get_omd_key(request) or AI_TOKEN)
+        raw_text = await core_service.fetch_document_text(doc_url, token=_extract_omd_key(request) or AI_TOKEN)
         if not raw_text or raw_text.startswith("Failed to fetch"):
             raise HTTPException(status_code=422, detail=f"Could not fetch or convert document: {source}")
 
@@ -430,7 +430,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                      ".pytest_cache", ".npm", ".yarn", "node_modules/"]
         exact_blacklist = {"proc", "sys", "system", "data", "dev", "run", "etc", "boot",
                            "lib", "lib64", "opt", "srv", ".local", ".config", ".cache"}
-        token = get_omd_key(request) or AI_TOKEN
+        token = _extract_omd_key(request) or AI_TOKEN
 
         async def fetch(url, params=""):
             try:
@@ -543,7 +543,7 @@ async def learn_preview(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     path    = request.query_params.get("path", "")
-    omd_key = get_omd_key(request)
+    omd_key = _extract_omd_key(request)
 
     if not path:
         raise HTTPException(status_code=422, detail="path is required")
@@ -614,7 +614,7 @@ async def remove_path(request: Request):
 
 async def _build_ctx_from_request(request: Request):
     """Строит UserContext из заголовков запроса."""
-    omd_key = get_omd_key(request)
+    omd_key = _extract_omd_key(request)
     ctx = user_context.UserContext(
         user_id  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", ""),
         omd_key  = omd_key,
@@ -622,6 +622,33 @@ async def _build_ctx_from_request(request: Request):
     )
     ctx.private_mode = is_private_mode(request, ctx)
     return ctx
+
+
+def _extract_omd_key(request: Request) -> str | None:
+    """Извлекает omd_key из request напрямую (не через FastAPI Depends)."""
+    # Query params
+    omd_key = request.query_params.get("omd_key")
+    if omd_key:
+        return omd_key
+    token = request.query_params.get("token")
+    if token:
+        return token
+    # Headers
+    for header_name in ("X-OMD-Key", "X-OMD-Token", "Token"):
+        val = request.headers.get(header_name)
+        if val:
+            return val
+    # Authorization
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        if authorization.startswith("Bearer "):
+            return authorization[7:]
+        elif authorization.startswith("token:"):
+            return authorization[6:]
+        elif authorization.startswith("token "):
+            return authorization[6:]
+        return authorization
+    return None
 
 def not_authorized(request: Request):
     # The gateway forwards the original client's Authorization header
