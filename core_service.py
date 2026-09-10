@@ -878,7 +878,7 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
         for res in all_results:
             doc_id = res.get("document_id", "")
             title  = res.get("title", "") or (doc_id.split("/")[-1] if doc_id else "")
-            owner  = res.get("owner", "alexey")
+            owner  = res.get("owner") or user_context.node_owner()
             if doc_id or title:
                 if not any(s["title"] == title and s["owner"] == owner for s in sources):
                     full_path = doc_id if doc_id.startswith("/") else f"/{doc_id}"
@@ -2604,7 +2604,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                         clickable = doc_id.startswith("/") or doc_id.startswith("http")
                         sources_map[key] = {
                             "title":       doc_id.split("/")[-1],
-                            "owner":       ctx.user_id or "alexey",
+                            "owner":       ctx.user_id or user_context.node_owner(),
                             "clickable":   clickable,
                             "document_id": doc_id,
                             "fullPath":    doc_id,
@@ -2663,7 +2663,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 rec_type  = r.get("type", "")
                 doc_id    = r.get("document_id", "")
                 title     = r.get("title", doc_id.split("/")[-1] if doc_id else "")
-                owner_val = r.get("owner", ctx.user_id or "alexey")
+                owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
 
                 if rec_type == "file_chunk":
                     facts.append(f"• [From file {title}]: {r['text']}")
@@ -4473,7 +4473,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     n_chunks = unified_memory.chunk_and_index_document(
         raw_text,
         document_id=url_or_path,
-        owner=ctx.user_id or "alexey",
+        owner=ctx.user_id or user_context.node_owner(),
         tags=doc_tags,
         title=url_or_path.split("/")[-1].split("?")[0],
     )
@@ -4485,7 +4485,7 @@ async def import_doc(ctx: UserContext, url_or_path, collection="user"):
     # Сохраняем аннотацию-карточку в unified_memory как memory_card
     mem_id = unified_memory.upsert_memory_card(
         card_text,
-        owner=ctx.user_id or "alexey",
+        owner=ctx.user_id or user_context.node_owner(),
         tags=doc_tags,
         title=url_or_path.split("/")[-1].split("?")[0],
         document_id=url_or_path,

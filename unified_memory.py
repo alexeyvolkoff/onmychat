@@ -5,7 +5,7 @@ unified_memory.py  —  OMD 3.0 RAG
 Схема metadata:
     type        : "memory_card" | "file_chunk" | "qa"
     tags        : строка через запятую, напр. "omd,docs,personal"
-    owner       : "alexey"
+    owner       : user_id владельца записи
     document_id : исходный путь/URL документа
     chunk_id    : "0", "1", ... (для чанков)
     title       : заголовок
@@ -14,6 +14,7 @@ unified_memory.py  —  OMD 3.0 RAG
 """
 
 import os
+import math
 import uuid
 import logging
 import shutil
@@ -27,6 +28,7 @@ from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 from config import SETTINGS, BASE_INDEX_DIR
+import user_context
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ PUBLIC_TAGS: list[str] = [
 
 RAG_THRESHOLD   = float(SETTINGS.get("RAG_THRESHOLD",   "0.75"))
 SEARCH_THRESHOLD = float(SETTINGS.get("SEARCH_THRESHOLD", "0.75"))
-RAG_TOP_K       = int(SETTINGS.get("RAG_TOP_K",   "5"))
+RAG_TOP_K       = int(SETTINGS.get("RAG_TOP_K",   "8"))
 SEARCH_TOP_K    = int(SETTINGS.get("SEARCH_TOP_K", "20"))
 
 # ─── Embedding model ──────────────────────────────────────────────────────────
@@ -137,6 +139,14 @@ def _tags_match_filter(tags_filter: list) -> dict:
     return {"$or": [{f"t_{_normalize_tag(t)}": {"$eq": 1}} for t in tags_filter]}
 
 
+def _cosine(a: list, b: list) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / _norm(a) / _norm(b) if _norm(a) and _norm(b) else 0.0
+
+def _norm(v: list) -> float:
+    return math.sqrt(sum(x * x for x in v))
+
+
 # ─── Поиск ───────────────────────────────────────────────────────────────────
 
 def search(
@@ -212,8 +222,52 @@ def search(
             row.update(metas[i])
             out.append(row)
 
+    # Метадата-boost: токены запроса, буквально встречающиеся в document_id/title
+    # (напр. «vieste» в «Bineon_račun_Vieste_29.pdf»),bridging multilingual-модели,
+    # которая не тянет перекрёстные языки (račun ↮ invoice).
+    try:
+        import re as _re
+        tokens = set(_re.findall(r"[a-z0-9]{4,}", query.lower()))
+        if tokens:
+            all_recs = coll.get(include=["metadatas"])
+            kw_ids = [
+                rid for rid, meta in zip(all_recs.get("ids", []), all_recs.get("metadatas", []))
+                if any(
+                    tok in f"{meta.get('document_id', '')} {meta.get('title', '')}".lower()
+                    for tok in tokens
+                )
+            ]
+            if kw_ids:
+                # не дублируем уже найденные векторной выдачей
+                got = set(ids)
+                kw_ids = [rid for rid in kw_ids if rid not in got]
+            if kw_ids:
+                kw_docs = coll.get(ids=kw_ids, include=["embeddings", "metadatas", "documents"])
+                kw_boost = float(SETTINGS.get("META_KEYWORD_BOOST", "0.8"))
+                for rid, emb, meta, doc in zip(
+                    kw_docs.get("ids", []),
+                    kw_docs.get("embeddings", []),
+                    kw_docs.get("metadatas", []),
+                    kw_docs.get("documents", []),
+                ):
+                    dist = (1.0 - _cosine(query_emb, list(emb))) * kw_boost
+                    if dist <= threshold:
+                        row = {"id": rid, "text": doc or "", "distance": dist,
+                               "relevance": round((1.0 - dist) * 100, 1)}
+                        row.update(meta)
+                        out.append(row)
+    except Exception as e:
+        logger.warning(f"[unified] metadata boost error: {e}")
+
     out.sort(key=lambda x: x["distance"])
-    return out[:top_k]
+    seen = set()
+    deduped = []
+    for r in out:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        deduped.append(r)
+    return deduped[:top_k]
 
 
 # ─── Карточки памяти ─────────────────────────────────────────────────────────
@@ -221,7 +275,7 @@ def search(
 def upsert_memory_card(
     text: str,
     mem_id=None,
-    owner="alexey",
+    owner=None,
     tags=None,
     title="",
     document_id=None,
@@ -230,6 +284,8 @@ def upsert_memory_card(
     """Добавляет/обновляет карточку памяти. Возвращает mem_id."""
     if not mem_id:
         mem_id = str(uuid.uuid4())
+    if not owner:
+        owner = user_context.node_owner()
 
     metadata = {
         "type":      "memory_card",
@@ -355,7 +411,7 @@ def has_document(document_id: str, source_stamp: str = None) -> bool:
 def chunk_and_index_document(
     text: str,
     document_id: str,
-    owner="alexey",
+    owner=None,
     tags=None,
     title="",
     chunk_size=500,
@@ -367,6 +423,9 @@ def chunk_and_index_document(
     Предварительно удаляет старые чанки этого документа.
     Возвращает количество созданных чанков.
     """
+    if not owner:
+        owner = user_context.node_owner()
+
     try:
         get_collection().delete(where={"$and": [
             {"type":        {"$eq": "file_chunk"}},

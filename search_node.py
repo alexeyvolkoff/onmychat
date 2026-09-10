@@ -4,6 +4,7 @@ import logging
 import requests
 import chromadb
 import json
+import user_context
 from chromadb.config import Settings
 from lxml import etree
 from bs4 import BeautifulSoup
@@ -175,9 +176,9 @@ class SearchNode:
                         entities = [e.strip() for e in shared_with.split(',') if e.strip()]
                         allowed_entities.extend(entities)
                     
-                    # If no owner or shared_with, default to alexey for now (compatibility)
+                    # If no owner or shared_with, default to the node owner
                     if not allowed_entities:
-                        allowed_entities = ['alexey']
+                        allowed_entities.append(user_context.node_owner())
 
                 logger.info(f"Indexing {item_url} for entities: {allowed_entities}")
                 # Check if item already exists and hasn't changed

@@ -10,6 +10,7 @@ import warnings
 from config import SETTINGS
 from config import BASE_INDEX_DIR
 from user_context import UserContext
+import user_context
 import requests
 from urllib.parse import urlparse
 import re
@@ -359,22 +360,22 @@ def migrate_legacy_data():
                                         meta["collection"] = collection_name
                                         meta.setdefault("relevance", "contextual")
                                         
-                                        # Force owner=alexey for internal links and clean document_id
+                                        # Force node owner for internal links and clean document_id
                                         doc_id = meta.get("document_id", "")
                                         if doc_id and doc_id.startswith("http") and "onmydisk.net" in doc_id:
                                             try:
                                                 from urllib.parse import urlparse
                                                 parsed = urlparse(doc_id)
-                                                # Use full path as doc_id, but owner is always alexey
-                                                meta["owner"] = "alexey"
+                                                # Use full path as doc_id, but owner is always the node owner
+                                                meta["owner"] = user_context.node_owner()
                                                 # Strip the owner part from path if it was there? 
                                                 # User said "сейчас без владельца", so maybe path IS the doc_id.
-                                                # Let's just take the whole path and let alexey own it.
+                                                # Let's just take the whole path and let the node owner own it.
                                                 meta["document_id"] = parsed.path.lstrip("/")
                                             except:
-                                                meta["owner"] = "alexey"
+                                                meta["owner"] = user_context.node_owner()
                                         else:
-                                            meta.setdefault("owner", "alexey")
+                                            meta.setdefault("owner", user_context.node_owner())
                                             
                                         metadatas.append(meta)
                                     
@@ -450,7 +451,7 @@ def add_memory_card(
         "relevance": relevance,
         "memory_id": mem_id,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "owner": "alexey"  # Default owner
+        "owner": user_context.node_owner()
     }
 
     if document_id:
@@ -464,7 +465,7 @@ def add_memory_card(
                     metadata["owner"] = parts[0]
                     document_id = parts[1]
                 else:
-                    metadata["owner"] = "alexey"
+                    metadata["owner"] = user_context.node_owner()
                     document_id = parts[0]
             except:
                 pass

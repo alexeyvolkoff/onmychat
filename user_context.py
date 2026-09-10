@@ -9,6 +9,11 @@ DEFAULT_ASSISTANT_NAME = SETTINGS.get("DEFAULT_ASSISTANT_NAME", "June")
 DEFAULT_ASSISTANT_TITLE = SETTINGS.get("DEFAULT_ASSISTANT_TITLE", "Assistant")
 USER_DATA_DIR = "user_data"
 
+def node_owner() -> str:
+    """Владелец ноды: NODE_OWNER из конфига, иначе юзер ОС под которым работает процесс."""
+    import getpass
+    return SETTINGS.get("NODE_OWNER") or getpass.getuser()
+
 @dataclass
 class UserContext:
     type: str

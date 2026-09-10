@@ -395,7 +395,7 @@ async def rag_import_raw_endpoint(request: Request):
         raise HTTPException(status_code=422, detail="could not extract text from document (unsupported or scanned file)")
 
     ctx = await _build_ctx_from_request(request)
-    owner = owner or ctx.user_id or "alexey"
+    owner = owner or ctx.user_id or user_context.node_owner()
     doc_id = _norm_doc_path(source) if source else f"upload:{filename}"
     title = filename.split("/")[-1].split("?")[0].lstrip("/") or doc_id
     tags = _rag_scope_tags(tags_in, scope)
@@ -426,7 +426,7 @@ async def rag_import_endpoint(request: Request):
     doc_id = _norm_doc_path(source) if source else f"user:note:{body.get('title') or 'note'}"
 
     ctx = await _build_ctx_from_request(request)
-    owner = owner or ctx.user_id or "alexey"
+    owner = owner or ctx.user_id or user_context.node_owner()
     title = body.get("title") or doc_id.split("/")[-1].split("?")[0].lstrip("/")
     tags = _rag_scope_tags(tags_in, scope)
 
@@ -474,7 +474,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
     doc_root = _norm_doc_path(source_path)          # /<share>/... для названий карточек
     ctx = await _build_ctx_from_request(request)
-    owner = ctx.user_id or "alexey"
+    owner = ctx.user_id or user_context.node_owner()
     tags = _rag_scope_tags(body.get("tags") or [], scope)
 
     RAG_INDEX_STATUS[doc_root] = {"indexed": 0, "pending": 0, "failed": 0, "lastError": None, "done": False}
@@ -2567,7 +2567,7 @@ async def ollama_generate(request: Request):
 async def cleanup_chroma_endpoint(request: Request):
     """
     Удаляет из ChromaDB гостевые данные (owner != node_owner && !t_omd).
-    Требует AI_TOKEN. Принимает {owner: "alexey", apply: true}.
+    Требует AI_TOKEN. Принимает {owner: "<user_id>", apply: true}.
     Без apply=true — dry-run (покажет что будет удалено).
     """
     if not_authorized(request):
@@ -2593,7 +2593,7 @@ async def cleanup_chroma_endpoint(request: Request):
             has_omd = meta.get("t_omd", 0) == 1
             key = f"{o}{' [omd]' if has_omd else ''}"
             owners[key] = owners.get(key, 0) + 1
-        return {"status": "no_owner", "owners": owners, "hint": "Pass {owner: 'alexey', apply: true}"}
+        return {"status": "no_owner", "owners": owners, "hint": "Pass {owner: '<user_id>', apply: true}"}
 
     if not apply:
         coll = unified_memory.get_collection()
