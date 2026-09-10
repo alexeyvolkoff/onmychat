@@ -2550,9 +2550,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
     # 1. Карточки памяти, переданные фронтендом (из GunDB)
     if provided_knowledge is not None:
-        # 1a. Backend-side relevance: если карточек больше 3, фильтруем по annotation_embedding через hub
-        filtered_knowledge = provided_knowledge
-        if len(provided_knowledge) > 3 and ctx.omd_key and query:
+        # 1a. Backend-side relevance: фильтруем по annotation_embedding через hub
+        filtered_knowledge = list(provided_knowledge)
+        if provided_knowledge and ctx.omd_key and query:
             try:
                 token_hash = _simple_hash(ctx.omd_key)
                 query_emb = unified_memory.embed(query)
@@ -2564,7 +2564,10 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     emb = hc.get("annotation_embedding")
                     if mid and emb:
                         emb_map[mid] = emb
-                # Фильтруем по cosine similarity
+                # Фильтруем по cosine similarity: абсолютный пол + относительный
+                # отсекатель (0.55×best) + максимум 3 карточки
+                sim_floor = float(SETTINGS.get("KNOWLEDGE_RELEVANCE_THRESHOLD", "0.25"))
+                relative_ratio = float(SETTINGS.get("KNOWLEDGE_RELATIVE_RATIO", "0.55"))
                 scored = []
                 for m in provided_knowledge:
                     mid = m.get("id") or m.get("memory_id") if isinstance(m, dict) else ""
@@ -2574,12 +2577,15 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                         norm_q = sum(q * q for q in query_emb) ** 0.5
                         norm_e = sum(e * e for e in emb) ** 0.5
                         sim = score / (norm_q * norm_e) if norm_q * norm_e > 0 else 0
-                        scored.append((m, sim))
-                    else:
-                        scored.append((m, 0.5))  # без эмбеддинга — средний приоритет
+                        if sim >= sim_floor:
+                            scored.append((m, sim))
                 scored.sort(key=lambda x: x[1], reverse=True)
-                filtered_knowledge = [m for m, _ in scored[:5]]
-                logging.info(f"[inject_facts] relevance filter: {len(provided_knowledge)} → {len(filtered_knowledge)} cards")
+                rel_cutoff = (scored[0][1] * relative_ratio) if scored else 0
+                filtered_knowledge = [m for m, s in scored if s >= rel_cutoff][:3]
+                logging.info(
+                    f"[inject_facts] relevance filter: {len(provided_knowledge)} → {len(filtered_knowledge)} cards "
+                    f"(floor={sim_floor}, relative_cutoff={rel_cutoff:.3f})"
+                )
             except Exception as e:
                 logging.warning(f"[inject_facts] relevance filter error: {e}")
 

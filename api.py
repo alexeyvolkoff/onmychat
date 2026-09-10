@@ -346,6 +346,20 @@ async def _rag_stateless_payload(ctx, raw_text: str, doc_id: str, title: str, ta
     }
 
 
+def _decode_hdr(request: Request, name: str) -> str | None:
+    """URL-encoded имена файлов в заголовках (X-OMD-Filename / X-OMD-Source)."""
+    raw = request.headers.get(name)
+    if not raw:
+        return None
+    if "%" in raw:
+        try:
+            from urllib.parse import unquote
+            return unquote(raw, errors="replace")
+        except Exception:
+            return raw
+    return raw
+
+
 @app.post("/rag/import/raw")
 async def rag_import_raw_endpoint(request: Request):
     """
@@ -353,7 +367,8 @@ async def rag_import_raw_endpoint(request: Request):
     клиент аплоадит байты файла → нода конвертирует ЛОКАЛЬНО (pdftotext/pandoc,
     без шлюза) → аннотация/теги/чанки/эмбеддинги → возвращает payload, а временный
     файл удаляется. В ChromaDB ничего не пишется — фронт хранит карточку в GunDB.
-    Заголовки: filename, X-OMD-RAG-Scope, X-OMD-Tags (JSON), X-OMD-Owner.
+    Заголовки: X-OMD-Filename (URL-encoded), X-OMD-Source, X-OMD-RAG-Scope,
+    X-OMD-Tags (JSON), X-OMD-Owner.
     """
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -363,8 +378,8 @@ async def rag_import_raw_endpoint(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read request body: {e}")
 
-    filename = request.headers.get("filename") or request.headers.get("X-OMD-Filename") or "document.bin"
-    source = request.headers.get("X-OMD-Source") or filename
+    filename = _decode_hdr(request, "X-OMD-Filename") or _decode_hdr(request, "filename") or "document.bin"
+    source = _decode_hdr(request, "X-OMD-Source") or filename
     scope = request.headers.get("X-OMD-RAG-Scope", "private")
     owner = request.headers.get("X-OMD-Owner") or ""
     try:
