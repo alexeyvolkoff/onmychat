@@ -1552,6 +1552,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = is_private_mode(request, ctx)
+    if provided_knowledge is None:
+        logging.info("[chat] provided knowledge: None (client did not send)")
+    else:
+        logging.info(f"[chat] provided knowledge: {len(provided_knowledge)} cards")
 
     is_inline_image = (
         image_delivery == "inline"
