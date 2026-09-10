@@ -554,9 +554,10 @@ async def rag_status_endpoint(request: Request, path: str = "", docId: str = "")
     """Прогресс индексации пути (RAG 3.0 §2)."""
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    key = _norm_doc_path(path or docId)
-    entry = RAG_INDEX_STATUS.get(key, {})
-    return {"path": key, **entry}
+    raw = (path or docId or "").strip()
+    # УЖЕ нормализованный путь — не нормализуем повторно (иначе /Documents/Docs → /Docs)
+    entry = RAG_INDEX_STATUS.get(raw) or RAG_INDEX_STATUS.get(_norm_doc_path(raw), {})
+    return {"path": raw or _norm_doc_path(raw), **entry}
 
 
 @app.post("/rag/delete")
