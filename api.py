@@ -303,41 +303,11 @@ def _cosine_similarity(a: list, b: list) -> float:
     return dot / denom if denom > 0 else 0.0
 
 
-@app.post("/rag/import")
-async def rag_import_endpoint(request: Request):
-    """
-    Stateless RAG 3.0 импорт: аннотация + теги + эмбеддинги + чанки.
-    Ничего не пишет в ChromaDB — фронт сохраняет в GunDB.
-    """
-    if not_authorized(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def _rag_stateless_payload(ctx, raw_text: str, doc_id: str, title: str, tags: list, owner: str):
+    """Общая stateless-логика: аннотация + теги + эмбеддинги + чанки. Без ChromaDB."""
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=422, detail="document text is empty after conversion")
 
-    body  = await request.json()
-    source = (body.get("source") or "").strip()
-    raw_text = (body.get("text") or "").strip()
-    scope = body.get("scope") or request.headers.get("X-OMD-RAG-Scope", "private")
-    owner = body.get("owner") or ""
-    tags_in = body.get("tags") or []
-
-    if raw_text:
-        doc_id = _norm_doc_path(source) if source else f"user:note:{body.get('title') or 'note'}"
-    elif source:
-        doc_id = _norm_doc_path(source)
-    else:
-        raise HTTPException(status_code=422, detail="source or text is required")
-
-    ctx = await _build_ctx_from_request(request)
-    owner = owner or ctx.user_id or "alexey"
-    title = body.get("title") or doc_id.split("/")[-1].split("?")[0].lstrip("/")
-    tags = _rag_scope_tags(tags_in, scope)
-
-    if not raw_text:
-        doc_url = source if source.startswith("http") else f"{GATEWAY_URL}{doc_id}"
-        raw_text = await core_service.fetch_document_text(doc_url, token=_extract_omd_key(request) or AI_TOKEN)
-        if not raw_text or raw_text.startswith("Failed to fetch"):
-            raise HTTPException(status_code=422, detail=f"Could not fetch or convert document: {source}")
-
-    # Аннотация + теги (stateless, LLM)
     try:
         annotation = await core_service.summarize_for_memory(ctx, raw_text)
         ai_tags = await core_service.extract_tags_from_text(ctx, raw_text)
@@ -374,6 +344,78 @@ async def rag_import_endpoint(request: Request):
         "chunks":              chunks,
         "chunkCount":          len(chunks),
     }
+
+
+@app.post("/rag/import/raw")
+async def rag_import_raw_endpoint(request: Request):
+    """
+    Stateless импорт сырого документа (гостевой/персональный слой):
+    клиент аплоадит байты файла → нода конвертирует ЛОКАЛЬНО (pdftotext/pandoc,
+    без шлюза) → аннотация/теги/чанки/эмбеддинги → возвращает payload, а временный
+    файл удаляется. В ChromaDB ничего не пишется — фронт хранит карточку в GunDB.
+    Заголовки: filename, X-OMD-RAG-Scope, X-OMD-Tags (JSON), X-OMD-Owner.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        data = await request.body()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read request body: {e}")
+
+    filename = request.headers.get("filename") or request.headers.get("X-OMD-Filename") or "document.bin"
+    source = request.headers.get("X-OMD-Source") or filename
+    scope = request.headers.get("X-OMD-RAG-Scope", "private")
+    owner = request.headers.get("X-OMD-Owner") or ""
+    try:
+        tags_in = json.loads(request.headers.get("X-OMD-Tags", "[]")) or []
+    except Exception:
+        tags_in = []
+
+    if not data:
+        raise HTTPException(status_code=422, detail="empty file body")
+
+    raw_text = unified_memory.convert_bytes_to_text(data, filename)
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=422, detail="could not extract text from document (unsupported or scanned file)")
+
+    ctx = await _build_ctx_from_request(request)
+    owner = owner or ctx.user_id or "alexey"
+    doc_id = _norm_doc_path(source) if source else f"upload:{filename}"
+    title = filename.split("/")[-1].split("?")[0].lstrip("/") or doc_id
+    tags = _rag_scope_tags(tags_in, scope)
+
+    return await _rag_stateless_payload(ctx, raw_text, doc_id, title, tags, owner)
+
+
+@app.post("/rag/import")
+async def rag_import_endpoint(request: Request):
+    """
+    Stateless RAG 3.0 импорт: аннотация + теги + эмбеддинги + чанки.
+    Ничего не пишет в ChromaDB — фронт сохраняет в GunDB.
+    Текст документа присылает клиент (source + text) — нода не лезет в шлюз.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body  = await request.json()
+    source = (body.get("source") or "").strip()
+    raw_text = (body.get("text") or "").strip()
+    scope = body.get("scope") or request.headers.get("X-OMD-RAG-Scope", "private")
+    owner = body.get("owner") or ""
+    tags_in = body.get("tags") or []
+
+    if not raw_text:
+        raise HTTPException(status_code=422, detail="text is required (client fetches the document and sends its text)")
+
+    doc_id = _norm_doc_path(source) if source else f"user:note:{body.get('title') or 'note'}"
+
+    ctx = await _build_ctx_from_request(request)
+    owner = owner or ctx.user_id or "alexey"
+    title = body.get("title") or doc_id.split("/")[-1].split("?")[0].lstrip("/")
+    tags = _rag_scope_tags(tags_in, scope)
+
+    return await _rag_stateless_payload(ctx, raw_text, doc_id, title, tags, owner)
 
 
 @app.post("/embed")
@@ -616,9 +658,11 @@ async def _build_ctx_from_request(request: Request):
     """Строит UserContext из заголовков запроса."""
     omd_key = _extract_omd_key(request)
     ctx = user_context.UserContext(
+        type="omd",
         user_id  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", ""),
-        omd_key  = omd_key,
         settings = {},
+        history  = [],
+        omd_key  = omd_key,
     )
     ctx.private_mode = is_private_mode(request, ctx)
     return ctx
@@ -2466,7 +2510,7 @@ async def extract_knowledge(request: Request):
             raise HTTPException(status_code=400, detail="Missing url_or_path")
             
         token = request.headers.get("X-OMD-Key")
-        ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history={}, omd_key=token)
+        ctx = user_context.UserContext(type="omd", user_id="system", settings={}, history=[], omd_key=token)
         
         # We use a specialized branch of import logic that only returns text
         logging.info(f"[extract] Extracting text from: {url_or_path}")

@@ -16,6 +16,9 @@ unified_memory.py  —  OMD 3.0 RAG
 import os
 import uuid
 import logging
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 from typing import Optional
 
@@ -569,6 +572,91 @@ def chunk_document(text: str, chunk_size=500, overlap=50) -> list[str]:
         chunks.append(" ".join(words[i : i + chunk_size]))
         i += chunk_size - overlap
     return chunks
+
+
+# ─── Локальная конвертация raw-документов (гостевой/персональный слой) ────────
+
+PANDOC_FORMATS = {
+    "docx", "odt", "epub", "fb2", "html", "htm", "csv", "md", "markdown",
+    "rst", "rtf", "org", "mediawiki", "tex", "typst",
+}
+
+def _split_filename(name: str) -> tuple[str, str]:
+    base = (name or "").split("?")[0]
+    ext = os.path.splitext(base)[1].lower().lstrip(".")
+    return base, ext
+
+
+def convert_bytes_to_text(data: bytes, filename: str = "") -> str:
+    """
+    Конвертирует сырые байты документа в текст ЛОКАЛЬНО (без шлюза).
+    PDF → pdftotext; docx/odt/epub/fb2/html/md/... → pandoc; текст как есть.
+    Временный файл удаляется после конвертации.
+    """
+    base, ext = _split_filename(filename)
+    if not data:
+        return ""
+
+    # Текстовые файлы — просто декодируем
+    if ext in ("txt", "text") or base.lower().endswith((".txt", ".text")):
+        try:
+            return data.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
+
+    tmp_path = None
+    try:
+        suffix = "." + ext if ext else ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        # PDF → pdftotext (poppler-utils)
+        if ext == "pdf":
+            if not shutil.which("pdftotext"):
+                logger.error("[unified] pdftotext not available")
+                return ""
+            try:
+                res = subprocess.run(
+                    ["pdftotext", "-layout", "-enc", "UTF-8", tmp_path, "-"],
+                    capture_output=True, timeout=120,
+                )
+                text = (res.stdout or b"").decode("utf-8", errors="replace")
+                return text.strip()
+            except Exception as e:
+                logger.error(f"[unified] pdftotext failed: {e}")
+                return ""
+
+        # Остальное → pandoc
+        if ext in PANDOC_FORMATS:
+            if not shutil.which("pandoc"):
+                logger.error("[unified] pandoc not available")
+                return ""
+            try:
+                res = subprocess.run(
+                    ["pandoc", tmp_path, "-t", "markdown"],
+                    capture_output=True, timeout=120,
+                )
+                if res.returncode != 0:
+                    logger.error(f"[unified] pandoc failed ({res.returncode}): {res.stderr[:300]}")
+                    return ""
+                text = (res.stdout or b"").decode("utf-8", errors="replace")
+                return text.strip()
+            except Exception as e:
+                logger.error(f"[unified] pandoc error: {e}")
+                return ""
+
+        # Неизвестный тип — пробуем прочитать как текст
+        try:
+            return data.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 def cleanup_guest_data(owners_to_keep: list[str]) -> int:
