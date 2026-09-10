@@ -92,6 +92,21 @@ async def _fetch_chunks_from_hub(token_hash: str, memory_id: str) -> list:
         return []
 
 
+async def _fetch_all_knowledge_from_hub(token_hash: str) -> list:
+    """Fetch all knowledge cards from hub (for backend-side relevance filtering)."""
+    try:
+        url = f"{HUB_URL}/api/knowledge?tokenHash={token_hash}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return data.get("cards", []) if data.get("ok") else []
+    except Exception as e:
+        logging.warning(f"[hub] fetch_all_knowledge failed: {e}")
+        return []
+
+
 def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode is None:
         mode = ctx.settings.get("content_mode", "work")
@@ -2535,9 +2550,45 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
     # 1. Карточки памяти, переданные фронтендом (из GunDB)
     if provided_knowledge is not None:
-        for m in provided_knowledge:
+        # 1a. Backend-side relevance: если карточек больше 3, фильтруем по annotation_embedding через hub
+        filtered_knowledge = provided_knowledge
+        if len(provided_knowledge) > 3 and ctx.omd_key and query:
+            try:
+                token_hash = _simple_hash(ctx.omd_key)
+                query_emb = unified_memory.embed(query)
+                # Получаем annotation_embedding для всех карточек с хаба
+                hub_cards = await _fetch_all_knowledge_from_hub(token_hash)
+                emb_map = {}
+                for hc in hub_cards:
+                    mid = hc.get("memoryId", "")
+                    emb = hc.get("annotation_embedding")
+                    if mid and emb:
+                        emb_map[mid] = emb
+                # Фильтруем по cosine similarity
+                scored = []
+                for m in provided_knowledge:
+                    mid = m.get("id") or m.get("memory_id") if isinstance(m, dict) else ""
+                    emb = emb_map.get(mid) if mid else None
+                    if emb and isinstance(emb, list):
+                        score = sum(q * e for q, e in zip(query_emb, emb))
+                        norm_q = sum(q * q for q in query_emb) ** 0.5
+                        norm_e = sum(e * e for e in emb) ** 0.5
+                        sim = score / (norm_q * norm_e) if norm_q * norm_e > 0 else 0
+                        scored.append((m, sim))
+                    else:
+                        scored.append((m, 0.5))  # без эмбеддинга — средний приоритет
+                scored.sort(key=lambda x: x[1], reverse=True)
+                filtered_knowledge = [m for m, _ in scored[:5]]
+                logging.info(f"[inject_facts] relevance filter: {len(provided_knowledge)} → {len(filtered_knowledge)} cards")
+            except Exception as e:
+                logging.warning(f"[inject_facts] relevance filter error: {e}")
+
+        for m in filtered_knowledge:
             text = m.get("text", "") if isinstance(m, dict) else str(m)
             if text:
+                # Ограничиваем длину аннотации — длинные тексты съедают контекст
+                if len(text) > 300:
+                    text = text[:297] + "..."
                 facts.append(f"• {text}")
                 doc_id = m.get("document_id") if isinstance(m, dict) else None
                 if doc_id:
@@ -2554,7 +2605,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         # 1b. Chunk-level relevance: fetch chunks from hub for top cards
         if ctx.omd_key:
             token_hash = _simple_hash(ctx.omd_key)
-            for m in provided_knowledge[:3]:  # top 3 cards only
+            for m in filtered_knowledge[:3]:  # top 3 cards only
                 if not isinstance(m, dict):
                     continue
                 mid = m.get("id") or m.get("memory_id")
