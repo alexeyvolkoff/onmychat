@@ -840,7 +840,7 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
     try:
         assistant = {
             "assistant_name": ctx.settings.get("assistant_name", user_context.DEFAULT_ASSISTANT_NAME),
-            "name": ctx.settings.get("name", "User"),
+            "name": ctx.settings.get("name") or ctx.settings.get("username") or ctx.user_id or "User",
             "title": ctx.settings.get("assistant_title", user_context.DEFAULT_ASSISTANT_TITLE),
             "system_prompt": ctx.settings.get("system_prompt", ""),
             "assistant_appearance": ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE),

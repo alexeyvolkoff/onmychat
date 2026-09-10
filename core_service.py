@@ -1205,7 +1205,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
     
     # Inject username and current date
-    username = ctx.settings.get("name") or ctx.settings.get("username", "User") if ctx else "User"
+    username = (ctx.settings.get("name") or ctx.settings.get("username") or ctx.user_id or "User") if ctx else "User"
     current_date = datetime.now().strftime("%d.%m.%Y")
     current_date_iso = datetime.now().strftime("%Y-%m-%d")
     
@@ -2758,7 +2758,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     chat_name = chat_info.get("name", chat or "default")
 
     # Персонализация
-    username = ctx.settings.get("name") or ctx.settings.get("username", "User")
+    username = ctx.settings.get("name") or ctx.settings.get("username") or ctx.user_id or "User"
 
     if fun_mode:
         user_fun_prompt = (ctx.settings.get("fun_system_prompt") or "").strip()
@@ -2769,6 +2769,8 @@ async def _perform_prompt_gen(ctx: UserContext,
     else:
         if ctx.settings.get("system_prompt"):
             system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
+
+    system_prompt += "\n\n*User name:*\n" + username
 
     system_prompt += "\n\n*Appearance:*\n" + ctx.settings.get("assistant_appearance", user_context.DEFAULT_ASSISTANT_APPEARANCE)
     logging.info(f"Model: {model}\nMode: {mode}\nUser: {username}")
