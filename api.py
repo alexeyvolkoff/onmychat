@@ -1586,15 +1586,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"
-            elif prompt.startswith("/tools"):
-                # Provide an immediate, reliable list of tools
-                mode = ctx.settings.get("content_mode", "work")
-                tools_list = await core_service.list_supported_tools(ctx, mode=mode)
-
-                # [LEGACY HISTORY] history saving removed - handled by frontend/OrbitDB
-
-                yield f"data: {json.dumps({'delta': tools_list, 'role': 'assistant', 'done': True})}\n\n"
-                return
+            elif prompt.startswith("/tools") or prompt.startswith("/docs") or prompt.startswith("/mcp"):
+                intent = "tools"
             elif prompt.startswith("/import") or prompt.startswith("/learn"):  
                 m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))(?:\s+(\S+))?', prompt)
                 file_path_or_url = m.group(1) or m.group(2) or m.group(3) if m else None
@@ -1623,16 +1616,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 intent = "chat"
                 check_intent = "chat"
 
-            if ctx.settings.get("content_mode", "work") == "fun" and check_intent in ["tools", "import", "search", "doc"]:
-                 yield f"data: {json.dumps({'delta': 'Tools and advanced commands are not supported in fun mode.', 'role': 'assistant', 'done': True})}\n\n"
-                 return
-
             if not ctx.private_mode:
                 logging.info(f"Token Balance: {token_balance}")
-                if token_balance <= 0:
-                     if check_intent in restricted_intents:
-                          yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
-                          return
+                #if token_balance <= 0:
+                #     if check_intent in restricted_intents:
+                #          yield f"data: {json.dumps({'delta': 'Advanced AI features are available with a Premium Plan.', 'role': 'assistant', 'done': True})}\n\n"
+                #          return
 
             logging.info(f"Check intent: {check_intent}")
             if check_intent in ["tools", "search", "explain", "think"]:
@@ -1719,63 +1708,18 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] save_user_message removed
 
             elif intent == "explain" or intent == "think" or intent == "search":
-                # Единый пайплайн: unified_memory (личные знания) vs веб-поиск.
-                # Веб используется если внутри пусто или хиты слаборелевантны.
+                # Единый RAG-пайплайн: внутренний поиск + web-fallback выполняются
+                # внутри _perform_prompt_gen через inject_facts (факты попадают в system prompt).
                 search_query = prompt
                 if prompt.lower().startswith("/search"):
                     search_query = prompt[7:].strip()
 
-                # 1. Поиск в unified_memory (internal memory + indexed files)
-                search_results = await core_service.search_memory_tool(ctx, search_query)
-                best_distance = getattr(ctx, "temp_search_distance", 1.0)
-                internal_found = (
-                    search_results
-                    and "No relevant knowledge or files found." not in search_results
-                    and not search_results.startswith("Error")
+                instruction = (
+                    "The user asked a question. Use the *Known facts* / *Strict facts* injected into the system prompt "
+                    "to answer. Base your answer ONLY on that material where it is relevant, and mention the sources it "
+                    "comes from. If the material does not actually answer the question, say so plainly instead of improvising. "
+                    "Do not invent information, links, or data."
                 )
-                internal_strong = internal_found and best_distance <= core_service.KNOWLEDGE_STRONG_DISTANCE
-                source = "internal" if internal_found else "none"
-
-                # 2. Веб-поиск: если внутри пусто или хиты слабые
-                if not internal_strong:
-                    logging.info(
-                        f"Internal search {'empty' if not internal_found else f'weak (best distance {best_distance:.2f})'}"
-                        f" for '{search_query}'. Trying web search."
-                    )
-                    yield f"data: {json.dumps({'status': 'searching'})}\n\n"
-                    web_results = await core_service.search_web(ctx, search_query)
-                    if web_results and "No results found" not in web_results and not web_results.startswith("Error"):
-                        if internal_found:
-                            ctx.temp_sources = []  # ответ будет из веба, не показывать внутренние источники
-                        search_results = f"Web Search Results:\n{web_results}"
-                        source = "web"
-
-                if source == "internal":
-                    instruction = (
-                        "The user asked a question. Relevant knowledge was found in the user's personal unified memory "
-                        "(documents, files, knowledge cards):\n\n"
-                        f"{search_results}\n\n"
-                        "Base your answer ONLY on this material where it is relevant, and mention the file paths it comes from. "
-                        "Do not invent information."
-                    )
-                    if not internal_strong:
-                        instruction += (
-                            "\nIMPORTANT: The material above is only loosely related to the question. "
-                            "If it does not actually answer the question, say so plainly instead of improvising."
-                        )
-                elif source == "web":
-                    instruction = (
-                        "The user asked a question. Search results from the web are provided:\n\n"
-                        f"{search_results}\n\n"
-                        "Summarize these results for the user in a helpful way. "
-                        "CRITICAL: Use ONLY the data provided above. Do NOT invent links or information."
-                    )
-                else:
-                    instruction = (
-                        "No relevant information was found in the user's personal memory or on the web. "
-                        "Respond as a helpful conversational assistant: clearly separate facts from assumptions, "
-                        "state the limitations honestly, and do not invent specific data."
-                    )
                 llm_message = search_query
             elif intent.startswith("recognize"): 
 
@@ -1848,9 +1792,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
 
-            elif check_intent == "doc":
-                logging.info(f"[MCP ROUTE] Routing document template operation to check_and_execute_mcp. Prompt: {prompt[:50]}...")
-                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
+            elif check_intent == "tools":
+                logging.info(f"[MCP ROUTE] Routing to check_and_execute_mcp. Prompt: {prompt[:50]}...")
+                yield f"data: {json.dumps({'status': 'executing'})}\n\n"
                 await asyncio.sleep(0.1)
                 
                 mode = ctx.settings.get("content_mode", "work")

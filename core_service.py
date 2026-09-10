@@ -1161,9 +1161,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     
     # List of known slash commands to exclude from path detection
     slash_commands = {
-        "/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", 
+        "/doc", "/mcp", "/generate", "/generate", "/sign", "/help", "/forget", "/forget_all", 
         "/chat", "/code", "/import", "/show", "/view", "/imagine", "/learn", 
-        "/recognize", "/detect", "/think", "/explain", "/search",     "/mode", "/tools"
+        "/recognize", "/detect", "/think", "/explain", "/search",  "/tools"
     }
     
     for p in raw_paths:
@@ -2530,6 +2530,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 top_k=rag_top_k,
                 tags_filter=prompt_tags or None,
             )
+            ctx.temp_search_distance = min((r.get("distance", 1.0) for r in db_results), default=1.0)
             for r in db_results:
                 rec_type  = r.get("type", "")
                 doc_id    = r.get("document_id", "")
@@ -2653,7 +2654,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     b64_image = None
     
     # Internal flags
-    is_rag = intent in ["explain", "think"]
+    is_rag = intent in ["explain", "think", "search"]
 
     # History is derived from provided_history or managed via frontend OrbitDB sync.
     if chat == "default":
@@ -2669,23 +2670,28 @@ async def _perform_prompt_gen(ctx: UserContext,
     kb_tag = ctx.settings.get("kb_id", "omd")
     logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
     # === Facts injection ===
-    if intent == "search":
-        # Search results are already packed into 'instruction' inside api.py
-        # Skipping duplicate Chroma DB search, but restoring sources from the cache
-        facts = []
-        sources = getattr(ctx, "temp_sources", [])
-        if hasattr(ctx, "temp_sources"):
-            try:
-                del ctx.temp_sources
-            except AttributeError:
-                pass
-    elif intent == "show":
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
-    elif intent in ("view", "chat"):
+    if intent in ("view", "show", "chat"):
         # Plain chat and scene generation don't need RAG file search
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
     else:
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge)
+
+        # Web fallback for search intent: если внутренняя база пуста или хиты слабые
+        if intent == "search":
+            best_distance = getattr(ctx, "temp_search_distance", 1.0)
+            internal_found = best_distance < 1.0
+            internal_strong = internal_found and best_distance <= KNOWLEDGE_STRONG_DISTANCE
+            if not internal_strong:
+                logging.info(
+                    f"Internal search {'empty' if not internal_found else f'weak (best distance {best_distance:.2f})'}"
+                    f" for '{message}'. Trying web search."
+                )
+                yield {"status": "searching"}
+                web_results = await search_web(ctx, message)
+                if web_results and "No results found" not in web_results and not web_results.startswith("Error"):
+                    if internal_found:
+                        sources = []  # ответ будет из веба, не показывать внутренние источники
+                    facts.append(web_results)
     
     # Yield sources immediately for the frontend widget
     if sources:
