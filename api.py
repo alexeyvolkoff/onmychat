@@ -456,93 +456,76 @@ async def embed_endpoint(request: Request):
 @app.post("/rag/index")
 async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks):
     """
-    RAG 3.0 контракт: crawl шары/пути (вызывает C++ нода: локальный realPath).
-    path-/home/<user>/<share>/... нормализуется до /<share>/... и обходится через gateway XML-index.
+    ЛОКАЛЬНАЯ индексация папки на ноде (владелец): запрос приходит по P2P,
+    нода обходит свой локальный диск (os.walk по realPath), конвертирует
+    документы локально (pdftotext/pandoc, см. convert_bytes_to_text) и пишет
+    чанки в unified ChromaDB. Никакого шлюза и внешних запросов.
+    Заголовки: X-OMD-RAG-Scope. Body: {path: realPath, force?: bool, tags?: []}.
     """
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     body = await request.json()
     source_path = (body.get("path") or "").strip()
-    if not source_path:
-        raise HTTPException(status_code=422, detail="path is required")
+    if not source_path or source_path.startswith("http"):
+        raise HTTPException(status_code=422, detail="local folder path is required")
     force = bool(body.get("force", False))
     scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
 
-    doc_root = _norm_doc_path(source_path)          # /<share>/...
-    crawl_url = source_path if source_path.startswith("http") else f"{GATEWAY_URL}{doc_root}"
+    doc_root = _norm_doc_path(source_path)          # /<share>/... для названий карточек
     ctx = await _build_ctx_from_request(request)
     owner = ctx.user_id or "alexey"
     tags = _rag_scope_tags(body.get("tags") or [], scope)
 
     RAG_INDEX_STATUS[doc_root] = {"indexed": 0, "pending": 0, "failed": 0, "lastError": None, "done": False}
 
-    async def _crawl():
+    def _crawl_local():
         status = RAG_INDEX_STATUS[doc_root]
-        from lxml import etree
-        queue = [crawl_url if crawl_url.endswith("/") else crawl_url + "/"]
-        visited = set()
         blacklist = ["node_modules", ".git", ".venv", "venv", "__pycache__", "site-packages",
                      "bin", "obj", "target", "dist", "build", ".cache", ".idea", ".vscode",
-                     ".pytest_cache", ".npm", ".yarn", "node_modules/"]
-        exact_blacklist = {"proc", "sys", "system", "data", "dev", "run", "etc", "boot",
-                           "lib", "lib64", "opt", "srv", ".local", ".config", ".cache"}
-        token = _extract_omd_key(request) or AI_TOKEN
+                     ".pytest_cache", ".npm", ".yarn"]
 
-        async def fetch(url, params=""):
-            try:
-                full = url + params
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
-                    async with s.get(full, headers={"Authorization": f"token:{token}"}) as r:
-                        if r.status == 200:
-                            return await r.text()
-                        return None
-            except Exception as e:
-                status["failed"] += 1
-                status["lastError"] = str(e)
-                return None
+        local_root = source_path
+        if not os.path.isdir(local_root):
+            # виртуальный путь /<share>/... — резолвим в домашнюю директорию владельца ноды
+            import getpass
+            candidate = f"/home/{getpass.getuser()}{doc_root}"
+            if os.path.isdir(candidate):
+                local_root = candidate
 
-        while queue and not RAG_INDEX_STATUS.get(doc_root, {}).get("abort", False):
-            current = queue.pop(0)
-            if current in visited:
-                continue
-            visited.add(current)
+        if not os.path.isdir(local_root):
+            status["failed"] += 1
+            status["lastError"] = f"folder not found on node: {source_path}"
+            status["done"] = True
+            return
 
-            xml = await fetch(current, "?index")
-            if not xml or "<omd_index>" not in xml:
-                status["lastError"] = f"no index xml: {current}"
-                continue
-
-            try:
-                root_doc = etree.fromstring(xml.encode("utf-8"), etree.XMLParser(recover=True))
-            except Exception as e:
-                status["failed"] += 1
-                status["lastError"] = f"xml parse: {e}"
-                continue
-
-            for doc in root_doc.findall(".//doc"):
-                name = doc.get("url") or ""
-                if not name or name.startswith("?"):
+        for dirpath, dirnames, filenames in os.walk(local_root):
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
+            for fn in filenames:
+                ext = os.path.splitext(fn)[1].lower().lstrip(".")
+                if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
                     continue
-                item_url = current.rstrip("/") + "/" + name
-                item_path = urlparse(item_url).path
-                doc_id = _norm_doc_path(item_path)
-                if doc.get("contentType") == "folder":
-                    low = name.lower().strip("/")
-                    if low in exact_blacklist or any(b in low for b in blacklist):
-                        continue
-                    queue.append(item_url)
-                    continue
-
-                last_modified = doc.get("last_modified") or ""
+                full = os.path.join(dirpath, fn)
+                doc_id = _norm_doc_path(full)
+                try:
+                    mtime_val = datetime.datetime.fromtimestamp(os.stat(full).st_mtime).isoformat(timespec="seconds")
+                except Exception:
+                    mtime_val = ""
+                last_modified = mtime_val
                 if not force and unified_memory.has_document(doc_id, source_stamp=last_modified):
                     logging.info(f"[rag/index] skip unchanged {doc_id}")
                     continue
-
-                raw = await core_service.fetch_document_text(item_url, token=token)
-                if not raw or raw.startswith("Failed to fetch"):
+                try:
+                    with open(full, "rb") as f:
+                        raw = unified_memory.convert_bytes_to_text(f.read(), fn)
+                except Exception as e:
                     status["failed"] += 1
-                    status["lastError"] = raw or "empty"
+                    status["lastError"] = f"{fn}: {e}"
+                    continue
+                if not raw or not raw.strip():
+                    status["failed"] += 1
+                    status["lastError"] = f"{fn}: no text (unsupported or scanned)"
                     continue
                 try:
                     n = unified_memory.chunk_and_index_document(
@@ -550,7 +533,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                         document_id=doc_id,
                         owner=owner,
                         tags=tags,
-                        title=doc_id.split("/")[-1],
+                        title=fn,
                         source_stamp=last_modified,
                     )
                     status["indexed"] += 1
@@ -560,9 +543,10 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     status["lastError"] = str(e)
 
         status["done"] = True
+        logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
 
-    background_tasks.add_task(_crawl)
-    return {"status": "indexing_started", "path": doc_root, "crawl_url": crawl_url}
+    background_tasks.add_task(_crawl_local)
+    return {"status": "indexing_started", "path": doc_root}
 
 
 @app.get("/rag/status")
