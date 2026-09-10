@@ -1554,6 +1554,17 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     ctx.private_mode = is_private_mode(request, ctx)
     if provided_knowledge is None:
         logging.info("[chat] provided knowledge: None (client did not send)")
+        try:
+            hub_cards = await core_service._fetch_all_knowledge_from_hub(
+                core_service._simple_hash(omd_key or "")
+            )
+            with_emb = sum(1 for c in hub_cards if isinstance(c.get("annotation_embedding"), list) and c.get("annotation_embedding"))
+            logging.info(
+                f"[chat] hub introspection: {len(hub_cards)} knowledge cards total, "
+                f"{with_emb} with annotation_embedding"
+            )
+        except Exception as e:
+            logging.warning(f"[chat] hub introspection failed: {e}")
     else:
         logging.info(f"[chat] provided knowledge: {len(provided_knowledge)} cards")
 
