@@ -2600,10 +2600,12 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 if doc_id:
                     key = f"provided:{doc_id}"
                     if key not in sources_map:
+                        # Настоящий путь/URL открываем, личное имя файла — некликабельный источник
+                        clickable = doc_id.startswith("/") or doc_id.startswith("http")
                         sources_map[key] = {
                             "title":       doc_id.split("/")[-1],
                             "owner":       ctx.user_id or "alexey",
-                            "clickable":   True,
+                            "clickable":   clickable,
                             "document_id": doc_id,
                             "fullPath":    doc_id,
                         }
