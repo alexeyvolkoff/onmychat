@@ -379,11 +379,16 @@ def chunk_and_index_document(
     chunks = []
     i = 0
     while i < len(words):
-        chunks.append(" ".join(words[i: i + chunk_size]))
+        chunks.append(" ".join(words[i : i + chunk_size]))
         i += chunk_size - overlap
 
     if not chunks:
         return 0
+
+    # Поисковый буст: имя файла нередко содержит ключевые слова (клиент, тип),
+    # которых нет в тексте документа (напр. «račun_Vieste» при англ. запросе).
+    if title:
+        chunks[0] = f"[File: {title}]\n{chunks[0]}"
 
     tags_dict = _tags_meta(tags or [])
     ts = datetime.now().isoformat(timespec="seconds")
