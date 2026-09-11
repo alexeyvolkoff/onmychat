@@ -2535,12 +2535,19 @@ def _extract_hashtags(text: str, limit: int = 7) -> list:
     return tags
 
 
-async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False) -> tuple[list[str], list[dict]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False, focus: dict|None = None) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     sources_map = {}
 
     rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
+
+    # /learn focus: граничим факты конкретно этим путём/файлом/карточкой
+    focus_doc = ""
+    if isinstance(focus, dict):
+        focus_doc = (focus.get("docId") or focus.get("document_id") or "").strip()
+    if focus_doc:
+        logging.info(f"[memory] inject_facts focus: {focus_doc}")
 
     # Fun mode: skip DB entirely, use only frontend-provided facts
     if ctx.settings.get("content_mode", "work") == "fun":
@@ -2549,6 +2556,17 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
 
     # 1. Карточки памяти, переданные фронтендом (из GunDB)
     if provided_knowledge is not None:
+        # 1.0 /learn focus: оставляем только карточки с совпадающим document_id
+        if focus_doc:
+            focus_base = focus_doc.split("/")[-1]
+            focused = []
+            for m in provided_knowledge:
+                doc_id = m.get("document_id") if isinstance(m, dict) else None
+                if doc_id and (doc_id == focus_doc or doc_id.split("/")[-1] == focus_base):
+                    focused.append(m)
+            if focused:
+                provided_knowledge = focused
+                logging.info(f"[inject_facts] focus filter: kept {len(focused)} provided cards for {focus_doc}")
         # 1a. Backend-side relevance: фильтруем по annotation_embedding через hub
         filtered_knowledge = list(provided_knowledge)
         if provided_knowledge and ctx.omd_key and query:
@@ -2661,6 +2679,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 private_mode=ctx.private_mode,
                 top_k=rag_top_k,
                 tags_filter=prompt_tags or None,
+                document_id=focus_doc or None,
             )
             ctx.temp_search_distance = min((r.get("distance", 1.0) for r in db_results), default=1.0)
             for r in db_results:
@@ -2781,7 +2800,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_history: list = None,
                          provided_knowledge: list = None,
                          chat_summary: str = None,
-                         total_message_count: int = None) -> AsyncGenerator:
+                         total_message_count: int = None,
+                         rag_focus: dict = None) -> AsyncGenerator:
 
     mode = ctx.settings.get("content_mode", "work")
     model = get_llm_model(ctx, mode)
@@ -2807,9 +2827,9 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === Facts injection ===
     if intent in ("view", "show", "chat"):
         # Plain chat and scene generation don't need RAG file search
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus)
     else:
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus)
 
         # Web fallback for search intent: если внутренняя база пуста или хиты слабые
         if intent == "search":
@@ -3257,7 +3277,8 @@ async def perform_prompt(
     provided_history: list|None=None,
     provided_knowledge: list|None=None,
     chat_summary: str|None=None,
-    total_message_count: int|None=None
+    total_message_count: int|None=None,
+    rag_focus: dict|None=None
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -3274,7 +3295,8 @@ async def perform_prompt(
         provided_history=provided_history,
         provided_knowledge=provided_knowledge,
         chat_summary=chat_summary,
-        total_message_count=total_message_count
+        total_message_count=total_message_count,
+        rag_focus=rag_focus
     )
     
     if stream:

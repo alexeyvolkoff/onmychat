@@ -403,6 +403,74 @@ async def rag_import_raw_endpoint(request: Request):
     return await _rag_stateless_payload(ctx, raw_text, doc_id, title, tags, owner)
 
 
+@app.post("/rag/import/local")
+async def rag_import_local_endpoint(request: Request):
+    """
+    /learn для владельца: файл УЖЕ лежит на ноде (выбран или загружен в шару,
+    напр. /Documents/invoice.pdf). Эндпоинт читает его с локального диска,
+    конвертирует (pdftotext/pandoc), индексирует чанки в unified ChromaDB
+    (facts потом граничатся по document_id через rag_focus) и возвращает
+    stateless payload для карточки. Файл остаётся на файловой системе.
+    Body: {source, tags?: [], scope?: "private"|"public"}.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    source = (body.get("source") or "").strip()
+    if not source or source.startswith("http"):
+        raise HTTPException(status_code=422, detail="local file path is required")
+    scope = body.get("scope") or request.headers.get("X-OMD-RAG-Scope", "private")
+    tags_in = body.get("tags") or []
+    tags = _rag_scope_tags(tags_in, scope)
+    ctx = await _build_ctx_from_request(request)
+    owner = ctx.user_id or user_context.node_owner()
+
+    # Реальный путь на диске: realPath /home/<u>/<share>/... или itemPath /<share>/...
+    real_path = source
+    if not os.path.exists(real_path):
+        import getpass as _getpass
+        doc_root = _norm_doc_path(source)
+        candidate = f"/home/{_getpass.getuser()}{doc_root}"
+        if os.path.exists(candidate):
+            real_path = candidate
+    if not os.path.isfile(real_path):
+        raise HTTPException(status_code=404, detail=f"file not found on node: {source}")
+
+    filename = os.path.basename(real_path)
+    doc_id = _norm_doc_path(real_path)
+    try:
+        mtime_val = datetime.datetime.fromtimestamp(os.stat(real_path).st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        mtime_val = ""
+    last_modified = mtime_val
+
+    with open(real_path, "rb") as f:
+        raw = f.read()
+    raw_text = unified_memory.convert_bytes_to_text(raw, filename)
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=422, detail="could not extract text from document (unsupported or scanned file)")
+
+    try:
+        n = unified_memory.chunk_and_index_document(
+            raw_text,
+            document_id=doc_id,
+            owner=owner,
+            tags=tags,
+            title=filename,
+            source_stamp=last_modified,
+        )
+        logging.info(f"[rag/import/local] {doc_id}: {n} chunks indexed")
+    except Exception as e:
+        logging.error(f"[rag/import/local] index error: {e}")
+        raise HTTPException(status_code=500, detail=f"indexing failed: {e}")
+
+    payload = await _rag_stateless_payload(ctx, raw_text, doc_id, filename, tags, owner)
+    payload["indexed"] = n
+    payload["path"] = doc_id
+    return payload
+
+
 @app.post("/rag/import")
 async def rag_import_endpoint(request: Request):
     """
@@ -883,6 +951,7 @@ class ChatStreamInput(BaseModel):
     total_message_count: int | None = None
     image_delivery: str | None = None
     client: str | None = None
+    rag_focus: dict | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -1520,7 +1589,8 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         chat_summary=data.chat_summary,
         total_message_count=data.total_message_count,
         image_delivery=data.image_delivery or (data.settings.get("image_delivery") if data.settings else None),
-        client=data.client or (data.settings.get("client") if data.settings else None)
+        client=data.client or (data.settings.get("client") if data.settings else None),
+        rag_focus=data.rag_focus
     )
 
 @app.get("/chat/stream")
@@ -1532,7 +1602,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       chat_summary: str|None = None,
                       total_message_count: int|None = None,
                       image_delivery: str|None = None,
-                      client: str|None = None):
+                      client: str|None = None,
+                      rag_focus: dict|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
@@ -1963,7 +2034,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 provided_history=provided_history,
                 provided_knowledge=provided_knowledge,
                 chat_summary=chat_summary,
-                total_message_count=total_message_count
+                total_message_count=total_message_count,
+                rag_focus=rag_focus
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:

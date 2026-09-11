@@ -156,6 +156,7 @@ def search(
     top_k=None,
     threshold=None,
     record_types=None,
+    document_id=None,
 ) -> list:
     """
     Единая точка поиска.
@@ -168,6 +169,8 @@ def search(
         top_k         - максимум результатов
         threshold     - косинусное расстояние (0=идентично, ниже=лучше)
         record_types  - фильтр по type: ["file_chunk", "memory_card", ...]
+        document_id   - фильтр по document_id (напр. "/Documents/a.pdf" для
+                        /learn — граничит факты конкретно этим файлом/карточкой)
     """
     if top_k is None:
         top_k = RAG_TOP_K
@@ -181,6 +184,8 @@ def search(
     query_emb = embed(query)
 
     conditions = []
+    if document_id:
+        conditions.append({"document_id": {"$eq": document_id}})
     if tags_filter:
         conditions.append(_tags_match_filter(tags_filter))
     if owner:
@@ -232,9 +237,12 @@ def search(
             all_recs = coll.get(include=["metadatas"])
             kw_ids = [
                 rid for rid, meta in zip(all_recs.get("ids", []), all_recs.get("metadatas", []))
-                if any(
-                    tok in f"{meta.get('document_id', '')} {meta.get('title', '')}".lower()
-                    for tok in tokens
+                if (
+                    (not document_id or meta.get("document_id") == document_id)
+                    and any(
+                        tok in f"{meta.get('document_id', '')} {meta.get('title', '')}".lower()
+                        for tok in tokens
+                    )
                 )
             ]
             if kw_ids:
@@ -583,12 +591,14 @@ def search_for_rag(
     private_mode: bool = False,
     top_k=None,
     tags_filter=None,
+    document_id=None,
 ) -> list:
     """
     Поиск для RAG-инъекции:
     - tags_filter (хештеги из промпта) -> только эти теги
     - private_mode=True  + нет тегов   -> вся база (владелец ноды, все владельцы)
     - private_mode=False + нет тегов   -> только PUBLIC_TAGS (гость)
+    - document_id (focus /learn)       -> только чанки/карточка этого файла
     owner-фильтра больше нет: в private-режиме видны записи всех владельцев ноды.
     """
     if top_k is None:
@@ -603,6 +613,7 @@ def search_for_rag(
         top_k=top_k,
         threshold=RAG_THRESHOLD,
         record_types=["file_chunk", "memory_card"],
+        document_id=document_id,
     )
 
 
