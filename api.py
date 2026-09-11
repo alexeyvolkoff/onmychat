@@ -1576,6 +1576,31 @@ async def chat_endpoint(data: ChatInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _stream_first_chunk_timeout(agen, timeout=120):
+    """Обёртка над async-генератором стрима: если ПЕРВЫЙ чанк не пришёл за
+    `timeout` секунд (нода зависла до начала стрима — RAG/LLM/кэш), клиент
+    получает ошибку вместо вечного «processing» (зависшая красная кнопка stop)."""
+    import asyncio as _asyncio
+    first = True
+    while True:
+        if first:
+            try:
+                chunk = await _asyncio.wait_for(agen.__anext__(), timeout)
+            except _asyncio.TimeoutError:
+                logging.error("[chat/stream] watchdog: no first chunk within %ss — aborting stream", timeout)
+                yield {"error": "⚠️ AI node is busy. Please try again in a moment.", "done": True}
+                return
+            except StopAsyncIteration:
+                return
+            first = False
+        else:
+            try:
+                chunk = await agen.__anext__()
+            except StopAsyncIteration:
+                return
+        yield chunk
+
+
 @app.post("/chat/stream")
 async def chat_stream_post(request: Request, data: ChatStreamInput):
     return await chat_stream(
@@ -2024,22 +2049,24 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "Respond freely as a helpful conversational assistant."
                 )
             # 3️⃣ ответ
-            async for chunk in await core_service.perform_prompt(
-                ctx,
-                instruction=instruction,
-                message=llm_message,
-                chat=chat,
-                intent=intent,
-                mem_id=mem_id,
-                img_source=img_source,
-                event=event,
-                stream=True,
-                provided_history=provided_history,
-                provided_knowledge=provided_knowledge,
-                chat_summary=chat_summary,
-                total_message_count=total_message_count,
-                rag_focus=rag_focus,
-                attached_docs=attached_docs
+            async for chunk in _stream_first_chunk_timeout(
+                core_service.perform_prompt(
+                    ctx,
+                    instruction=instruction,
+                    message=llm_message,
+                    chat=chat,
+                    intent=intent,
+                    mem_id=mem_id,
+                    img_source=img_source,
+                    event=event,
+                    stream=True,
+                    provided_history=provided_history,
+                    provided_knowledge=provided_knowledge,
+                    chat_summary=chat_summary,
+                    total_message_count=total_message_count,
+                    rag_focus=rag_focus,
+                    attached_docs=attached_docs
+                )
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:

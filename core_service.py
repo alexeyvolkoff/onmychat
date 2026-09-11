@@ -2919,6 +2919,8 @@ async def _perform_prompt_gen(ctx: UserContext,
     # RAG 3.0: kb_id — это тег в unified index, не отдельная база
     kb_tag = ctx.settings.get("kb_id", "omd")
     logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
+    import time as _time
+    _t0 = _time.time()
     # === Facts injection ===
     if intent in ("view", "show", "chat"):
         # Plain chat and scene generation don't need RAG file search
@@ -2942,6 +2944,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                     if internal_found:
                         sources = []  # ответ будет из веба, не показывать внутренние источники
                     facts.append(web_results)
+    logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources")
     
     # Yield sources immediately for the frontend widget
     if sources:
@@ -3006,8 +3009,10 @@ async def _perform_prompt_gen(ctx: UserContext,
 
 
     # Check if the user is new or recurrent one, and prepare chat info
+    _t1 = _time.time()
     chat_info = await ensure_chat(ctx, chat, message)
     chat_name = chat_info.get("name", chat or "default")
+    logging.info(f"[ensure_chat] done in {_time.time()-_t1:.3f}s: name={chat_name}")
 
     # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
     chat_name = chat_info.get("name", chat or "default")
