@@ -952,6 +952,7 @@ class ChatStreamInput(BaseModel):
     image_delivery: str | None = None
     client: str | None = None
     rag_focus: dict | None = None
+    attached_docs: list | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -1590,7 +1591,8 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         total_message_count=data.total_message_count,
         image_delivery=data.image_delivery or (data.settings.get("image_delivery") if data.settings else None),
         client=data.client or (data.settings.get("client") if data.settings else None),
-        rag_focus=data.rag_focus
+        rag_focus=data.rag_focus,
+        attached_docs=data.attached_docs
     )
 
 @app.get("/chat/stream")
@@ -1603,7 +1605,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       total_message_count: int|None = None,
                       image_delivery: str|None = None,
                       client: str|None = None,
-                      rag_focus: dict|None = None):
+                      rag_focus: dict|None = None,
+                      attached_docs: list|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
@@ -2035,7 +2038,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 provided_knowledge=provided_knowledge,
                 chat_summary=chat_summary,
                 total_message_count=total_message_count,
-                rag_focus=rag_focus
+                rag_focus=rag_focus,
+                attached_docs=attached_docs
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:

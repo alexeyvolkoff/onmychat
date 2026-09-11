@@ -2535,7 +2535,7 @@ def _extract_hashtags(text: str, limit: int = 7) -> list:
     return tags
 
 
-async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False, focus: dict|None = None) -> tuple[list[str], list[dict]]:
+async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False, focus: dict|None = None, attached_docs: list|None = None) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     sources_map = {}
@@ -2548,6 +2548,21 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         focus_doc = (focus.get("docId") or focus.get("document_id") or "").strip()
     if focus_doc:
         logging.info(f"[memory] inject_facts focus: {focus_doc}")
+
+    # /learn attached docs: документы, пинутные к чату (персистятся в чате).
+    # Пока карточка активна — инжектим их факты БЕЗУСЛОВНО во все ответы.
+    attached_list = []
+    if attached_docs:
+        for ad in attached_docs:
+            if not isinstance(ad, dict):
+                continue
+            doc = (ad.get("docId") or ad.get("document_id") or "").strip()
+            if not doc:
+                continue
+            title = (ad.get("title") or "").strip() or doc.split("/")[-1]
+            attached_list.append({"doc_id": doc, "title": title})
+        if attached_list:
+            logging.info(f"[memory] inject_facts attached_docs: {[a['doc_id'] for a in attached_list]}")
 
     # Fun mode: skip DB entirely, use only frontend-provided facts
     if ctx.settings.get("content_mode", "work") == "fun":
@@ -2605,6 +2620,33 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 )
             except Exception as e:
                 logging.warning(f"[inject_facts] relevance filter error: {e}")
+
+        # 1b. attached docs: карточки приаттаченных к чату документов НЕ выкидываем
+        #     релевантностным фильтром — они инжектятся во все ответы безусловно
+        if attached_list:
+            try:
+                base_mids = {a["doc_id"].split("/")[-1] for a in attached_list}
+                attached_mids = set()
+                for m in provided_knowledge:
+                    if not isinstance(m, dict):
+                        continue
+                    doc_id = (m.get("document_id") or "").strip()
+                    if doc_id and (doc_id in {a["doc_id"] for a in attached_list} or doc_id.split("/")[-1] in base_mids):
+                        mid = m.get("id") or m.get("memory_id")
+                        if mid:
+                            attached_mids.add(mid)
+                if attached_mids:
+                    present = {m.get("id") or m.get("memory_id") for m in filtered_knowledge if isinstance(m, dict)}
+                    for m in provided_knowledge:
+                        mid = m.get("id") or m.get("memory_id") if isinstance(m, dict) else ""
+                        if mid in attached_mids and mid not in present:
+                            filtered_knowledge.append(m)
+                            present.add(mid)
+                    logging.info(
+                        f"[inject_facts] attached docs preserved: {len([1 for m in filtered_knowledge if (m.get('id') or m.get('memory_id')) in attached_mids])} cards"
+                    )
+            except Exception as e:
+                logging.warning(f"[inject_facts] attached docs preserve error: {e}")
 
         for m in filtered_knowledge:
             text = m.get("text", "") if isinstance(m, dict) else str(m)
@@ -2711,7 +2753,59 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")
 
-    return facts, list(sources_map.values())
+    # 3. Attached docs: релевантные чанки приаттаченных к чату документов
+    #    (ChromaDB, owner-пути). Инжектим БЕЗУСЛОВНО, независимо от skip_db:
+    #    пока карточка активна, документ применяется ко всем последующим ответам.
+    #    Гостевые имена без пути чанков в ChromaDB не имеют — их карточка уже
+    #    покрыта через provided_knowledge (шаг 1b).
+    if attached_list and ctx.settings.get("content_mode", "work") != "fun":
+        try:
+            for adoc in attached_list:
+                doc_filter = adoc["doc_id"]
+                if not (doc_filter.startswith("/") or doc_filter.startswith("http")):
+                    continue
+                attach_results = unified_memory.search_for_rag(
+                    query,
+                    private_mode=ctx.private_mode,
+                    top_k=3,
+                    tags_filter=None,
+                    document_id=doc_filter,
+                )
+                for r in attach_results:
+                    text = r.get("text", "")
+                    title = r.get("title") or adoc["title"]
+                    rec_type = r.get("type", "")
+                    if text:
+                        if rec_type == "file_chunk":
+                            facts.append(f"• [Attached file {title}] {text}")
+                        else:
+                            facts.append(f"• [Attached: {title}] {text}")
+                    doc_id = r.get("document_id") or doc_filter
+                    if doc_id:
+                        key = f"attached:{doc_id}"
+                        if key not in sources_map:
+                            clickable = doc_id.startswith("/") or doc_id.startswith("http")
+                            full_path = doc_id if doc_id.startswith("/") else ""
+                            sources_map[key] = {
+                                "title":       title,
+                                "owner":       r.get("owner") or ctx.user_id or user_context.node_owner(),
+                                "clickable":   clickable,
+                                "document_id": doc_id,
+                                "fullPath":    full_path,
+                                "url":         full_path if clickable else "",
+                            }
+                logging.info(f"[inject_facts] attached chunks for {doc_filter}: {len(attach_results)}")
+        except Exception as e:
+            logging.error(f"[inject_facts] attached docs chunk error: {e}")
+
+    # Дедикат фраз (один и тот же чанк может попасть из общего поиска и attached)
+    seen = set()
+    dedup = []
+    for f in facts:
+        if f not in seen:
+            seen.add(f)
+            dedup.append(f)
+    return dedup, list(sources_map.values())
 
 # === Ollama запрос ===
 async def llm_request_stream(payload: dict, headers: dict = None):
@@ -2801,7 +2895,8 @@ async def _perform_prompt_gen(ctx: UserContext,
                          provided_knowledge: list = None,
                          chat_summary: str = None,
                          total_message_count: int = None,
-                         rag_focus: dict = None) -> AsyncGenerator:
+                         rag_focus: dict = None,
+                         attached_docs: list = None) -> AsyncGenerator:
 
     mode = ctx.settings.get("content_mode", "work")
     model = get_llm_model(ctx, mode)
@@ -2827,9 +2922,9 @@ async def _perform_prompt_gen(ctx: UserContext,
     # === Facts injection ===
     if intent in ("view", "show", "chat"):
         # Plain chat and scene generation don't need RAG file search
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
     else:
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus)
+        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
 
         # Web fallback for search intent: если внутренняя база пуста или хиты слабые
         if intent == "search":
@@ -3278,7 +3373,8 @@ async def perform_prompt(
     provided_knowledge: list|None=None,
     chat_summary: str|None=None,
     total_message_count: int|None=None,
-    rag_focus: dict|None=None
+    rag_focus: dict|None=None,
+    attached_docs: list|None=None
 ) -> str | AsyncGenerator:
     """Wrapper for _perform_prompt_gen to maintain backward compatibility."""
     
@@ -3296,7 +3392,8 @@ async def perform_prompt(
         provided_knowledge=provided_knowledge,
         chat_summary=chat_summary,
         total_message_count=total_message_count,
-        rag_focus=rag_focus
+        rag_focus=rag_focus,
+        attached_docs=attached_docs
     )
     
     if stream:
