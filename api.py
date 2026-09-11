@@ -475,6 +475,21 @@ async def rag_import_local_endpoint(request: Request):
     payload = await _rag_stateless_payload(ctx, raw_text, doc_id, filename, tags, owner)
     payload["indexed"] = n
     payload["path"] = doc_id
+
+    # On-device карточка в ChromaDB: обновляем существующую (upsert по document_id),
+    # а не плодим новые дубли на каждый /learn одного и того же документа.
+    try:
+        unified_memory.upsert_memory_card(
+            payload.get("annotation") or raw_text[:500],
+            owner=owner,
+            tags=tags,
+            title=filename,
+            document_id=doc_id,
+            relevance="permanent",
+        )
+    except Exception as e:
+        logging.error(f"[rag/import/local] annotation card upsert error: {e}")
+
     return payload
 
 

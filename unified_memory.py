@@ -280,6 +280,32 @@ def search(
 
 # ─── Карточки памяти ─────────────────────────────────────────────────────────
 
+def find_memory_card_id(document_id: str, title: str = None) -> str | None:
+    """Возвращает memory_id существующей карточки по document_id (или title), либо None."""
+    if not (document_id or title):
+        return None
+    conditions = [{"type": {"$eq": "memory_card"}}]
+    if document_id:
+        conditions.append({"document_id": {"$eq": document_id}})
+    elif title:
+        conditions.append({"title": {"$eq": title}})
+    try:
+        res = get_collection().get(where={"$and": conditions}, include=["metadatas"], limit=2)
+        ids = res.get("ids", [])
+        if not ids:
+            return None
+        if document_id:
+            return ids[0]
+        # По имени карточку документа ищем только среди карточек документов
+        for i, rid in enumerate(ids):
+            if res["metadatas"][i].get("document_id"):
+                return rid
+        return ids[0] if len(ids) == 1 else None
+    except Exception as e:
+        logger.error(f"[unified] find_memory_card_id error: {e}")
+        return None
+
+
 def upsert_memory_card(
     text: str,
     mem_id=None,
@@ -289,7 +315,13 @@ def upsert_memory_card(
     document_id=None,
     relevance="contextual",
 ) -> str:
-    """Добавляет/обновляет карточку памяти. Возвращает mem_id."""
+    """Добавляет/обновляет карточку памяти. Возвращает mem_id.
+
+    Дедуп: при document_id (или одинаковом title) обновляем существующую
+    карточку этого документа вместо создания новой.
+    """
+    if not mem_id and (document_id or title):
+        mem_id = find_memory_card_id(document_id=document_id, title=title if not document_id else None)
     if not mem_id:
         mem_id = str(uuid.uuid4())
     if not owner:
@@ -341,6 +373,10 @@ def get_all_memory_cards(owner=None) -> list:
         out = []
         for i, doc_id in enumerate(results.get("ids", [])):
             meta = results["metadatas"][i]
+            # Карточки-документы дублируются группой file_chunk из get_indexed_documents,
+            # для них не плодим отдельные записи в списке.
+            if meta.get("type") == "memory_card" and meta.get("document_id"):
+                continue
             out.append({
                 "memory_id": doc_id,
                 "_id": doc_id,
@@ -384,6 +420,23 @@ def get_indexed_documents(owner=None) -> list:
                 d["timestamp"] = ts
         for d in docs.values():
             d["tags"] = sorted(d.pop("tags_list"))
+        # Обогащаем группы чанков аннотацией memory_card этого документа (если есть).
+        ann_where = {"$and": [
+            {"type": {"$eq": "memory_card"}},
+            {"document_id": {"$ne": ""}},
+        ]}
+        if owner:
+            ann_where["$and"].append({"owner": {"$eq": owner}})
+        try:
+            ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=50)
+            for i, rid in enumerate(ann_res.get("ids", [])):
+                am = ann_res["metadatas"][i]
+                adoc = am.get("document_id")
+                if adoc and adoc in docs:
+                    docs[adoc]["annotation"] = ann_res["documents"][i]
+                    docs[adoc]["relevance"] = am.get("relevance", "permanent")
+        except Exception as e:
+            logger.warning(f"[unified] get_indexed_documents annotation enrichment error: {e}")
         return list(docs.values())
     except Exception as e:
         logger.error(f"[unified] get_indexed_documents error: {e}")
