@@ -2050,7 +2050,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 )
             # 3️⃣ ответ
             async for chunk in _stream_first_chunk_timeout(
-                core_service.perform_prompt(
+                await core_service.perform_prompt(
                     ctx,
                     instruction=instruction,
                     message=llm_message,
@@ -2071,7 +2071,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
             logging.error(f"Error in event_generator: {e}")
-            yield f"data: {json.dumps({'error': '⚠️ Storage error or request failed. Please try again later.', 'done': True})}\n\n"
+            yield f"data: {json.dumps({'error': 'Request failed. Please try again later.', 'done': True})}\n\n"
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
