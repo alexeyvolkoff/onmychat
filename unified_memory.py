@@ -318,14 +318,26 @@ def upsert_memory_card(
     """Добавляет/обновляет карточку памяти. Возвращает mem_id.
 
     Дедуп: при document_id (или одинаковом title) обновляем существующую
-    карточку этого документа вместо создания новой.
+    карточку этого документа вместо создания новой — старые дубли удаляются.
     """
-    if not mem_id and (document_id or title):
-        mem_id = find_memory_card_id(document_id=document_id, title=title if not document_id else None)
-    if not mem_id:
-        mem_id = str(uuid.uuid4())
     if not owner:
         owner = user_context.node_owner()
+
+    # Сначала схлопываем старые карточки этого документа (если есть),
+    # затем вставляем/обновляем свежую — на дисплее остаётся одна.
+    if document_id:
+        try:
+            get_collection().delete(where={"$and": [
+                {"type":        {"$eq": "memory_card"}},
+                {"document_id": {"$eq": document_id}},
+            ]})
+        except Exception as e:
+            logger.warning(f"[unified] dedupe stale memory_cards error: {e}")
+
+    if not mem_id and (document_id or title):
+        mem_id = None
+    if not mem_id:
+        mem_id = str(uuid.uuid4())
 
     metadata = {
         "type":      "memory_card",
@@ -428,12 +440,13 @@ def get_indexed_documents(owner=None) -> list:
         if owner:
             ann_where["$and"].append({"owner": {"$eq": owner}})
         try:
-            ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=50)
+            ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=500)
             for i, rid in enumerate(ann_res.get("ids", [])):
                 am = ann_res["metadatas"][i]
                 adoc = am.get("document_id")
                 if adoc and adoc in docs:
                     docs[adoc]["annotation"] = ann_res["documents"][i]
+                    docs[adoc]["text"] = ann_res["documents"][i]
                     docs[adoc]["relevance"] = am.get("relevance", "permanent")
         except Exception as e:
             logger.warning(f"[unified] get_indexed_documents annotation enrichment error: {e}")

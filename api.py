@@ -458,12 +458,17 @@ async def rag_import_local_endpoint(request: Request):
     if not raw_text or not raw_text.strip():
         raise HTTPException(status_code=422, detail="could not extract text from document (unsupported or scanned file)")
 
+    # Аннотация + теги (вкл. AI) первыми: ими же индексируем чанки и карточку,
+    # чтобы аннотация и теги попали в ChromaDB, а не только в payload.
+    payload = await _rag_stateless_payload(ctx, raw_text, doc_id, filename, tags, owner)
+    all_tags = payload.get("tags") or tags
+
     try:
         n = unified_memory.chunk_and_index_document(
             raw_text,
             document_id=doc_id,
             owner=owner,
-            tags=tags,
+            tags=all_tags,
             title=filename,
             source_stamp=last_modified,
         )
@@ -472,7 +477,6 @@ async def rag_import_local_endpoint(request: Request):
         logging.error(f"[rag/import/local] index error: {e}")
         raise HTTPException(status_code=500, detail=f"indexing failed: {e}")
 
-    payload = await _rag_stateless_payload(ctx, raw_text, doc_id, filename, tags, owner)
     payload["indexed"] = n
     payload["path"] = doc_id
 
@@ -482,7 +486,7 @@ async def rag_import_local_endpoint(request: Request):
         unified_memory.upsert_memory_card(
             payload.get("annotation") or raw_text[:500],
             owner=owner,
-            tags=tags,
+            tags=all_tags,
             title=filename,
             document_id=doc_id,
             relevance="permanent",
