@@ -433,14 +433,13 @@ def get_indexed_documents(owner=None) -> list:
         for d in docs.values():
             d["tags"] = sorted(d.pop("tags_list"))
         # Обогащаем группы чанков аннотацией memory_card этого документа (если есть).
-        ann_where = {"$and": [
-            {"type": {"$eq": "memory_card"}},
-            {"document_id": {"$ne": ""}},
-        ]}
+        # Фильтр document_id делаем в Python — $ne не гарантирован на старых версиях ChromaDB.
+        ann_where = {"type": {"$eq": "memory_card"}}
         if owner:
-            ann_where["$and"].append({"owner": {"$eq": owner}})
+            ann_where = {"$and": [{"type": {"$eq": "memory_card"}}, {"owner": {"$eq": owner}}]}
         try:
             ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=500)
+            enriched = 0
             for i, rid in enumerate(ann_res.get("ids", [])):
                 am = ann_res["metadatas"][i]
                 adoc = am.get("document_id")
@@ -448,6 +447,9 @@ def get_indexed_documents(owner=None) -> list:
                     docs[adoc]["annotation"] = ann_res["documents"][i]
                     docs[adoc]["text"] = ann_res["documents"][i]
                     docs[adoc]["relevance"] = am.get("relevance", "permanent")
+                    enriched += 1
+            if enriched:
+                logger.info(f"[unified] enriched {enriched} documents with annotations")
         except Exception as e:
             logger.warning(f"[unified] get_indexed_documents annotation enrichment error: {e}")
         return list(docs.values())
