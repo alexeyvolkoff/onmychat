@@ -2601,12 +2601,18 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     if key not in sources_map:
                         # Настоящий путь/URL открываем, личное имя файла — некликабельный источник
                         clickable = doc_id.startswith("/") or doc_id.startswith("http")
+                        # Для заметок (user:note:* без пути) показываем название карточки,
+                        # а не сырой nonce-ид (user:note:1789058719272)
+                        card_title = ((m.get("title") or "").strip() if isinstance(m, dict) else "")
+                        if not card_title and isinstance(m, dict):
+                            card_title = (m.get("text") or "").strip()[:48]
+                        src_title = card_title if card_title else doc_id.split("/")[-1]
                         sources_map[key] = {
-                            "title":       doc_id.split("/")[-1],
+                            "title":       src_title,
                             "owner":       ctx.user_id or user_context.node_owner(),
                             "clickable":   clickable,
                             "document_id": doc_id,
-                            "fullPath":    doc_id,
+                            "fullPath":    doc_id if clickable else "",
                         }
 
         # 1b. Chunk-level relevance: fetch chunks from hub for top cards
