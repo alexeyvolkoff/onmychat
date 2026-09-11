@@ -1210,7 +1210,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     slash_commands = {
         "/doc", "/mcp", "/generate", "/generate", "/sign", "/help", "/forget", "/forget_all", 
         "/chat", "/code", "/import", "/show", "/view", "/imagine", "/learn", 
-        "/recognize", "/detect", "/think", "/explain", "/search",  "/tools"
+        "/recognize", "/detect", "/think", "/explain", "/search", "/research",  "/tools"
     }
     
     for p in raw_paths:
@@ -2664,21 +2664,24 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
 
                 if rec_type == "file_chunk":
-                    facts.append(f"• [From file {title}]: {r['text']}")
+                    facts.append(f"• [From file {title}]")
                 else:
                     facts.append(f"• {r['text']}")
 
                 if doc_id:
                     key = f"{owner_val}:{doc_id}"
                     if key not in sources_map:
-                        full_path = doc_id if doc_id.startswith("/") else f"/{doc_id}"
+                        # Личные импорты без реального пути некликабельны:
+                        # настоящий путь/URL открываем, иначе — 500 при попытке открыть.
+                        clickable = doc_id.startswith("/") or doc_id.startswith("http")
+                        full_path = doc_id if doc_id.startswith("/") else ""
                         sources_map[key] = {
                             "title":       title,
                             "owner":       owner_val,
-                            "clickable":   True,
+                            "clickable":   clickable,
                             "document_id": doc_id,
                             "fullPath":    full_path,
-                            "url":         f"https://onmydisk.net{full_path}",
+                            "url":         full_path if clickable else "",
                         }
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")

@@ -1628,7 +1628,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "/recognize": "recognize", "/detect": "recognize",
                 "/think": "think",
                 "/explain": "explain",
-                "/search": "search",
+                "/search": "search", "/research": "search",
                 "/doc": "doc",
                 "/mcp": "doc"
             }
@@ -1730,7 +1730,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 intent = "think"
             elif prompt.startswith("/explain"):
                 intent = "explain"
-            elif prompt.startswith("/search"):
+            elif prompt.startswith(("/search", "/research")):
                 intent = "search"
         
             restricted_intents = ["tools", "doc"]
@@ -1838,7 +1838,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Единый RAG-пайплайн: внутренний поиск + web-fallback выполняются
                 # внутри _perform_prompt_gen через inject_facts (факты попадают в system prompt).
                 search_query = prompt
-                if prompt.lower().startswith("/search"):
+                if prompt.lower().startswith("/research"):
+                    search_query = prompt[9:].strip()
+                elif prompt.lower().startswith("/search"):
                     search_query = prompt[7:].strip()
 
                 instruction = (
