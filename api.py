@@ -430,10 +430,17 @@ async def rag_import_local_endpoint(request: Request):
     real_path = source
     if not os.path.exists(real_path):
         import getpass as _getpass
+        candidates = []
+        # itemPath /<share>/<file> → реальный FS: /home/<osuser>/<share>/<file>
+        if source.startswith("/") and not source.startswith("/home/"):
+            candidates.append(f"/home/{_getpass.getuser()}{source}")
+        # normalized doc_id /<file> → /home/<osuser>/<file> (без шары), на случай flat-путей
         doc_root = _norm_doc_path(source)
-        candidate = f"/home/{_getpass.getuser()}{doc_root}"
-        if os.path.exists(candidate):
-            real_path = candidate
+        candidates.append(f"/home/{_getpass.getuser()}{doc_root}")
+        for cand in candidates:
+            if os.path.isfile(cand):
+                real_path = cand
+                break
     if not os.path.isfile(real_path):
         raise HTTPException(status_code=404, detail=f"file not found on node: {source}")
 

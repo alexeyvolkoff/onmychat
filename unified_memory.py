@@ -598,13 +598,18 @@ def search_for_rag(
     - tags_filter (хештеги из промпта) -> только эти теги
     - private_mode=True  + нет тегов   -> вся база (владелец ноды, все владельцы)
     - private_mode=False + нет тегов   -> только PUBLIC_TAGS (гость)
-    - document_id (focus /learn)       -> только чанки/карточка этого файла
+    - document_id (focus /learn)       -> только чанки/карточка этого файла (теги не фильтруем)
     owner-фильтра больше нет: в private-режиме видны записи всех владельцев ноды.
     """
     if top_k is None:
         top_k = RAG_TOP_K
     if tags_filter:
         tag_filter = tags_filter
+    elif document_id:
+        # При document_id фильтр по тегам не нужен — document_id и так
+        # ограничивает выдачу одним документом; PUBLIC_TAGS убьёт чанки
+        #OWNER-документов (они без тега "public").
+        tag_filter = None
     else:
         tag_filter = None if private_mode else PUBLIC_TAGS
     return search(
