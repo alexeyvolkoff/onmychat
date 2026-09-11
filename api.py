@@ -789,41 +789,9 @@ def _extract_omd_key(request: Request) -> str | None:
     return None
 
 def not_authorized(request: Request):
-    # The gateway forwards the original client's Authorization header
-    # AND adds its own 'Token' header for the node's API token.
-    # We must check if ANY of these tokens match our AI_TOKEN.
-    possible_tokens = [
-        request.headers.get("X-OMD-Ai-Token"),
-        request.headers.get("Token"),
-        request.headers.get("X-OMD-Token"),
-        request.headers.get("Authorization"),
-        request.query_params.get("token")
-    ]
-    
-    for raw_token in possible_tokens:
-        if not raw_token:
-            continue
-            
-        token = raw_token
-        if token.startswith("token:"):
-            token = token[len("token:"):]
-        elif token.startswith("Bearer "):
-            token = token[7:]
-            
-        token = token.strip()
-        
-        if AI_TOKEN and token == AI_TOKEN:
-            return False # Authorized!
-            
-        # Also allow any valid 32-character hexadecimal token (the standard OMD node token format)
-        if len(token) == 32 and all(c in '0123456789abcdefABCDEF' for c in token):
-            return False # Authorized!
-            
-    if AI_TOKEN:
-        logging.warning(f"Unauthorized request, no valid token found.")
-        return True # Not authorized
-        
-    return False # Authorized if no AI_TOKEN is configured
+    # Собственный узел (C++ нода + gateway-proxy работают на той же машине),
+    # внешний AI-TOKEN больше не используется: все запросы доверенные.
+    return False
 
 _ephemeral_image_cache: dict[str, dict] = {}
 
@@ -872,9 +840,7 @@ def is_private_mode(request: Request, ctx: user_context.UserContext | None = Non
             return False
         return True
 
-    # 5. Token match without balance
-    ai_token = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
-    return bool(AI_TOKEN and ai_token == AI_TOKEN)
+    return False
 
 def get_omd_key(
     request: Request,
@@ -2698,15 +2664,11 @@ async def ollama_generate(request: Request):
 async def cleanup_chroma_endpoint(request: Request):
     """
     Удаляет из ChromaDB гостевые данные (owner != node_owner && !t_omd).
-    Требует AI_TOKEN. Принимает {owner: "<user_id>", apply: true}.
+    Принимает {owner: "<user_id>", apply: true}.
     Без apply=true — dry-run (покажет что будет удалено).
     """
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    token_raw = request.headers.get("X-OMD-Ai-Token") or request.headers.get("Token") or ""
-    token = token_raw.replace("Bearer ", "").replace("token:", "").strip()
-    if not AI_TOKEN or token != AI_TOKEN:
-        raise HTTPException(status_code=403, detail="Admin token required")
 
     try:
         body = await request.json()
