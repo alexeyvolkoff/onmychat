@@ -1111,12 +1111,114 @@ async def search(
     if not lang:
         lang = request.headers.get("lang") or "en"
 
-    if not search_node:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
-        
     ctx = get_ctx(omd_key)
-    results = search_node.search(q, limit, ctx=ctx)
-    return results
+    private_mode = is_private_mode(request, ctx)
+
+    out_dict = {}
+    grouped_documents = {}
+
+    # 1. Primary semantic search in unified_memory (OMD 3.0 ChromaDB)
+    try:
+        results = unified_memory.search_files_for_ui(
+            query=q,
+            private_mode=private_mode,
+            top_k=max(limit * 3, 30)
+        )
+        for r in results:
+            doc_id = r.get("document_id") or r.get("id", "").split(":chunk:")[0]
+            if not doc_id:
+                continue
+
+            item_path = doc_id
+            owner_val = r.get("owner", "")
+            if ctx and hasattr(ctx, "user_id") and ctx.user_id and item_path.startswith(f"/{ctx.user_id}/"):
+                item_path = item_path[len(ctx.user_id) + 1:]
+            elif owner_val and item_path.startswith(f"/{owner_val}/"):
+                item_path = item_path[len(owner_val) + 1:]
+
+            dist = r.get("distance", 1.0)
+            score = r.get("relevance")
+            if not isinstance(score, (int, float)):
+                score = round((1.0 - dist) * 100, 1)
+
+            snippet = r.get("text", "")
+            if len(snippet) > 300:
+                snippet = snippet[:300] + "..."
+
+            title = r.get("title") or os.path.basename(item_path) or doc_id
+
+            if doc_id not in grouped_documents:
+                grouped_documents[doc_id] = {
+                    "itemPath": item_path,
+                    "title": title,
+                    "snippet": snippet,
+                    "description": r.get("description", ""),
+                    "owner": owner_val,
+                    "contentType": r.get("contentType", ""),
+                    "last_modified": r.get("source_stamp") or r.get("timestamp", ""),
+                    "relevance": score,
+                    "image_preview": r.get("image_preview", ""),
+                    "_distance": dist
+                }
+            else:
+                if dist < grouped_documents[doc_id]["_distance"]:
+                    grouped_documents[doc_id]["_distance"] = dist
+                    grouped_documents[doc_id]["relevance"] = score
+                    grouped_documents[doc_id]["snippet"] = snippet
+                    if r.get("image_preview"):
+                        grouped_documents[doc_id]["image_preview"] = r.get("image_preview")
+    except Exception as e:
+        logging.error(f"[api] unified_memory search error: {e}")
+
+    # 2. Legacy fallback / merge with search_node if available
+    if search_node:
+        try:
+            legacy_res = search_node.search(q, limit, ctx=ctx)
+            for k, v in legacy_res.items():
+                if k == "system_info" or not isinstance(v, dict):
+                    continue
+                path_key = v.get("itemPath", k)
+                if path_key not in grouped_documents:
+                    grouped_documents[path_key] = {
+                        "itemPath": v.get("itemPath", k),
+                        "title": v.get("title") or os.path.basename(path_key),
+                        "snippet": v.get("snippet", ""),
+                        "description": v.get("description", ""),
+                        "owner": v.get("owner", ""),
+                        "contentType": v.get("contentType", ""),
+                        "last_modified": v.get("last_modified", ""),
+                        "relevance": v.get("relevance", 50.0),
+                        "image_preview": v.get("image_preview", ""),
+                        "_distance": 1.0 - (float(v.get("relevance", 50.0)) / 100.0)
+                    }
+        except Exception as e:
+            logging.warning(f"[api] legacy search_node search error: {e}")
+
+    sorted_docs = sorted(grouped_documents.values(), key=lambda x: x.get("_distance", 1.0))[:limit]
+
+    threshold = float(SETTINGS.get("SEARCH_THRESHOLD", "0.75"))
+    out_dict["system_info"] = {
+        "is_system": True,
+        "total_found": len(sorted_docs),
+        "returned_limit": limit,
+        "relevance_threshold": threshold
+    }
+
+    for item in sorted_docs:
+        key = item["itemPath"]
+        out_dict[key] = {
+            "itemPath": item["itemPath"],
+            "title": item["title"],
+            "snippet": item["snippet"],
+            "description": item.get("description", ""),
+            "owner": item.get("owner", ""),
+            "contentType": item.get("contentType", ""),
+            "last_modified": item.get("last_modified", ""),
+            "relevance": item["relevance"],
+            "image_preview": item.get("image_preview", "")
+        }
+
+    return out_dict
 # CORS middleware already added at line 34
 
 @app.on_event("startup")

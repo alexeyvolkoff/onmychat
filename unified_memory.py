@@ -222,9 +222,11 @@ def search(
     for i in range(len(ids)):
         dist = dists[i] if i < len(dists) else 1.0
         if dist <= threshold:
-            row = {"id": ids[i], "text": docs[i], "distance": dist,
-                   "relevance": round((1.0 - dist) * 100, 1)}
+            score = round((1.0 - dist) * 100, 1)
+            row = {"id": ids[i], "text": docs[i], "distance": dist}
             row.update(metas[i])
+            row["relevance"] = score
+            row["score"] = score
             out.append(row)
 
     # Метадата-boost: токены запроса, буквально встречающиеся в document_id/title
@@ -260,9 +262,11 @@ def search(
                 ):
                     dist = (1.0 - _cosine(query_emb, list(emb))) * kw_boost
                     if dist <= threshold:
-                        row = {"id": rid, "text": doc or "", "distance": dist,
-                               "relevance": round((1.0 - dist) * 100, 1)}
+                        score = round((1.0 - dist) * 100, 1)
+                        row = {"id": rid, "text": doc or "", "distance": dist}
                         row.update(meta)
+                        row["relevance"] = score
+                        row["score"] = score
                         out.append(row)
     except Exception as e:
         logger.warning(f"[unified] metadata boost error: {e}")
