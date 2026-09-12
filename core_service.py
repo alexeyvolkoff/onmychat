@@ -2731,7 +2731,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
 
                 if rec_type == "file_chunk":
-                    facts.append(f"• [From file {title}]")
+                    # путь сохраняем в факте — по нему открывается источник в чате
+                    facts.append(f"• [From file {title}]: {doc_id}" if doc_id else f"• [From file {title}]")
                 else:
                     facts.append(f"• {r['text']}")
 

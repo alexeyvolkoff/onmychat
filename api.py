@@ -767,9 +767,12 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
     if not source_path or source_path.startswith("http"):
         raise HTTPException(status_code=422, detail="local folder path is required")
     force = bool(body.get("force", False))
+    # C++ нода передаёт виртуальный путь (/<share>/...) — доки индексируются под
+    # логическими путями, видимыми в приложении (клик по источнику открывает файл)
+    logical_path = (body.get("logicalPath") or "").strip()
     scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
 
-    doc_root = _norm_doc_path(source_path)          # /<share>/... для названий карточек
+    doc_root = _norm_doc_path(logical_path) if logical_path else _norm_doc_path(source_path)          # /<share>/... для названий карточек
     ctx = await _build_ctx_from_request(request)
     owner = ctx.user_id or user_context.node_owner()
     tags = _rag_scope_tags(body.get("tags") or [], scope)
@@ -804,7 +807,12 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
                     continue
                 full = os.path.join(dirpath, fn)
-                doc_id = _norm_doc_path(full)
+                rel = full[len(local_root):].lstrip("/")
+                if logical_path:
+                    # виртуальный путь: /<share>/ + относительный путь от корня индексации
+                    doc_id = doc_root.rstrip("/") + ("/" + rel if rel else "")
+                else:
+                    doc_id = _norm_doc_path(full)
                 try:
                     mtime_val = datetime.datetime.fromtimestamp(os.stat(full).st_mtime).isoformat(timespec="seconds")
                 except Exception:
