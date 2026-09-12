@@ -2923,12 +2923,10 @@ async def _perform_prompt_gen(ctx: UserContext,
     import time as _time
     _t0 = _time.time()
     # === Facts injection ===
-    if intent in ("view", "show"):
-        # Scene generation doesn't need RAG file search
+    if intent in ("view", "show", "chat"):
+        # Plain chat and scene generation don't need RAG file search
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
     else:
-        # Plain chat тоже смотрит в unified индекс: classifier (мелкая модель)
-        # часто метит вопросы как chat — владелец должен получать знания из индекса
         facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
 
         # Web fallback for search intent: если внутренняя база пуста или хиты слабые
