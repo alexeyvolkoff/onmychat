@@ -22,7 +22,7 @@ RULES:
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET, uses /search command, or asks for current events/news.
    - Example triggers: "Search for", "What is happening in", "Find info about", "Who is".
-5. explain: For general questions, code requests, or deep explanations.
+5. explain: For general questions, code requests, deep explanations, or ANY question about the assistant's own knowledge base (uploaded documents, specs, guides installed on this device). "What is X", "How does X work", "Explain X" about products/documents/files is explain, NOT chat. Only small talk and personal dialogue stay in chat.
 6. recognize:<path>: For describing/analyzing the content of an image path/url.
 7. import:<path>: ONLY for EXPLICIT "import", "learn", or "add to memory" commands with a FILE path.
 8. doc: User explicitly instructs to CREATE, EDIT, MODIFY, FILL, or PROCESS document files (e.g. ODT, DOCX, templates, invoices, contracts) using paths.
@@ -51,6 +51,9 @@ EXAMPLES:
 - "I'm hugging you tightly" -> chat (Dialogue flow)
 - "/search news about AI" -> search
 - "What is the capital of Slovenia?" -> search
+- "What is OnMyChat?" -> explain (about the product/knowledge base, not the web)
+- "Explain how OnMyDisk works" -> explain
+- "Tell me about the user guide" -> explain
 - "Find info about the latest weather in Berlin" -> search
 - "Who is the current president of France?" -> search
 - "Analyze this: /img.png" -> recognize:/img.png
