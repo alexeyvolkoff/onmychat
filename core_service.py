@@ -2731,8 +2731,13 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
 
                 if rec_type == "file_chunk":
-                    # путь сохраняем в факте — по нему открывается источник в чате
-                    facts.append(f"• [From file {title}]: {doc_id}" if doc_id else f"• [From file {title}]")
+                    # путь сохраняем в факте — по нему открывается источник в чате,
+                    # текст чанка даёт модели реальный материал для ответа
+                    chunk_text = (r.get("text") or "").strip()
+                    line = f"• [From file {title}]: {doc_id}" if doc_id else f"• [From file {title}]"
+                    if chunk_text:
+                        line += f"\n  {chunk_text[:400]}"
+                    facts.append(line)
                 else:
                     facts.append(f"• {r['text']}")
 
@@ -2996,8 +3001,12 @@ async def _perform_prompt_gen(ctx: UserContext,
             return
         
         rag_resp = data["message"]["content"].strip()
-        if rag_resp and not rag_resp.startswith("No information"):
+        if rag_resp and not rag_resp.lower().startswith("no information"):
             strict_fact = rag_resp
+        elif facts:
+            # Мелкая модель не справилась с prep-запросом — не теряем retrieved-факты:
+            # strict fact = релевантные чанки из индекса (факты уже содержат текст)
+            strict_fact = "\n".join(f[:600] for f in facts[:rag_top_k])
 
         # Инжект фактов и источников в system prompt
         if strict_fact:
