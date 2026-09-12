@@ -4418,61 +4418,69 @@ async def extract_tags_from_text(ctx: UserContext, raw_text: str, limit: int = 4
 # === Web Search Tool ===
 async def search_web(ctx: UserContext, query: str) -> str:
     """
-    Search the web using DuckDuckGo via Crawl4AI (headless browser) to bypass IP blocks.
+    Search the web: DDGS (duckduckgo_search, primp HTTP client) first,
+    lite.duckduckgo via aiohttp as fallback. No headless browser involved.
     """
-    try:
-        from crawl4ai import AsyncWebCrawler
-        import urllib.parse
-        
-        logging.info(f"[search] Searching web for: {query}")
-        
-        encoded_query = urllib.parse.quote_plus(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-        
-        async with AsyncWebCrawler(verbose=True) as crawler:
-            result = await crawler.arun(url=url)
-            
-            if not result or not result.markdown:
-                logging.warning(f"[search] No markdown content returned")
-                return "No results found."
-            
-            logging.info(f"[search] Got {len(result.markdown)} chars of markdown")
-            
-            # DuckDuckGo HTML results contain links and snippets
-            # Look for result patterns: links (http) and content lines
-            lines = result.markdown.split('\n')
-            relevant_content = []
-            
-            for line in lines:
-                line_stripped = line.strip()
-                # Skip empty lines and navigation elements
-                if not line_stripped:
-                    continue
-                # Skip short lines that are likely navigation
-                if len(line_stripped) < 20:
-                    continue
-                # Skip lines that look like footer/navigation
-                if any(skip in line_stripped.lower() for skip in ['privacy', 'terms', 'settings', 'safe search', 'next page']):
-                    continue
-                    
-                relevant_content.append(line)
-                if len(relevant_content) > 40:  # Increased limit for better results
-                    break
-            
-            if not relevant_content:
-                # Fallback: just return first chunk of markdown
-                logging.warning(f"[search] No relevant content found, using raw markdown")
-                return result.markdown[:3000]
-            
-            search_output = "\n".join(relevant_content)
-            logging.info(f"[search] Returning {len(search_output)} chars of results")
-            return search_output
+    import asyncio
+    import urllib.parse
 
-    except ImportError:
-        return "Error: crawl4ai library not installed. Web search unavailable."
+    logging.info(f"[search] Searching web for: {query}")
+
+    # 1. DDGS library (primp, lightweight, no Chromium)
+    try:
+        from duckduckgo_search import DDGS
+
+        def _ddg_text():
+            with DDGS() as d:
+                return list(d.text(query, max_results=8))
+
+        results = await asyncio.to_thread(_ddg_text)
+        lines = []
+        for r in results:
+            title = (r.get("title") or "").strip()
+            body = (r.get("body") or "").strip()
+            href = (r.get("href") or "").strip()
+            if body:
+                lines.append(f"{title} — {body}" + (f" ({href})" if href else ""))
+        if lines:
+            search_output = "\n".join(lines[:12])
+            logging.info(f"[search] DDGS: {len(lines)} results, {len(search_output)} chars")
+            return search_output
     except Exception as e:
-        logging.error(f"[search] Error searching {query}: {e}")
-        return f"Error performing search: {e}"
+        logging.warning(f"[search] DDGS failed: {e}")
+
+    # 2. Fallback: lite.duckduckgo HTML via aiohttp
+    try:
+        import aiohttp
+        url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote_plus(query)}"
+        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
+                    logging.warning(f"[search] lite failed: HTTP {resp.status}")
+                    return "No results found."
+                html = await resp.text()
+        # Parse result links + snippets from the lite table layout
+        import re
+        links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*class="result-link"[^>]*>(.*?)</a>', html)
+        if not links:
+            links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', html)
+        snippets = [re.sub(r"<[^>]+>", "", s).strip() for s in re.findall(r"<td[^>]*>(.*?)</td>", html)]
+        lines = []
+        for href, title in links[:12]:
+            title_text = re.sub(r"<[^>]+>", "", title).strip()
+            body = snippets[len(lines)] if len(lines) < len(snippets) and snippets[len(lines)] else ""
+            if title_text:
+                lines.append(f"{title_text} — {body} ({href})")
+        if lines:
+            search_output = "\n".join(lines[:12])
+            logging.info(f"[search] lite fallback: {len(lines)} results")
+            return search_output
+    except Exception as e:
+        logging.warning(f"[search] lite fallback error: {e}")
+
+    logging.warning(f"[search] No results found for '{query}'")
+    return "No results found."
 
 # === Импорт и память ===
 
