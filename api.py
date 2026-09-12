@@ -360,6 +360,53 @@ def _decode_hdr(request: Request, name: str) -> str | None:
     return raw
 
 
+async def _rag_recognize_payload(ctx, img_bytes: bytes, doc_id: str, title: str, tags: list, owner: str, prompt: str = ""):
+    """Общая stateless-логика /recognize: vision-аннотация + теги + эмбеддинги + чанки. Без ChromaDB."""
+    if not img_bytes:
+        raise HTTPException(status_code=422, detail="image bytes are empty")
+
+    try:
+        annotation = await core_service.recognize_image_annotation(ctx, img_bytes, prompt)
+        ai_tags = await core_service.extract_tags_from_text(ctx, annotation) if annotation else []
+    except Exception as e:
+        logging.error(f"[rag/recognize] vision error: {e}")
+        annotation = ""
+        ai_tags = []
+
+    if not annotation or not annotation.strip():
+        raise HTTPException(status_code=422, detail="could not recognize the image (vision returned empty annotation)")
+
+    all_tags = sorted(set(tags) | set(ai_tags or []))
+
+    # Аннотационный эмбеддинг (теги активно участвуют)
+    annotation_text = annotation + " " + " ".join(all_tags)
+    annotation_embedding = unified_memory.embed(annotation_text)
+
+    # Чанки + эмбеддинги чанков (по той же логике, что и документы)
+    chunks_texts = unified_memory.chunk_document(annotation)
+    chunks = []
+    if chunks_texts:
+        chunk_embeddings = unified_memory.get_model().encode(chunks_texts, show_progress_bar=False).tolist()
+        chunks = [
+            {"text": ct, "embedding": ce}
+            for ct, ce in zip(chunks_texts, chunk_embeddings)
+        ]
+
+    logging.info(f"[rag/recognize] Stateless: image={doc_id} chunks={len(chunks)} tags={all_tags} owner={owner}")
+
+    return {
+        "docId":                doc_id,
+        "documentId":           doc_id,
+        "title":                title,
+        "annotation":           annotation,
+        "tags":                 all_tags,
+        "annotation_embedding": annotation_embedding,
+        "chunks":               chunks,
+        "chunkCount":           len(chunks),
+        "isImage":              True,
+    }
+
+
 @app.post("/rag/import/raw")
 async def rag_import_raw_endpoint(request: Request):
     """
@@ -483,7 +530,7 @@ async def rag_import_local_endpoint(request: Request):
     # On-device карточка в ChromaDB: обновляем существующую (upsert по document_id),
     # а не плодим новые дубли на каждый /learn одного и того же документа.
     try:
-        unified_memory.upsert_memory_card(
+        mem = unified_memory.upsert_memory_card(
             payload.get("annotation") or raw_text[:500],
             owner=owner,
             tags=all_tags,
@@ -491,6 +538,7 @@ async def rag_import_local_endpoint(request: Request):
             document_id=doc_id,
             relevance="permanent",
         )
+        payload["memoryId"] = mem
     except Exception as e:
         logging.error(f"[rag/import/local] annotation card upsert error: {e}")
 
@@ -525,6 +573,136 @@ async def rag_import_endpoint(request: Request):
     tags = _rag_scope_tags(tags_in, scope)
 
     return await _rag_stateless_payload(ctx, raw_text, doc_id, title, tags, owner)
+
+
+@app.post("/rag/recognize/local")
+async def rag_recognize_local_endpoint(request: Request):
+    """
+    /recognize для владельца: картинка УЖЕ лежит на ноде (путь в шаре, напр.
+    /Documents/photo.jpg). Нода читает её с диска, распознаёт vision-моделью
+    (аннотация + OCR), делает теги, индексирует чанки в unified ChromaDB и
+    создаёт/обновляет memory_card — точно так же, как /rag/import/local для
+    документов. Возвращает stateless payload + memoryId.
+    Body: {source, tags?: [], scope?: "private"|"public", prompt?: "<user question>"}.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    source = (body.get("source") or "").strip()
+    if not source or source.startswith("http"):
+        raise HTTPException(status_code=422, detail="local image path is required")
+    scope = body.get("scope") or request.headers.get("X-OMD-RAG-Scope", "private")
+    tags_in = body.get("tags") or []
+    prompt = body.get("prompt") or ""
+    tags = _rag_scope_tags(tags_in, scope)
+    ctx = await _build_ctx_from_request(request)
+    owner = ctx.user_id or user_context.node_owner()
+
+    # Реальный путь на диске: realPath /home/<u>/<share>/... или itemPath /<share>/...
+    real_path = source
+    if not os.path.exists(real_path):
+        import getpass as _getpass
+        candidates = []
+        if source.startswith("/") and not source.startswith("/home/"):
+            candidates.append(f"/home/{_getpass.getuser()}{source}")
+        doc_root = _norm_doc_path(source)
+        candidates.append(f"/home/{_getpass.getuser()}{doc_root}")
+        for cand in candidates:
+            if os.path.isfile(cand):
+                real_path = cand
+                break
+    if not os.path.isfile(real_path):
+        raise HTTPException(status_code=404, detail=f"image not found on node: {source}")
+
+    filename = os.path.basename(real_path)
+    doc_id = _norm_doc_path(real_path)
+    try:
+        mtime_val = datetime.datetime.fromtimestamp(os.stat(real_path).st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        mtime_val = ""
+    last_modified = mtime_val
+
+    with open(real_path, "rb") as f:
+        img_bytes = f.read()
+    if not img_bytes:
+        raise HTTPException(status_code=422, detail="could not read image from disk")
+
+    payload = await _rag_recognize_payload(ctx, img_bytes, doc_id, filename, tags, owner, prompt)
+    all_tags = payload.get("tags") or tags
+
+    try:
+        n = unified_memory.chunk_and_index_document(
+            payload["annotation"],
+            document_id=doc_id,
+            owner=owner,
+            tags=all_tags,
+            title=filename,
+            source_stamp=last_modified,
+        )
+        logging.info(f"[rag/recognize/local] {doc_id}: {n} chunks indexed")
+    except Exception as e:
+        logging.error(f"[rag/recognize/local] index error: {e}")
+        raise HTTPException(status_code=500, detail=f"indexing failed: {e}")
+
+    payload["indexed"] = n
+    payload["path"] = doc_id
+
+    # On-device карточка в ChromaDB: upsert по document_id (без дублей).
+    try:
+        mem = unified_memory.upsert_memory_card(
+            payload["annotation"],
+            owner=owner,
+            tags=all_tags,
+            title=filename,
+            document_id=doc_id,
+            relevance="permanent",
+        )
+        payload["memoryId"] = mem
+    except Exception as e:
+        logging.error(f"[rag/recognize/local] annotation card upsert error: {e}")
+
+    return payload
+
+
+@app.post("/rag/recognize/raw")
+async def rag_recognize_raw_endpoint(request: Request):
+    """
+    Stateless распознавание изображения (гостевой/персональный слой):
+    клиент аплоадит байты картинки → нода распознаёт vision-моделью
+    (аннотация + теги + эмбеддинги + чанки) → возвращает payload. В ChromaDB
+    ничего не пишется — фронт хранит карточку в GunDB.
+    Заголовки: X-OMD-Filename (URL-encoded), X-OMD-Source, X-OMD-RAG-Scope,
+    X-OMD-Tags (JSON), X-OMD-Owner, X-OMD-Prompt.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        data = await request.body()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read request body: {e}")
+
+    filename = _decode_hdr(request, "X-OMD-Filename") or _decode_hdr(request, "filename") or "image.bin"
+    source = _decode_hdr(request, "X-OMD-Source") or filename
+    scope = request.headers.get("X-OMD-RAG-Scope", "private")
+    owner = request.headers.get("X-OMD-Owner") or ""
+    prompt = request.headers.get("X-OMD-Prompt") or ""
+    try:
+        tags_in = json.loads(request.headers.get("X-OMD-Tags", "[]")) or []
+    except Exception:
+        tags_in = []
+
+    if not data:
+        raise HTTPException(status_code=422, detail="empty image body")
+
+    ctx = await _build_ctx_from_request(request)
+    owner = owner or ctx.user_id or user_context.node_owner()
+    doc_id = _norm_doc_path(source) if source else f"image:{filename}"
+    title = filename.split("/")[-1].split("?")[0].lstrip("/") or doc_id
+    tags = _rag_scope_tags(tags_in, scope)
+
+    return await _rag_recognize_payload(ctx, data, doc_id, title, tags, owner, prompt)
 
 
 @app.post("/embed")
@@ -1523,6 +1701,30 @@ async def device_memory_endpoint(request: Request, omd_key: str | None = Depends
         return {"memories": _device_cards_response()}
     except Exception as e:
         logging.error(f"[device_memory] list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/device_memory/{mem_id:path}")
+async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
+    """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    body = await request.json()
+    try:
+        updated = unified_memory.update_memory_card(
+            mem_id=mem_id,
+            text=(body.get("text") or "").strip() or None,
+            title=(body.get("title") or "").strip() or None,
+            tags=body.get("tags"),
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return {"status": "ok", "memory_id": mem_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[device_memory] update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

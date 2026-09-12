@@ -359,6 +359,32 @@ def upsert_memory_card(
     return mem_id
 
 
+def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=None) -> str | None:
+    """Обновляет существующую memory_card (текст/заголовок/теги), сохраняя document_id/owner/relevance."""
+    coll = get_collection()
+    try:
+        res = coll.get(ids=[mem_id], include=["documents", "metadatas"])
+        if not res.get("ids"):
+            return None
+        meta = res["metadatas"][0]
+        old_text = res["documents"][0] if res.get("documents") else ""
+        new_text = (text if text is not None else old_text).strip()
+        old_tags = [t for t in (meta.get("tags") or "").split(",") if t]
+        new_tags = [t for t in (tags or [])] if tags is not None else old_tags
+        return upsert_memory_card(
+            new_text,
+            mem_id=mem_id,
+            owner=meta.get("owner"),
+            tags=new_tags,
+            title=title if title is not None else meta.get("title", ""),
+            document_id=meta.get("document_id"),
+            relevance=meta.get("relevance", "contextual"),
+        )
+    except Exception as e:
+        logger.error(f"[unified] update_memory_card error: {e}")
+        return None
+
+
 def delete_memory_card(mem_id=None, document_id=None):
     """Удаляет карточку памяти по id или document_id."""
     coll = get_collection()

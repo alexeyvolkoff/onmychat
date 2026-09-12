@@ -4291,6 +4291,54 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default", prov
 
     return response.lower().strip()
 
+async def recognize_image_annotation(ctx: UserContext, img: bytes, prompt: str = ""):
+    """
+    Vision-распознавание изображения → чистая аннотация для карточки-знания.
+    В отличие от recognize_image (чатовый клиент) не ловеркейзит ответ и не
+    смешивает с историей: возвращает фактологическое описание (OCR + содержание),
+    которое дальше идёт в теги/эмбеддинг/чанки как аннотация документа.
+    """
+    if not img:
+        return ""
+    try:
+        import base64 as _b64
+        img_b64 = _b64.b64encode(img).decode("utf-8")
+    except Exception as e:
+        logging.error(f"[recognize_image_annotation] b64 error: {e}")
+        return ""
+
+    system_prompt = (
+        "You are a meticulous vision assistant. Analyze the image and produce a concise "
+        "factual annotation for a knowledge card. Include: the main subject, key objects "
+        "and their arrangement, any visible text (OCR), colors, and notable details. "
+        "Write in clean plain prose, 2-5 sentences, no markdown, no preamble."
+    )
+    user_content = prompt.strip() if (prompt or "").strip() else "Describe this image."
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content, "images": [img_b64]},
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": VISION_MODEL,
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+
+    try:
+        data = await llm_request(request_payload)
+        if isinstance(data, dict):
+            response = data.get("message", {}).get("content", "") or data.get("content", "")
+        else:
+            response = str(data)
+    except Exception as e:
+        logging.error(f"[recognize_image_annotation] LLM error: {e}")
+        return ""
+
+    return response.strip()
+
 # Суммаризация документа
 
 async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 8000) -> str:
