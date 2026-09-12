@@ -314,6 +314,7 @@ def upsert_memory_card(
     title="",
     document_id=None,
     relevance="contextual",
+    image_preview="",
 ) -> str:
     """Добавляет/обновляет карточку памяти. Возвращает mem_id.
 
@@ -346,6 +347,8 @@ def upsert_memory_card(
         "relevance": relevance,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    if image_preview:
+        metadata["image_preview"] = image_preview
     metadata.update(_tags_meta(tags or []))
     if document_id:
         metadata["document_id"] = document_id
@@ -450,8 +453,11 @@ def get_indexed_documents(owner=None) -> list:
                 "timestamp": meta.get("timestamp", ""),
                 "tags_list": set(),
                 "chunks": 0,
+                "image_preview": "",
             })
             d["chunks"] += 1
+            if meta.get("image_preview") and not d["image_preview"]:
+                d["image_preview"] = meta["image_preview"]
             d["tags_list"].update(k[2:] for k in meta if k.startswith("t_"))
             ts = meta.get("timestamp", "")
             if ts and ts > d["timestamp"]:
@@ -519,6 +525,7 @@ def chunk_and_index_document(
     chunk_size=500,
     overlap=50,
     source_stamp=None,
+    image_preview="",
 ) -> int:
     """
     Разбивает текст на чанки и индексирует в unified коллекцию.
@@ -567,6 +574,7 @@ def chunk_and_index_document(
             "relevance":   "document_chunk",
             "timestamp":   ts,
             **({"source_stamp": source_stamp} if source_stamp else {}),
+            **({"image_preview": image_preview} if image_preview and idx == 0 else {}),
             **tags_dict,
         }
         for idx in range(len(chunks))

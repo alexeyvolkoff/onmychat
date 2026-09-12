@@ -360,6 +360,28 @@ def _decode_hdr(request: Request, name: str) -> str | None:
     return raw
 
 
+def _image_preview_data_url(img_bytes: bytes, max_side: int = 480) -> str:
+    """Даунскейлит картинку до небольшого thumbnail и возвращает data URL для превью в карточке."""
+    if not img_bytes:
+        return ""
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.thumbnail((max_side, max_side))
+        fmt = "JPEG"
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGBA")
+            fmt = "PNG"
+        elif img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format=fmt, quality=82)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/{fmt.lower()};base64,{b64}"
+    except Exception as e:
+        logging.warning(f"[rag/recognize] preview generation error: {e}")
+        return ""
+
+
 async def _rag_recognize_payload(ctx, img_bytes: bytes, doc_id: str, title: str, tags: list, owner: str, prompt: str = ""):
     """Общая stateless-логика /recognize: vision-аннотация + теги + эмбеддинги + чанки. Без ChromaDB."""
     if not img_bytes:
@@ -404,6 +426,7 @@ async def _rag_recognize_payload(ctx, img_bytes: bytes, doc_id: str, title: str,
         "chunks":               chunks,
         "chunkCount":           len(chunks),
         "isImage":              True,
+        "imagePreview":         _image_preview_data_url(img_bytes),
     }
 
 
@@ -639,6 +662,7 @@ async def rag_recognize_local_endpoint(request: Request):
             tags=all_tags,
             title=filename,
             source_stamp=last_modified,
+            image_preview=payload.get("imagePreview", ""),
         )
         logging.info(f"[rag/recognize/local] {doc_id}: {n} chunks indexed")
     except Exception as e:
@@ -657,6 +681,7 @@ async def rag_recognize_local_endpoint(request: Request):
             title=filename,
             document_id=doc_id,
             relevance="permanent",
+            image_preview=payload.get("imagePreview", ""),
         )
         payload["memoryId"] = mem
     except Exception as e:
@@ -1688,6 +1713,7 @@ def _device_cards_response():
             c["created"] = c.get("timestamp", "") or ""
         if not c.get("title"):
             c["title"] = (c.get("document_id") or "").split("/")[-1]
+        c["imagePreview"] = c.get("image_preview") or c.get("imagePreview") or ""
         out.append(c)
     return out
 
