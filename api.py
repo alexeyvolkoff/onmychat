@@ -1130,6 +1130,13 @@ async def search(
                 continue
 
             item_path = doc_id
+            if item_path.startswith("http://") or item_path.startswith("https://"):
+                try:
+                    from urllib.parse import urlparse
+                    item_path = urlparse(item_path).path
+                except Exception:
+                    pass
+
             owner_val = r.get("owner", "")
             if ctx and hasattr(ctx, "user_id") and ctx.user_id and item_path.startswith(f"/{ctx.user_id}/"):
                 item_path = item_path[len(ctx.user_id) + 1:]
@@ -1169,30 +1176,6 @@ async def search(
                         grouped_documents[doc_id]["image_preview"] = r.get("image_preview")
     except Exception as e:
         logging.error(f"[api] unified_memory search error: {e}")
-
-    # 2. Legacy fallback / merge with search_node if available
-    if search_node:
-        try:
-            legacy_res = search_node.search(q, limit, ctx=ctx)
-            for k, v in legacy_res.items():
-                if k == "system_info" or not isinstance(v, dict):
-                    continue
-                path_key = v.get("itemPath", k)
-                if path_key not in grouped_documents:
-                    grouped_documents[path_key] = {
-                        "itemPath": v.get("itemPath", k),
-                        "title": v.get("title") or os.path.basename(path_key),
-                        "snippet": v.get("snippet", ""),
-                        "description": v.get("description", ""),
-                        "owner": v.get("owner", ""),
-                        "contentType": v.get("contentType", ""),
-                        "last_modified": v.get("last_modified", ""),
-                        "relevance": v.get("relevance", 50.0),
-                        "image_preview": v.get("image_preview", ""),
-                        "_distance": 1.0 - (float(v.get("relevance", 50.0)) / 100.0)
-                    }
-        except Exception as e:
-            logging.warning(f"[api] legacy search_node search error: {e}")
 
     sorted_docs = sorted(grouped_documents.values(), key=lambda x: x.get("_distance", 1.0))[:limit]
 
