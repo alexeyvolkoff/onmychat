@@ -954,9 +954,13 @@ async def remove_path(request: Request):
 async def _build_ctx_from_request(request: Request):
     """Строит UserContext из заголовков запроса."""
     omd_key = _extract_omd_key(request)
+    raw_user  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", "")
+    # Эфемерный локальный юзер (нет X-OMD-User / anon / anonymous) — владелец ноды
+    if not raw_user or raw_user in ("anon", "anonymous"):
+        raw_user = user_context.node_owner()
     ctx = user_context.UserContext(
         type="omd",
-        user_id  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", ""),
+        user_id  = raw_user,
         settings = {},
         history  = [],
         omd_key  = omd_key,
@@ -1019,6 +1023,12 @@ def cleanup_ephemeral_images():
         _ephemeral_image_cache.pop(k, None)
 
 def is_private_mode(request: Request, ctx: user_context.UserContext | None = None) -> bool:
+    # 0. ctx matches local node owner — always private (= full unified index access)
+    import getpass
+    node_owner = SETTINGS.get("NODE_OWNER") or getpass.getuser()
+    if ctx and ctx.user_id and ctx.user_id == node_owner:
+        return True
+
     # 1. Explicit header from gateway or P2P client (e.g. isOwner || isSharedTo)
     pm_header = request.headers.get("X-OMD-Private-Mode")
     if pm_header is not None:
@@ -1029,13 +1039,7 @@ def is_private_mode(request: Request, ctx: user_context.UserContext | None = Non
     if token_balance > 0.0:
         return False
 
-    # 3. Check if ctx matches local node owner
-    import getpass
-    node_owner = SETTINGS.get("NODE_OWNER") or getpass.getuser()
-    if ctx and ctx.user_id and ctx.user_id == node_owner:
-        return True
-
-    # 4. Localhost connection (direct local embedded client on node)
+    # 3. Localhost connection (direct local embedded client on node)
     client_host = request.client.host if request.client else ""
     if client_host in ("127.0.0.1", "::1", "localhost"):
         # If client is authenticated as someone other than node owner, it's NOT private mode
@@ -1381,7 +1385,11 @@ class SignoutInput(BaseModel):
 def get_ctx(omd_key: str | None, force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
-    return user_context.get_context_by_account(omd_key, "", force_reload)
+    ctx = user_context.get_context_by_account(omd_key, "", force_reload)
+    # Эфемерный локальный юзер (пустой omd_key / anon / anonymous) — владелец ноды
+    if not ctx.user_id or ctx.user_id in ("anon", "anonymous"):
+        ctx.user_id = user_context.node_owner()
+    return ctx
 
 
 def serve_file(filepath: str, request: Request, size: int = None) -> Response:
