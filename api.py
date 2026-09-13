@@ -988,10 +988,11 @@ async def _build_ctx_from_request(request: Request):
         omd_key  = omd_key,
     )
     ctx.private_mode = is_private_mode(request, ctx)
-    # Эфемерный локальный юзер (private mode: локальный клиент/запрос владельца) —
-    # владелец ноды. Чужой анонимный интернет-юзер владельцем НЕ становится.
-    if ctx.private_mode and (not ctx.user_id or ctx.user_id in ("anon", "anonymous")):
-        ctx.user_id = user_context.node_owner()
+    # Владелец ноды — только явный X-OMD-User или NODE_OWNER из конфига.
+    # Локальный/приватный запрос без них НЕ назначается владельцем (никакого
+    # ос-юзера): user_id остаётся "anon", имя берётся из настроек или "User".
+    if not ctx.user_id:
+        ctx.user_id = "anon"
     return ctx
 
 
@@ -1411,9 +1412,9 @@ class SignoutInput(BaseModel):
 def get_ctx(omd_key: str | None, force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
-    # Без omd_key юзер остаётся анонимом ("anon"): владельцем ноды его делает
-    # private mode запроса (см. _build_ctx_from_request / chat_stream), а не наличие
-    # или отсутствие токена — иначе любой чужой интернет-аноним станет владельцем.
+    # Без omd_key юзер остаётся анонимом ("anon"). Владельцем ноды его делает только
+    # явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request), а не private mode
+    # запроса — ос-юзера в качестве владельца не используем.
     return user_context.get_context_by_account(omd_key, "", force_reload)
 
 
@@ -1974,9 +1975,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = is_private_mode(request, ctx)
-    # Локальный эфемерный клиент (private mode) — владелец ноды; чужой интернет-аноним нет.
-    if ctx.private_mode and ctx.user_id in ("", "anon", "anonymous"):
-        ctx.user_id = user_context.node_owner()
+    # Владелец ноды — только явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request).
+    # Локальный запрос без них владельцем не становится: user_id тянется из get_ctx
+    # ("anon" при отсутствии валидного omd_key/токена). Системного юзера не используем.
     if provided_knowledge is None:
         logging.info("[chat] provided knowledge: None (client did not send)")
         try:
