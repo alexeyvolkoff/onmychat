@@ -772,7 +772,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
     logical_path = (body.get("logicalPath") or "").strip()
     scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
 
-    doc_root = _norm_doc_path(logical_path) if logical_path else _norm_doc_path(source_path)          # /<share>/... для названий карточек
+    doc_root = ("/" + logical_path.strip("/")) if logical_path else _norm_doc_path(source_path)          # /<share>/... для названий карточек
     ctx = await _build_ctx_from_request(request)
     owner = ctx.user_id or user_context.node_owner()
     tags = _rag_scope_tags(body.get("tags") or [], scope)
@@ -785,7 +785,57 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                      "bin", "obj", "target", "dist", "build", ".cache", ".idea", ".vscode",
                      ".pytest_cache", ".npm", ".yarn"]
 
+        def _index_one(full, fn, rel):
+            ext = os.path.splitext(fn)[1].lower().lstrip(".")
+            if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
+                return
+            if logical_path:
+                # виртуальный путь: /<share>/ + относительный путь от корня индексации
+                doc_id = doc_root.rstrip("/") + ("/" + rel if rel else "")
+            else:
+                doc_id = _norm_doc_path(full)
+            try:
+                mtime_val = datetime.datetime.fromtimestamp(os.stat(full).st_mtime).isoformat(timespec="seconds")
+            except Exception:
+                mtime_val = ""
+            last_modified = mtime_val
+            if not force and unified_memory.has_document(doc_id, source_stamp=last_modified):
+                logging.info(f"[rag/index] skip unchanged {doc_id}")
+                return
+            try:
+                with open(full, "rb") as f:
+                    raw = unified_memory.convert_bytes_to_text(f.read(), fn)
+            except Exception as e:
+                status["failed"] += 1
+                status["lastError"] = f"{fn}: {e}"
+                return
+            if not raw or not raw.strip():
+                status["failed"] += 1
+                status["lastError"] = f"{fn}: no text (unsupported or scanned)"
+                return
+            try:
+                n = unified_memory.chunk_and_index_document(
+                    raw,
+                    document_id=doc_id,
+                    owner=owner,
+                    tags=tags,
+                    title=fn,
+                    source_stamp=last_modified,
+                )
+                status["indexed"] += 1
+                logging.info(f"[rag/index] {doc_id}: {n} chunks")
+            except Exception as e:
+                status["failed"] += 1
+                status["lastError"] = str(e)
+
         local_root = source_path
+        if os.path.isfile(local_root):
+            # Одиночный файл (HomeWrite / rename / update): док → это сам файл,
+            # относительный путь от корня = последний сегмент (doc_root уже полный)
+            _index_one(local_root, os.path.basename(local_root), "")
+            status["done"] = True
+            logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
+            return
         if not os.path.isdir(local_root):
             # виртуальный путь /<share>/... — резолвим в домашнюю директорию владельца ноды
             import getpass
@@ -803,49 +853,9 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             dirnames[:] = [d for d in dirnames
                            if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
             for fn in filenames:
-                ext = os.path.splitext(fn)[1].lower().lstrip(".")
-                if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
-                    continue
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
-                if logical_path:
-                    # виртуальный путь: /<share>/ + относительный путь от корня индексации
-                    doc_id = doc_root.rstrip("/") + ("/" + rel if rel else "")
-                else:
-                    doc_id = _norm_doc_path(full)
-                try:
-                    mtime_val = datetime.datetime.fromtimestamp(os.stat(full).st_mtime).isoformat(timespec="seconds")
-                except Exception:
-                    mtime_val = ""
-                last_modified = mtime_val
-                if not force and unified_memory.has_document(doc_id, source_stamp=last_modified):
-                    logging.info(f"[rag/index] skip unchanged {doc_id}")
-                    continue
-                try:
-                    with open(full, "rb") as f:
-                        raw = unified_memory.convert_bytes_to_text(f.read(), fn)
-                except Exception as e:
-                    status["failed"] += 1
-                    status["lastError"] = f"{fn}: {e}"
-                    continue
-                if not raw or not raw.strip():
-                    status["failed"] += 1
-                    status["lastError"] = f"{fn}: no text (unsupported or scanned)"
-                    continue
-                try:
-                    n = unified_memory.chunk_and_index_document(
-                        raw,
-                        document_id=doc_id,
-                        owner=owner,
-                        tags=tags,
-                        title=fn,
-                        source_stamp=last_modified,
-                    )
-                    status["indexed"] += 1
-                    logging.info(f"[rag/index] {doc_id}: {n} chunks")
-                except Exception as e:
-                    status["failed"] += 1
-                    status["lastError"] = str(e)
+                _index_one(full, fn, rel)
 
         status["done"] = True
         logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
@@ -874,7 +884,12 @@ async def rag_delete_endpoint(request: Request):
     source = (body.get("source") or body.get("docId") or "").strip()
     if not source:
         raise HTTPException(status_code=422, detail="source or docId is required")
-    doc_id = _norm_doc_path(source)
+    # виртуальный путь /<share>/... уже каноничен (как хранится в индексе);
+    # реаль /home/<user>/... конвертируем в виртуальный, ничего больше не режем
+    if source.startswith("/home/"):
+        doc_id = _norm_doc_path(source)
+    else:
+        doc_id = "/" + source.strip("/") or source
     unified_memory.delete_document(doc_id)
     logging.info(f"[rag/delete] {doc_id}")
     return {"deleted": 1, "path": doc_id}
