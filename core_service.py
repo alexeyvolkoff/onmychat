@@ -1252,8 +1252,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     system_instruction = DEFAULT_MCP_INSTRUCTIONS
     
     # Inject username and current date
-    _anon_ok = ctx.user_id not in ("", "anon", "anonymous", "system")
-    username = (ctx.settings.get("name") or ctx.settings.get("username") or (ctx.user_id if _anon_ok else "") or "User") if ctx else "User"
+    username = (ctx.settings.get("name") or ctx.settings.get("username") or "User") if ctx else "User"
     current_date = datetime.now().strftime("%d.%m.%Y")
     current_date_iso = datetime.now().strftime("%Y-%m-%d")
     
@@ -2958,7 +2957,7 @@ async def _perform_prompt_gen(ctx: UserContext,
         yield {"sources": sources, "done": False}
 
     # Имя пользователя и дата — в самое начало секции Known facts
-    username = ctx.settings.get("name") or ctx.settings.get("username") or (ctx.user_id if ctx.user_id not in ("", "anon", "anonymous", "system") else "") or "User"
+    username = ctx.settings.get("name") or ctx.settings.get("username") or "User"
     facts_text += "\n\n*Known facts:*\n"
     facts_text += f"- User name: {username}\n"
     facts_text += f"- Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
