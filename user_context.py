@@ -64,7 +64,7 @@ def save_user_settings(ctx: UserContext):
 def get_context_by_account(account_id: str, storage: str = "", force_reload: bool = False, **kwargs) -> UserContext:
     """Создает контекст на лету. Минимум логики, максимум скорости."""
     if not account_id:
-        return UserContext(type="temp", user_id="anon", settings=load_user_settings(), history=[], storage=storage)
+        return UserContext(type="temp", user_id="anonymous", settings=load_user_settings(), history=[], storage=storage)
 
     # Пытаемся получить информацию о пользователе через токен
     user_info = get_user_info_from_token(account_id)

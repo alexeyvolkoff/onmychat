@@ -990,9 +990,9 @@ async def _build_ctx_from_request(request: Request):
     ctx.private_mode = is_private_mode(request, ctx)
     # Владелец ноды — только явный X-OMD-User или NODE_OWNER из конфига.
     # Локальный/приватный запрос без них НЕ назначается владельцем (никакого
-    # ос-юзера): user_id остаётся "anon", имя берётся из настроек или "User".
+    # ос-юзера): user_id остаётся "anonymous", имя берётся из настроек или "User".
     if not ctx.user_id:
-        ctx.user_id = "anon"
+        ctx.user_id = "anonymous"
     return ctx
 
 
@@ -1070,7 +1070,7 @@ def is_private_mode(request: Request, ctx: user_context.UserContext | None = Non
     client_host = request.client.host if request.client else ""
     if client_host in ("127.0.0.1", "::1", "localhost"):
         # If client is authenticated as someone other than node owner, it's NOT private mode
-        if ctx and ctx.user_id and ctx.user_id not in ("anon", "system", "") and ctx.user_id != node_owner:
+        if ctx and ctx.user_id and ctx.user_id not in ("anonymous", "system", "") and ctx.user_id != node_owner:
             return False
         return True
 
@@ -1412,7 +1412,7 @@ class SignoutInput(BaseModel):
 def get_ctx(omd_key: str | None, force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
-    # Без omd_key юзер остаётся анонимом ("anon"). Владельцем ноды его делает только
+    # Без omd_key юзер остаётся анонимом ("anonymous"). Владельцем ноды его делает только
     # явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request), а не private mode
     # запроса — ос-юзера в качестве владельца не используем.
     return user_context.get_context_by_account(omd_key, "", force_reload)
@@ -1587,7 +1587,7 @@ async def get_chat_image(
     if ctx.user_id:
         candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, ctx.user_id, "generated", safe_filename))
     candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, "default", "generated", safe_filename))
-    candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, "anon", "generated", safe_filename))
+    candidates.append(os.path.join(core_service.APP_ROOT_DIR, USER_DATA_DIR, "anonymous", "generated", safe_filename))
     candidates.append(os.path.join(core_service.APP_ROOT_DIR, "generated", safe_filename))
 
     for c in candidates:
@@ -1977,7 +1977,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     ctx.private_mode = is_private_mode(request, ctx)
     # Владелец ноды — только явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request).
     # Локальный запрос без них владельцем не становится: user_id тянется из get_ctx
-    # ("anon" при отсутствии валидного omd_key/токена). Системного юзера не используем.
+    # ("anonymous" при отсутствии валидного omd_key/токена). Системного юзера не используем.
     if provided_knowledge is None:
         logging.info("[chat] provided knowledge: None (client did not send)")
         try:

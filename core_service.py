@@ -4195,7 +4195,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     if upload_storage and ctx.omd_key:
         # Old frontend (filemanager) delivery: image must land in the user's
         # storage through the gateway, it renders /<storage>/generated/<file>
-        effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anon" else "")
+        effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anonymous" else "")
         if effective_storage:
             dest = f"{effective_storage}/generated"
             logging.info(f"Uploading to storage: {dest}/{filename}")
