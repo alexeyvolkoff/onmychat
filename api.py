@@ -977,10 +977,9 @@ async def remove_path(request: Request):
 async def _build_ctx_from_request(request: Request):
     """Строит UserContext из заголовков запроса."""
     omd_key = _extract_omd_key(request)
+    # Реальный юзер: X-OMD-User или NODE_OWNER из конфига. Без них — уважаем
+    # "Calls me" из настроек клиента, а не выдаём чужака за владельца ноды.
     raw_user  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", "")
-    # Эфемерный локальный юзер (нет X-OMD-User / anon / anonymous) — владелец ноды
-    if not raw_user or raw_user in ("anon", "anonymous"):
-        raw_user = user_context.node_owner()
     ctx = user_context.UserContext(
         type="omd",
         user_id  = raw_user,
@@ -989,6 +988,10 @@ async def _build_ctx_from_request(request: Request):
         omd_key  = omd_key,
     )
     ctx.private_mode = is_private_mode(request, ctx)
+    # Эфемерный локальный юзер (private mode: локальный клиент/запрос владельца) —
+    # владелец ноды. Чужой анонимный интернет-юзер владельцем НЕ становится.
+    if ctx.private_mode and (not ctx.user_id or ctx.user_id in ("anon", "anonymous")):
+        ctx.user_id = user_context.node_owner()
     return ctx
 
 
@@ -1408,11 +1411,10 @@ class SignoutInput(BaseModel):
 def get_ctx(omd_key: str | None, force_reload: bool = False):
     if omd_key in ["undefined", "null"]:
         omd_key = ""
-    ctx = user_context.get_context_by_account(omd_key, "", force_reload)
-    # Эфемерный локальный юзер (пустой omd_key / anon / anonymous) — владелец ноды
-    if not ctx.user_id or ctx.user_id in ("anon", "anonymous"):
-        ctx.user_id = user_context.node_owner()
-    return ctx
+    # Без omd_key юзер остаётся анонимом ("anon"): владельцем ноды его делает
+    # private mode запроса (см. _build_ctx_from_request / chat_stream), а не наличие
+    # или отсутствие токена — иначе любой чужой интернет-аноним станет владельцем.
+    return user_context.get_context_by_account(omd_key, "", force_reload)
 
 
 def serve_file(filepath: str, request: Request, size: int = None) -> Response:
@@ -1972,6 +1974,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = is_private_mode(request, ctx)
+    # Локальный эфемерный клиент (private mode) — владелец ноды; чужой интернет-аноним нет.
+    if ctx.private_mode and ctx.user_id in ("", "anon", "anonymous"):
+        ctx.user_id = user_context.node_owner()
     if provided_knowledge is None:
         logging.info("[chat] provided knowledge: None (client did not send)")
         try:
