@@ -2924,6 +2924,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     facts_text = ""
     # RAG 3.0: kb_id — это тег в unified index, не отдельная база
     kb_tag = ctx.settings.get("kb_id", "omd")
+    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
     logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
     import time as _time
     _t0 = _time.time()
