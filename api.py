@@ -779,18 +779,15 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
     RAG_INDEX_STATUS[doc_root] = {"indexed": 0, "pending": 0, "failed": 0, "lastError": None, "done": False}
 
-    def _crawl_local():
+    async def _crawl_local():
         status = RAG_INDEX_STATUS[doc_root]
-        blacklist = ["node_modules", ".git", ".venv", "venv", "__pycache__", "site-packages",
-                     "bin", "obj", "target", "dist", "build", ".cache", ".idea", ".vscode",
-                     ".pytest_cache", ".npm", ".yarn"]
 
-        def _index_one(full, fn, rel):
+        def _index_one_sync(full, fn, rel):
+            """Performs ChromaDB-heavy indexing in the thread pool, returning a status dict."""
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
             if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
-                return
+                return None
             if logical_path:
-                # виртуальный путь: /<share>/ + относительный путь от корня индексации
                 doc_id = doc_root.rstrip("/") + ("/" + rel if rel else "")
             else:
                 doc_id = _norm_doc_path(full)
@@ -800,44 +797,36 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 mtime_val = ""
             last_modified = mtime_val
             if not force and unified_memory.has_document(doc_id, source_stamp=last_modified):
-                logging.info(f"[rag/index] skip unchanged {doc_id}")
-                return
+                return {"action": "skip", "doc_id": doc_id}
             try:
                 with open(full, "rb") as f:
                     raw = unified_memory.convert_bytes_to_text(f.read(), fn)
             except Exception as e:
-                status["failed"] += 1
-                status["lastError"] = f"{fn}: {e}"
-                return
+                return {"action": "error", "doc_id": doc_id, "error": f"{fn}: {e}"}
             if not raw or not raw.strip():
-                status["failed"] += 1
-                status["lastError"] = f"{fn}: no text (unsupported or scanned)"
-                return
+                return {"action": "error", "doc_id": doc_id, "error": f"{fn}: no text (unsupported or scanned)"}
             try:
                 n = unified_memory.chunk_and_index_document(
-                    raw,
-                    document_id=doc_id,
-                    owner=owner,
-                    tags=tags,
-                    title=fn,
-                    source_stamp=last_modified,
+                    raw, document_id=doc_id, owner=owner, tags=tags,
+                    title=fn, source_stamp=last_modified,
                 )
-                status["indexed"] += 1
-                logging.info(f"[rag/index] {doc_id}: {n} chunks")
+                return {"action": "indexed", "doc_id": doc_id, "chunks": n}
             except Exception as e:
-                status["failed"] += 1
-                status["lastError"] = str(e)
+                return {"action": "error", "doc_id": doc_id, "error": str(e)}
 
         local_root = source_path
         if os.path.isfile(local_root):
-            # Одиночный файл (HomeWrite / rename / update): док → это сам файл,
-            # относительный путь от корня = последний сегмент (doc_root уже полный)
-            _index_one(local_root, os.path.basename(local_root), "")
+            result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
+            if result:
+                if result["action"] == "indexed":
+                    status["indexed"] += 1
+                elif result["action"] == "error":
+                    status["failed"] += 1
+                    status["lastError"] = result["error"]
             status["done"] = True
             logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
             return
         if not os.path.isdir(local_root):
-            # виртуальный путь /<share>/... — резолвим в домашнюю директорию владельца ноды
             import getpass
             candidate = f"/home/{getpass.getuser()}{doc_root}"
             if os.path.isdir(candidate):
@@ -855,7 +844,19 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
-                _index_one(full, fn, rel)
+                # Run the per-file ChromaDB work in a thread, then yield so the
+                # event loop can serve active SSE streams (chat) between files.
+                result = await asyncio.to_thread(_index_one_sync, full, fn, rel)
+                if result:
+                    if result["action"] == "skip":
+                        logging.info(f"[rag/index] skip unchanged {result['doc_id']}")
+                    elif result["action"] == "indexed":
+                        status["indexed"] += 1
+                        logging.info(f"[rag/index] {result['doc_id']}: {result['chunks']} chunks")
+                    else:
+                        status["failed"] += 1
+                        status["lastError"] = result["error"]
+                await asyncio.sleep(0)
 
         status["done"] = True
         logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
