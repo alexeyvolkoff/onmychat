@@ -3669,15 +3669,54 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
         return "chat", default_prompt
 
     first_line = lines[0].strip().lower()
-    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "think", "doc", "tools", "generate"]
+    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "think", "tools", "doc", "generate"]
     
-    intent = "chat"
+    base_intent = "chat"
+    raw_arg = ""
     for allowed in allowed_intents:
         if first_line.startswith(allowed):
-            intent = allowed
+            base_intent = allowed
             if ":" in lines[0]:
-                intent = lines[0].strip()
+                parts = lines[0].split(":", 1)
+                raw_arg = parts[1].strip()
             break
+
+    # Backward compatibility: map legacy 'doc' to 'tools'
+    if base_intent == "doc":
+        base_intent = "tools"
+
+    # Anti-hallucination validation for arguments (paths/URLs):
+    # Only keep the path if it or its basename is actually present in default_prompt
+    if raw_arg:
+        clean_arg = raw_arg.strip("'\"")
+        basename = os.path.basename(clean_arg.rstrip("/\\"))
+        prompt_lower = default_prompt.lower()
+        is_in_prompt = (clean_arg.lower() in prompt_lower) or (bool(basename) and basename.lower() in prompt_lower)
+        if not is_in_prompt:
+            logging.info(f"[parse_intent] Stripping hallucinated path '{raw_arg}' from intent '{base_intent}'")
+            raw_arg = ""
+
+    # Disambiguation: if model outputted 'tools' without a real tool path/arg,
+    # check if the prompt is asking for explanation, knowledge, architecture, or documentation.
+    if base_intent == "tools" and not raw_arg:
+        is_explanation = bool(re.search(
+            r'\b(объясни|расскажи|как|что такое|почему|опиши|explain|how|what is|why|describe|tell me)\b',
+            default_prompt,
+            re.IGNORECASE
+        ))
+        is_doc_or_tech = bool(re.search(
+            r'\b(протокол|архитектур|спецификац|документац|дока|реализац|устроена|устроен|работает|protocol|architecture|spec|docs?|implementation)\b',
+            default_prompt,
+            re.IGNORECASE
+        ))
+        if is_explanation or is_doc_or_tech:
+            logging.info(f"[parse_intent] Auto-correcting intent '{base_intent}' -> 'explain' for informational prompt: '{default_prompt}'")
+            base_intent = "explain"
+
+    if raw_arg and base_intent in ("recognize", "import", "tools"):
+        intent = f"{base_intent}:{raw_arg}"
+    else:
+        intent = base_intent
 
     query = ""
     for line in lines[1:]:

@@ -2071,8 +2071,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "/think": "think",
                 "/explain": "explain",
                 "/search": "search", "/research": "search",
-                "/doc": "doc",
-                "/mcp": "doc"
+                "/tools": "tools",
+                "/docs": "tools",
+                "/doc": "tools",
+                "/mcp": "tools"
             }
             
             intent = "chat"
@@ -2116,7 +2118,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "think": "thinking",
                 "search": "searching",
                 "recognize": "thinking",
-                "import": "learning"
+                "import": "learning",
+                "tools": "executing",
+                "doc": "executing"
             }
             check_intent_status = intent.split(":")[0] if ":" in intent else intent
             if check_intent_status in status_map_detected:
@@ -2151,7 +2155,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"
-            elif prompt.startswith("/tools") or prompt.startswith("/docs") or prompt.startswith("/mcp"):
+            elif prompt.startswith(("/tools", "/docs", "/doc", "/mcp")) or intent == "tools":
                 intent = "tools"
             elif prompt.startswith("/import") or prompt.startswith("/learn"):  
                 m = re.match(r'^/(?:import|learn)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))(?:\s+(\S+))?', prompt)
@@ -2362,7 +2366,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # [LEGACY HISTORY] Backend-side history saving removed - handled by frontend/OrbitDB
                 return
 
-            elif check_intent == "tools":
+            elif check_intent in ("tools", "doc"):
                 logging.info(f"[MCP ROUTE] Routing to check_and_execute_mcp. Prompt: {prompt[:50]}...")
                 yield f"data: {json.dumps({'status': 'executing'})}\n\n"
                 await asyncio.sleep(0.1)
