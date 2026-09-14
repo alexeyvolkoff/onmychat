@@ -10,6 +10,7 @@ from PIL import Image, PngImagePlugin
 import io
 
 import aiohttp
+import asyncio
 import time
 import subprocess
 
@@ -2890,6 +2891,7 @@ async def llm_request(payload: dict, headers: dict = None):
 async def _perform_prompt_gen(ctx: UserContext,
                          instruction: str,
                          message: str,
+                         search_query: str|None = None,
                          is_rag: bool=False,
                          chat: str = "default",
                          mem_id: str = None,
@@ -2925,15 +2927,16 @@ async def _perform_prompt_gen(ctx: UserContext,
     # RAG 3.0: kb_id — это тег в unified index, не отдельная база
     kb_tag = ctx.settings.get("kb_id", "omd")
     rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
-    logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag}")
+    rag_query = (search_query or message).strip()
+    logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag} rag_query={rag_query}")
     import time as _time
     _t0 = _time.time()
     # === Facts injection ===
     if intent in ("view", "show", "chat"):
         # Plain chat and scene generation don't need RAG file search
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
+        facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
     else:
-        facts, sources = await inject_facts(ctx, message, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
+        facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
 
         # Web fallback for search intent: если внутренняя база пуста или хиты слабые
         if intent == "search":
@@ -2943,15 +2946,15 @@ async def _perform_prompt_gen(ctx: UserContext,
             if not internal_strong:
                 logging.info(
                     f"Internal search {'empty' if not internal_found else f'weak (best distance {best_distance:.2f})'}"
-                    f" for '{message}'. Trying web search."
+                    f" for '{rag_query}'. Trying web search."
                 )
                 yield {"status": "searching"}
-                web_results = await search_web(ctx, message)
+                web_results = await search_web(ctx, rag_query)
                 if web_results and "No results found" not in web_results and not web_results.startswith("Error"):
                     if internal_found:
                         sources = []  # ответ будет из веба, не показывать внутренние источники
                     facts.append(web_results)
-    logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources")
+    logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources (query='{rag_query}')")
     
     # Yield sources immediately for the frontend widget
     if sources:
@@ -2967,6 +2970,8 @@ async def _perform_prompt_gen(ctx: UserContext,
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         logging.info(f"RAG request: tag={kb_tag}")
+        yield {"status": "summarizing"}
+        await asyncio.sleep(0.02)
         prep_prompt = (
             "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'."
@@ -3012,6 +3017,9 @@ async def _perform_prompt_gen(ctx: UserContext,
         # Инжект фактов и источников в system prompt
         if strict_fact:
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
+
+        yield {"status": "typing"}
+        await asyncio.sleep(0.02)
         
     if fun_mode:
         system_prompt = f"{FUN_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
@@ -3379,6 +3387,7 @@ async def perform_prompt(
     ctx: UserContext,
     instruction: str,
     message: str,
+    search_query: str|None=None,
     chat: str="default", 
     intent: str|None=None,
     mem_id: str|None=None,
@@ -3398,6 +3407,7 @@ async def perform_prompt(
         ctx=ctx,
         instruction=instruction,
         message=message,
+        search_query=search_query,
         chat=chat,
         intent=intent,
         mem_id=mem_id,
@@ -3646,11 +3656,51 @@ async def ensure_chat(ctx: UserContext, chat: str, first_message: str = None) ->
 
 
 # === Intent ===
+def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple[str, str]:
+    """
+    Parses intent classification output from LLM.
+    Returns (intent, search_query).
+    """
+    if not raw_response:
+        return "chat", default_prompt
+
+    lines = [line.strip() for line in raw_response.strip().split("\n") if line.strip()]
+    if not lines:
+        return "chat", default_prompt
+
+    first_line = lines[0].strip().lower()
+    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "think", "doc", "tools", "generate"]
+    
+    intent = "chat"
+    for allowed in allowed_intents:
+        if first_line.startswith(allowed):
+            intent = allowed
+            if ":" in lines[0]:
+                intent = lines[0].strip()
+            break
+
+    query = ""
+    for line in lines[1:]:
+        m = re.match(r'^(?:query|search|keywords|search_query|запрос|ключевые слова):\s*(.+)$', line, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if val.lower() not in ("none", "null", "n/a", "no", "false", "-", "none."):
+                query = val
+            break
+
+    # If no Query: line matched and intent is a search/RAG intent, fallback to default_prompt
+    if not query and intent in ("explain", "search", "think"):
+        query = default_prompt
+
+    return intent, query
+
+
 async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "default", provided_history: list|None = None) -> str:
     chat = chat or "default"
+    active_intent_prompt = get_prompt("intent.txt") or INTENT_PROMPT
     system_prompt = (
-        f"{INTENT_PROMPT}\n\n"
-        "CRITICAL: Return ONLY the classification (and path if needed) followed by a short reason. "
+        f"{active_intent_prompt}\n\n"
+        "CRITICAL: Follow the exact 3-line format: <intent> on line 1, Query: <search terms or 'none'> on line 2, Reason: <brief explanation> on line 3. "
         "Do NOT repeat the instructions or the system prompt itself."
     )
     

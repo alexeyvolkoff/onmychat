@@ -2076,11 +2076,15 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             
             intent = "chat"
             raw_intent = ""
+            search_query = ""
             
             for prefix, mapped_intent in explicit_map.items():
                 if prompt.startswith(prefix):
                     intent = mapped_intent
                     raw_intent = f"Explicit command: {intent}"
+                    cmd_arg = prompt[len(prefix):].strip()
+                    if mapped_intent in ("search", "explain", "think"):
+                        search_query = cmd_arg if cmd_arg else prompt
                     break
             
             if not raw_intent:
@@ -2088,15 +2092,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Check for RAG intent independently 
                 # (so we don't accidentally class it as a tool if it isn't meant to be)
                 raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
-                lines = raw_intent.strip().split("\n", 1)
-                intent_raw = lines[0].strip().lower()
-                
-                # Whitelist and sanitize intent
-                allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search"]
-                for allowed in allowed_intents:
-                    if intent_raw.startswith(allowed):
-                        intent = allowed
-                        break
+                intent, search_query = core_service.parse_intent_and_query(raw_intent, default_prompt=prompt)
             
             # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
             # This ensures chat is in the index and has a title
@@ -2108,7 +2104,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                  except Exception as e:
                       logging.error(f"Failed to ensure chat for intent {intent}: {e}")
             
-            logging.info(f"Intent detected: {intent} \n(raw: {raw_intent})")
+            logging.info(f"Intent detected: {intent} (search_query: '{search_query}') \n(raw: {raw_intent})")
             
             # Yield specialized status if it matches (overwrite thinking)
             status_map_detected = {
@@ -2278,11 +2274,14 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             elif intent == "explain" or intent == "think" or intent == "search":
                 # Единый RAG-пайплайн: внутренний поиск + web-fallback выполняются
                 # внутри _perform_prompt_gen через inject_facts (факты попадают в system prompt).
-                search_query = prompt
-                if prompt.lower().startswith("/research"):
-                    search_query = prompt[9:].strip()
-                elif prompt.lower().startswith("/search"):
-                    search_query = prompt[7:].strip()
+                if not search_query:
+                    search_query = prompt
+                    for pfx in ("/research", "/search", "/explain", "/think"):
+                        if prompt.lower().startswith(pfx):
+                            search_query = prompt[len(pfx):].strip()
+                            break
+                    if not search_query:
+                        search_query = prompt
 
                 instruction = (
                     "The user asked a question. Use the *Known facts* / *Strict facts* injected into the system prompt "
@@ -2290,7 +2289,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "comes from. If the material does not actually answer the question, say so plainly instead of improvising. "
                     "Do not invent information, links, or data."
                 )
-                llm_message = search_query
+                llm_message = search_query if (prompt.startswith("/") and search_query) else prompt
             elif intent.startswith("recognize"): 
 
                 if ":" in intent:
@@ -2396,6 +2395,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     ctx,
                     instruction=instruction,
                     message=llm_message,
+                    search_query=search_query,
                     chat=chat,
                     intent=intent,
                     mem_id=mem_id,
