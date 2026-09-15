@@ -267,6 +267,18 @@ def _norm_doc_path(path: str) -> str:
 
 RAG_INDEX_STATUS = {}   # path → {"indexed": n, "pending": n, "failed": n, "lastError": ..., "done": bool}
 
+# Расширения изображений. На OnMyDisk картинка может иметь ассоциированный файл
+# описания <файл>.Readme.md — тогда в индекс вносится ОРИГИНАЛЬНЫЙ файл, а не описание.
+IMAGE_EXTS = {
+    "jpg", "jpeg", "png", "gif", "webp", "bmp",
+    "tif", "tiff", "svg", "avif", "heic", "heif",
+}
+
+def _readme_target(fn: str):
+    """Если fn — описание (*.Readme.md), возвращает имя оригинального файла, иначе None."""
+    m = re.match(r"(?i)^(.+)\.readme\.md$", fn or "")
+    return m.group(1) if m else None
+
 def _rag_scope_tags(body_tags, scope: str) -> list:
     tags = [t for t in (body_tags or []) if t]
     if scope == "public" and "public" not in tags:
@@ -782,15 +794,74 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
     async def _crawl_local():
         status = RAG_INDEX_STATUS[doc_root]
 
+        def _doc_id_of(full, rel):
+            if logical_path:
+                return doc_root.rstrip("/") + ("/" + rel if rel else "")
+            return _norm_doc_path(full)
+
         def _index_one_sync(full, fn, rel):
             """Performs ChromaDB-heavy indexing in the thread pool, returning a status dict."""
+            target = _readme_target(fn)
+            if target is not None:
+                # *.Readme.md — это НЕ самостоятельный документ, а описание
+                # оригинального файла (<файл>.Readme.md вместо <файл>.<ext>).
+                # В индекс вносим ОРИГИНАЛ, текстом берём само описание.
+                orig_full = os.path.join(os.path.dirname(full), target)
+                orig_rel = re.sub(r"(?i)\.readme\.md$", "", rel)
+                orig_doc_id = _doc_id_of(orig_full, orig_rel)
+                readme_doc_id = _doc_id_of(full, rel)
+                if not os.path.isfile(orig_full):
+                    # Сиротинка без оригинала — как самостоятельный файл не индексируем,
+                    # но чистим хвост прошлой (неверной) индексации под этим путём.
+                    unified_memory.delete_document(readme_doc_id)
+                    return {"action": "error", "doc_id": orig_doc_id,
+                            "error": f"{fn}: companion file {target} not found on node"}
+                try:
+                    with open(full, "rb") as f:
+                        raw = unified_memory.convert_bytes_to_text(f.read(), fn)
+                except Exception as e:
+                    return {"action": "error", "doc_id": orig_doc_id, "error": f"{fn}: {e}"}
+                if not raw or not raw.strip():
+                    return {"action": "error", "doc_id": orig_doc_id, "error": f"{fn}: description has no text"}
+                try:
+                    stamp = max(os.stat(full).st_mtime, os.stat(orig_full).st_mtime)
+                    last_modified = datetime.datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+                except Exception:
+                    last_modified = ""
+                # Старый вариант, когда *.Readme.md индексировался самостоятельным доком
+                unified_memory.delete_document(readme_doc_id)
+                if not force and unified_memory.has_document(orig_doc_id, source_stamp=last_modified):
+                    return {"action": "skip", "doc_id": orig_doc_id}
+                image_preview = ""
+                ext = os.path.splitext(target)[1].lower().lstrip(".")
+                if ext in IMAGE_EXTS:
+                    try:
+                        with open(orig_full, "rb") as f:
+                            image_preview = _image_preview_data_url(f.read())
+                    except Exception as e:
+                        logging.warning(f"[rag/index] preview error {orig_full}: {e}")
+                try:
+                    n = unified_memory.chunk_and_index_document(
+                        raw, document_id=orig_doc_id, owner=owner, tags=tags,
+                        title=target, source_stamp=last_modified, image_preview=image_preview,
+                    )
+                    if image_preview:
+                        logging.info(f"[rag/index] {orig_doc_id} indexed from {fn} as image card ({n} chunks)")
+                    else:
+                        logging.info(f"[rag/index] {orig_doc_id} indexed from {fn} ({n} chunks)")
+                    return {"action": "indexed", "doc_id": orig_doc_id, "chunks": n}
+                except Exception as e:
+                    return {"action": "error", "doc_id": orig_doc_id, "error": str(e)}
+
+            # У оригинального файла есть описание *.Readme.md — индексируем только
+            # через ветку описания, чтобы не дублировать и не плодить лишние сущности.
+            if os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
+                return None
+
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
             if ext not in ("pdf",) and ext not in unified_memory.PANDOC_FORMATS and ext not in ("txt", "text"):
                 return None
-            if logical_path:
-                doc_id = doc_root.rstrip("/") + ("/" + rel if rel else "")
-            else:
-                doc_id = _norm_doc_path(full)
+            doc_id = _doc_id_of(full, rel)
             try:
                 mtime_val = datetime.datetime.fromtimestamp(os.stat(full).st_mtime).isoformat(timespec="seconds")
             except Exception:
