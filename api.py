@@ -1538,6 +1538,7 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "summary_threshold": core_service.SUMMARY_THRESHOLD,
             "capabilities": {
                 "image_generation": await core_service.is_comfy_available(),
+                "vision": await core_service.is_vision_available(),
                 "chat": True
             }
         }

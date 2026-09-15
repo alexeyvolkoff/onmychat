@@ -2300,9 +2300,40 @@ async def get_generated_avatars(ctx: UserContext) -> list:
 
     return []
 
-
 _comfy_last_check = 0.0
 _comfy_available_cache = False
+
+_vision_last_check = 0.0
+_vision_available_cache = False
+
+
+async def is_vision_available() -> bool:
+    """VISION_MODEL задан в конфиге И реально доступен в ollama (модель там есть).
+    Кэшируется на 30с, чтобы /assistant не дергал ollama на каждый запрос."""
+    global _vision_last_check, _vision_available_cache
+    model = (VISION_MODEL or "").strip()
+    if not model:
+        return False
+    now = time.time()
+    if now - _vision_last_check < 30.0:
+        return _vision_available_cache
+    base = model.split(":")[0]
+    available = False
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+            async with session.get(f"{OLLAMA_URL}/api/tags") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    names = {m.get("name", "") for m in data.get("models", [])}
+                    available = bool(names) and (
+                        model in names or any(n.split(":")[0] == base for n in names if n)
+                    )
+    except Exception:
+        available = False
+    _vision_available_cache = available
+    _vision_last_check = now
+    return available
+
 
 async def is_comfy_available() -> bool:
     global _comfy_last_check, _comfy_available_cache
