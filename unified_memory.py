@@ -458,8 +458,11 @@ def get_indexed_documents(owner=None) -> list:
                 "tags_list": set(),
                 "chunks": 0,
                 "image_preview": "",
+                "is_folder": False,
             })
             d["chunks"] += 1
+            if meta.get("is_folder"):
+                d["is_folder"] = True
             if meta.get("image_preview") and not d["image_preview"]:
                 d["image_preview"] = meta["image_preview"]
             d["tags_list"].update(k[2:] for k in meta if k.startswith("t_"))
@@ -530,6 +533,7 @@ def chunk_and_index_document(
     overlap=50,
     source_stamp=None,
     image_preview="",
+    is_folder=False,
 ) -> int:
     """
     Разбивает текст на чанки и индексирует в unified коллекцию.
@@ -579,6 +583,7 @@ def chunk_and_index_document(
             "timestamp":   ts,
             **({"source_stamp": source_stamp} if source_stamp else {}),
             **({"image_preview": image_preview} if image_preview and idx == 0 else {}),
+            **({"is_folder": True, "contentType": "folder"} if is_folder else {}),
             **tags_dict,
         }
         for idx in range(len(chunks))

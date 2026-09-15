@@ -801,6 +801,45 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         def _index_one_sync(full, fn, rel):
             """Performs ChromaDB-heavy indexing in the thread pool, returning a status dict."""
+            if fn.lower() == "readme.md":
+                # Readme.md в корне папки — это описание САМОЙ ПАПКИ (напр. альбома
+                # с фото), а не самостоятельный документ. В индекс вносим ПАПКУ:
+                # document_id = путь папки, иконка папки, по клику открываем папку.
+                folder_full = os.path.dirname(full)
+                folder_rel = os.path.dirname(rel)
+                folder_doc_id = _doc_id_of(folder_full, folder_rel)
+                readme_doc_id = _doc_id_of(full, rel)
+                try:
+                    with open(full, "rb") as f:
+                        raw = unified_memory.convert_bytes_to_text(f.read(), fn)
+                except Exception as e:
+                    return {"action": "error", "doc_id": folder_doc_id, "error": f"{fn}: {e}"}
+                if not raw or not raw.strip():
+                    # Пустое описание — чистим и старый док под путём readme
+                    unified_memory.delete_document(readme_doc_id)
+                    unified_memory.delete_document(folder_doc_id)
+                    return {"action": "error", "doc_id": folder_doc_id,
+                            "error": f"{fn}: empty folder description"}
+                try:
+                    stamp = os.stat(full).st_mtime
+                    last_modified = datetime.datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+                except Exception:
+                    last_modified = ""
+                # Старый вариант: Readme.md индексировался самостоятельным доком
+                unified_memory.delete_document(readme_doc_id)
+                folder_title = os.path.basename(folder_doc_id.rstrip("/")) or folder_doc_id
+                if not force and unified_memory.has_document(folder_doc_id, source_stamp=last_modified):
+                    return {"action": "skip", "doc_id": folder_doc_id, "is_folder": True}
+                try:
+                    n = unified_memory.chunk_and_index_document(
+                        raw, document_id=folder_doc_id, owner=owner, tags=tags,
+                        title=folder_title, source_stamp=last_modified, is_folder=True,
+                    )
+                    logging.info(f"[rag/index] {folder_doc_id} indexed as folder from {fn} ({n} chunks)")
+                    return {"action": "indexed", "doc_id": folder_doc_id, "is_folder": True, "chunks": n}
+                except Exception as e:
+                    return {"action": "error", "doc_id": folder_doc_id, "error": str(e)}
+
             target = _readme_target(fn)
             if target is not None:
                 # *.Readme.md — это НЕ самостоятельный документ, а описание
@@ -1268,6 +1307,7 @@ async def search(
                     "last_modified": r.get("source_stamp") or r.get("timestamp", ""),
                     "relevance": score,
                     "image_preview": r.get("image_preview", ""),
+                    "isFolder": r.get("is_folder", False),
                     "_distance": dist
                 }
             else:
@@ -1301,7 +1341,8 @@ async def search(
             "contentType": item.get("contentType", ""),
             "last_modified": item.get("last_modified", ""),
             "relevance": item["relevance"],
-            "image_preview": item.get("image_preview", "")
+            "image_preview": item.get("image_preview", ""),
+            "isFolder": item.get("isFolder", False)
         }
 
     return out_dict
