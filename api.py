@@ -90,15 +90,6 @@ app.add_middleware(
 
 AI_TOKEN = SETTINGS.get("AI_TOKEN", "")
 
-# Search Node (legacy, kept for /indexer/from_crawl backward compat)
-try:
-    from search_node import SearchNode
-    search_node = SearchNode(storage_path=BASE_INDEX_DIR, model=memory_index.get_model(), token=AI_TOKEN)
-    logging.info("[api] SearchNode initialized (legacy compat)")
-except Exception as e:
-    logging.error(f"[api] SearchNode init failed: {e}")
-    search_node = None
-
 @app.on_event("startup")
 async def on_startup():
     """Initialize unified_memory on startup."""
@@ -106,35 +97,6 @@ async def on_startup():
         unified_memory.init()
     except Exception as e:
         logging.error(f"[api] unified_memory init error: {e}")
-
-# PeARS-compatible endpoints
-
-@app.get("/indexer/from_crawl")
-async def indexer_from_crawl(request: Request, background_tasks: BackgroundTasks):
-    path = request.query_params.get("path") or request.headers.get("path")
-    url = request.query_params.get("url") or request.headers.get("url")
-    collection = request.query_params.get("collection") or request.headers.get("collection")
-    is_async = (request.query_params.get("async") or request.headers.get("async") or "false").lower() == "true"
-    
-    if not url and path:
-        gateway = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip('/')
-        url = f"{gateway}/{path.lstrip('/')}"
-        
-    if not url:
-         raise HTTPException(status_code=422, detail="Either 'url' or 'path' is required in query or headers")
-
-    if not_authorized(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    if not search_node:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
-        
-    if is_async:
-        background_tasks.add_task(search_node.index_url, url, collection)
-        return {"status": "indexing_started", "url": url}
-    else:
-        result = search_node.index_url(url, collection=collection)
-        return result
 
 @app.get("/api/urls/delete")
 async def delete_url(request: Request):
@@ -1120,44 +1082,6 @@ async def learn_preview(request: Request):
     except Exception as e:
         logging.error(f"[api/learn_preview] {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/indexer/index_share")
-async def index_share(request: Request, background_tasks: BackgroundTasks):
-    """
-    Индексирует конкретную шару (вызывается C++ нодой напрямую через localhost).
-    Заменяет /indexer/from_crawl для шар OMD 3.0.
-    """
-    if not_authorized(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    share   = request.query_params.get("share", "")
-    path    = request.query_params.get("path",  "")
-    tag     = request.query_params.get("tag",   share)
-    is_async = request.query_params.get("async", "true").lower() == "true"
-
-    if not path:
-        raise HTTPException(status_code=422, detail="path is required")
-
-    # Строим URL для индексации
-    gateway = SETTINGS.get("GATEWAY_URL", "https://onmydisk.net").rstrip("/")
-    url = path if path.startswith("http") else f"{gateway}/{path.lstrip('/')}"
-    tags = [t for t in [tag, share] if t]
-
-    def _do_index_share():
-        try:
-            if search_node:
-                search_node.index_url(url, collection=tag or share)
-            logging.info(f"[indexer/share] Indexed share={share} path={path} tags={tags}")
-        except Exception as e:
-            logging.error(f"[indexer/share] error: {e}")
-
-    if is_async:
-        background_tasks.add_task(_do_index_share)
-        return {"status": "indexing_started", "share": share, "path": path}
-    else:
-        _do_index_share()
-        return {"status": "ok", "share": share, "path": path}
 
 
 @app.delete("/indexer/remove_path")

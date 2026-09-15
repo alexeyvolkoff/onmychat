@@ -161,26 +161,6 @@ def ensure_collection():
 
 _collection = ensure_collection()
 
-SEARCH_DB_DIR = os.path.join(BASE_INDEX_DIR, "search_index")
-_search_chroma_client = chromadb.PersistentClient(
-    path=SEARCH_DB_DIR,
-    settings=Settings(anonymized_telemetry=False)
-)
-
-def ensure_search_collection():
-    global _search_chroma_client
-    try:
-        col = _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
-        col.count()
-        return col
-    except Exception as e:
-        logging.warning(f"Search collection re-initializing: {e}")
-        _search_chroma_client = chromadb.PersistentClient(
-            path=SEARCH_DB_DIR,
-            settings=Settings(anonymized_telemetry=False)
-        )
-        return _search_chroma_client.get_or_create_collection(name="omd_search", metadata={"hnsw:space": "cosine"})
-
 QA_CHROMA_DIR = os.path.join(BASE_INDEX_DIR, "chroma_qa")
 os.makedirs(QA_CHROMA_DIR, exist_ok=True)
 
@@ -270,53 +250,6 @@ def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1, includ
                 "score": round(score, 4)
             }
         return {"answer": None, "score": round(score, 4)}
-
-def search_indexed_files(ctx: UserContext, query: str, top_k: int = 5, owner: str = "") -> list[dict]:
-    """
-    Search in the omd_search collection (indexed files).
-    """
-    query_emb = embed_text(query)
-    coll = ensure_search_collection()
-    
-    where = None
-    # Search by user ID and all their groups
-    allowed_owners = [ctx.user_id]
-    if ctx.groups:
-        allowed_owners.extend(ctx.groups)
-    
-    where = {"owner": {"$in": allowed_owners}}
-        
-    try:
-        logging.info(f"[memory] Searching indexed files for '{query}' (allowed_owners: {allowed_owners})")
-        results = coll.query(
-            query_embeddings=[query_emb],
-            n_results=top_k,
-            where=where
-        )
-        
-        out = []
-        if results['ids'] and results['ids'][0]:
-            logging.info(f"[memory] Found {len(results['ids'][0])} potential matches in indexed files.")
-            for i in range(len(results['ids'][0])):
-                dist = results['distances'][0][i]
-                logging.info(f"[memory] Match {i}: distance={dist}, title={results['metadatas'][0][i].get('title')}")
-                # Note: distance_threshold for cosine in Chroma is 1 - cosine_similarity.
-                # 0 is identical, 2 is opposite. 0.8 is quite loose.
-                if dist <= RAG_THRESHOLD:
-                    meta = results['metadatas'][0][i]
-                    out.append({
-                        "text": results['documents'][0][i],
-                        "distance": dist,
-                        "source": "file",
-                        "document_id": meta.get("itemPath", meta.get("url", "")),
-                        "title": meta.get("title", ""),
-                        "owner": meta.get("owner", ""),
-                        "relevance": "contextual",
-                    })
-        return out
-    except Exception as e:
-        logging.error(f"[memory] search_indexed_files error: {e}")
-        return []
 
 def migrate_legacy_data():
     try:
@@ -672,92 +605,6 @@ def load_memories(ctx: UserContext, collection: str = "user") -> list[dict]:
                 return [json.loads(line) for line in f if line.strip()]
     except Exception as e:
         print(f"[memory] Legacy load error: {e}")
-        return []
-
-def search_memories(ctx: UserContext, query: str, collection: str = "user", mem_id = "", top_k: int = 5, distance_threshold: float = RAG_THRESHOLD) -> list[dict]:
-    """
-    Поиск воспоминаний в ChromaDB.
-    """
-    query_emb = embed_text(query)
-    
-    coll = ensure_collection()
-    
-    # 1. Permanent memories
-    permanent_where = {"$and": [{"collection": collection}, {"relevance": "permanent"}]}
-        
-    try:
-        perm_results = coll.get(where=permanent_where)
-        permanent = []
-        if perm_results['ids']:
-            for i in range(len(perm_results['ids'])):
-                doc_id = perm_results['metadatas'][i].get("document_id")
-                if doc_id:
-                    chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=RAG_THRESHOLD)
-                    permanent.extend(chunks)
-                else:
-                    permanent.append({
-                        **perm_results['metadatas'][i],
-                        "text": perm_results['documents'][i],
-                        "source": "memory"
-                    })
-
-        # 2. Contextual memories
-        if mem_id:
-            # Прямая ссылка по ID
-            ctx_results = ensure_collection().get(where={"memory_id": mem_id})
-        else:
-            # Match contextual OR missing relevance
-            contextual_where = {"$and": [
-                {"collection": {"$eq": collection}},
-                {"relevance": {"$ne": "permanent"}}
-            ]}
-
-            coll = ensure_collection()
-            ctx_results = coll.query(
-                query_embeddings=[query_emb],
-                n_results=top_k,
-                where=contextual_where
-            )
-
-        contextual = []
-        if ctx_results['ids']:
-            # results['ids'] - это список списков для query, но плоский для get
-            is_query = isinstance(ctx_results['ids'][0], list)
-            ids = ctx_results['ids'][0] if is_query else ctx_results['ids']
-            metas = ctx_results['metadatas'][0] if is_query else ctx_results['metadatas']
-            docs = ctx_results['documents'][0] if is_query else ctx_results['documents']
-            distances = ctx_results['distances'][0] if (is_query and 'distances' in ctx_results) else [0]*len(ids)
-
-            for i in range(len(ids)):
-                dist = distances[i]
-                meta = metas[i]
-                
-                if dist <= distance_threshold or mem_id:
-                    doc_id = meta.get("document_id")
-                    # If it's already a chunk (has chunk_id), take it directly
-                    if meta.get("chunk_id") is not None:
-                        contextual.append({
-                            **meta,
-                            "text": docs[i],
-                            "distance": dist,
-                            "source": "memory"
-                        })
-                    # If it's a document link (summary), search for its chunks
-                    elif doc_id:
-                        chunks = search_document_chunks(ctx, query, "", "", collection, document_id=doc_id, distance_threshold=RAG_THRESHOLD)
-                        contextual.extend(chunks)
-                    else:
-                        contextual.append({
-                            **meta,
-                            "text": docs[i],
-                            "distance": dist,
-                            "source": "memory"
-                        })
-        
-        logging.debug(f"[memory] Search finished. Found {len(permanent + contextual)} total items.")
-        return permanent + contextual
-    except Exception as e:
-        logging.error(f"[memory] Search error: {e}")
         return []
 
 async def fetch_document_text(url: str, token: str = None) -> str:

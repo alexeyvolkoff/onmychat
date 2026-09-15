@@ -32,9 +32,6 @@ from memory_index import (
     add_memory_card,
     fetch_document_text,
     chunk_and_vectorize_to_file,
-    # legacy search kept for any remaining callers during transition
-    search_memories,
-    search_indexed_files,
 )
 
 import unified_memory

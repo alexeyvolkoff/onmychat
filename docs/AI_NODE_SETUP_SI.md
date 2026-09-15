@@ -295,11 +295,11 @@ ls /opt/onmychat/memory_index/chroma_db/
 ```
 Tako lahko organizirate razpršene dokumente in zunanje vire v logično povezane zbirke znanja. S sklicevanjem na zbirko v poizvedbi (`/explain <zbirka> <vaše_vprašanje>`) boste bistveno izboljšali kakovost in ustreznost odgovorov asistenta.
 
-Poleg tega sistem periodično samodejno indeksira datoteke v vaši shrambi. Indeks semantičnega iskanja se shranjuje v search_index:
+Poleg tega sistem periodično samodejno indeksira datoteke v vaši shrambi. Enotni indeks semantičnega iskanja (RAG in iskanje uporabljata isto bazo) se shranjuje v unified_index:
 
 ```bash
-ls /opt/onmychat/memory_index/search_index/
-# Vsebovati mora zbirko 'omd_search'
+ls /opt/onmychat/memory_index/unified_index/
+# Vsebovati mora zbirko 'omd_unified'
 ```
 
 ---

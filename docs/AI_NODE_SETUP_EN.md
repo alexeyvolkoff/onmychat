@@ -226,11 +226,11 @@ ls /opt/onmychat/memory_index/chroma_db/
 ```
 This way you can organize scattered documents and external sources into logically connected knowledge collections. By referencing a collection in your query (`/explain <collection> <your_question>`), you will significantly improve the quality and relevance of the assistant's responses.
 
-Additionally, the system periodically auto-indexes files in your storage. The semantic search index is saved in search_index:
+Additionally, the system periodically auto-indexes files in your storage. The unified semantic search index (RAG and search share the same DB) is saved in unified_index:
 
 ```bash
-ls /opt/onmychat/memory_index/search_index/
-# Should contain the 'omd_search' collection
+ls /opt/onmychat/memory_index/unified_index/
+# Should contain the 'omd_unified' collection
 ```
 
 ---
