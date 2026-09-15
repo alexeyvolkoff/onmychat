@@ -159,6 +159,7 @@ SYSTEM_INSTRUCTION_GENERAL = get_prompt("instruction_general.txt")
 IMAGE_PROMPT_FUN = get_prompt("image_fun.txt")
 RAG_SYSTEM_PROMPT = get_prompt("rag_system.txt")
 IMPROVEMENT_PROMPT = get_prompt("improvement.txt")
+RECOGNITION_PROMPT = get_prompt("recognition.txt")
 
 STYLE_MODELS = {
     "realistic": SETTINGS["REALISTIC_MODEL"],
@@ -4422,6 +4423,69 @@ async def recognize_image_annotation(ctx: UserContext, img: bytes, prompt: str =
         return ""
 
     return response.strip()
+
+async def recognize_image_readme(ctx: UserContext, img: bytes, title: str = ""):
+    """
+    Vision-аннотация для авто-индексации фотографий: даунскейлит изображение
+    до 1600px (чтобы ollama не утонула в мега-файлах), затем распознаёт по
+    промпту prompts/recognition.txt (объекты, ориентиры, OCR, описание) и
+    возвращает текст, который кладётся в <image>.Readme.md. Английский.
+    """
+    if not img:
+        return ""
+    try:
+        import base64 as _b64
+
+        with_image = img
+        try:
+            pil_img = Image.open(io.BytesIO(img))
+            pil_img.thumbnail((1600, 1600))
+            fmt = "PNG"
+            if pil_img.mode in ("RGBA", "LA", "P"):
+                pil_img = pil_img.convert("RGBA")
+            elif pil_img.mode not in ("RGB", "L"):
+                pil_img = pil_img.convert("RGB")
+            buf = io.BytesIO()
+            pil_img.save(buf, format=fmt)
+            with_image = buf.getvalue()
+        except Exception as e:
+            logging.warning(f"[recognize_image_readme] downscale failed, sending raw: {e}")
+
+        img_b64 = _b64.b64encode(with_image).decode("utf-8")
+    except Exception as e:
+        logging.error(f"[recognize_image_readme] b64 error: {e}")
+        return ""
+
+    system_prompt = RECOGNITION_PROMPT or (
+        "Analyze the image and write a concise factual caption: main subject, "
+        "key objects and their arrangement, recognizable places, visible text (OCR), "
+        "colors and mood. 4-6 plain prose sentences, English, no markdown."
+    )
+    user_content = f"Describe this photograph ({title})." if (title or "").strip() else "Describe this photograph."
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content, "images": [img_b64]},
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": VISION_MODEL,
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+
+    try:
+        data = await llm_request(request_payload)
+        if isinstance(data, dict):
+            response = data.get("message", {}).get("content", "") or data.get("content", "")
+        else:
+            response = str(data)
+    except Exception as e:
+        logging.error(f"[recognize_image_readme] LLM error: {e}")
+        return ""
+
+    return (response or "").strip()
 
 # Суммаризация документа
 

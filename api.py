@@ -279,6 +279,19 @@ def _readme_target(fn: str):
     m = re.match(r"(?i)^(.+)\.readme\.md$", fn or "")
     return m.group(1) if m else None
 
+
+def recognition_enabled():
+    """Автораспознавание фотографий при индексации: нужно, чтобы в конфиге был
+    задан VISION_MODEL и не отключён флаг AUTO_RECOGNIZE_IMAGES (default true)."""
+    try:
+        vision = (str(core_service.VISION_MODEL or "")).strip()
+    except Exception:
+        vision = (str(SETTINGS.get("VISION_MODEL") or "")).strip()
+    if not vision:
+        return False
+    cfg = str(SETTINGS.get("AUTO_RECOGNIZE_IMAGES", "true")).strip().lower()
+    return cfg in ("1", "true", "yes", "on")
+
 def _rag_scope_tags(body_tags, scope: str) -> list:
     tags = [t for t in (body_tags or []) if t]
     if scope == "public" and "public" not in tags:
@@ -924,6 +937,65 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             except Exception as e:
                 return {"action": "error", "doc_id": doc_id, "error": str(e)}
 
+        async def _maybe_recognize_image(full, fn, rel):
+            """Если это "голая" фотография (ext ∈ IMAGE_EXTS, рядом нет
+            <image>.Readme.md) и автораспознавание включено — распознаём её и
+            создаём <image>.Readme.md рядом с файлом, затем индексируем как
+            image-карточку. Возвращает status-словарь или None (не наша работа)."""
+            if not recognition_enabled():
+                return None
+            if _readme_target(fn) is not None:
+                return None
+            ext = os.path.splitext(fn)[1].lower().lstrip(".")
+            if ext not in IMAGE_EXTS:
+                return None
+            if os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
+                return None
+            try:
+                with open(full, "rb") as f:
+                    img_bytes = f.read()
+            except Exception as e:
+                return {"action": "error", "doc_id": _doc_id_of(full, rel), "error": f"{fn}: {e}"}
+            if not img_bytes:
+                return None
+            annotation = await core_service.recognize_image_readme(ctx, img_bytes, fn)
+            if not annotation:
+                # Распознать не вышло (пустой ответ/heic/svg) — ведём себя как раньше
+                return None
+            ai_tags = []
+            try:
+                ai_tags = await core_service.extract_tags_from_text(ctx, annotation)
+            except Exception as e:
+                logging.warning(f"[rag/index] recognise tags error {fn}: {e}")
+            try:
+                readme_path = full + ".Readme.md"
+                with open(readme_path, "w", encoding="utf-8") as f:
+                    f.write(annotation + "\n")
+            except Exception as e:
+                return {"action": "error", "doc_id": _doc_id_of(full, rel),
+                        "error": f"{fn}: cannot write {readme_path}: {e}"}
+            try:
+                stamp = os.stat(full).st_mtime
+                last_modified = datetime.datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+            except Exception:
+                last_modified = ""
+            try:
+                image_preview = _image_preview_data_url(img_bytes)
+            except Exception as e:
+                logging.warning(f"[rag/index] recognise preview error {fn}: {e}")
+                image_preview = ""
+            doc_id = _doc_id_of(full, rel)
+            merged_tags = sorted(set(tags) | set(ai_tags or []))
+            try:
+                n = unified_memory.chunk_and_index_document(
+                    annotation, document_id=doc_id, owner=owner, tags=merged_tags,
+                    title=fn, source_stamp=last_modified, image_preview=image_preview,
+                )
+                logging.info(f"[rag/index] {doc_id} recognised via vision ({n} chunks), wrote {readme_path}")
+                return {"action": "indexed", "doc_id": doc_id, "chunks": n}
+            except Exception as e:
+                return {"action": "error", "doc_id": doc_id, "error": str(e)}
+
         local_root = source_path
         if os.path.isfile(local_root):
             result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
@@ -954,9 +1026,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
-                # Run the per-file ChromaDB work in a thread, then yield so the
-                # event loop can serve active SSE streams (chat) between files.
-                result = await asyncio.to_thread(_index_one_sync, full, fn, rel)
+                # Автораспознавание "голых" фотографий: если VISION_MODEL задан и у
+                # картинки нет companion <image>.Readme.md, распознаём (объекты,
+                # ориентиры, OCR) и пишем README рядом с файлом ДО индексации.
+                # Ручные описания и уже распознанные НЕ трогаем и не перезаписываем.
+                rec = await _maybe_recognize_image(full, fn, rel)
+                if rec is not None:
+                    result = rec
+                else:
+                    # Run the per-file ChromaDB work in a thread, then yield so the
+                    # event loop can serve active SSE streams (chat) between files.
+                    result = await asyncio.to_thread(_index_one_sync, full, fn, rel)
                 if result:
                     if result["action"] == "skip":
                         logging.info(f"[rag/index] skip unchanged {result['doc_id']}")
