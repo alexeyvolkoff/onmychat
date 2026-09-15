@@ -4300,7 +4300,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             except Exception as e:
                 logging.error(f"Upload to storage failed: {e}")
 
-    if ctx.private_mode and not gateway_uploaded:
+    if ctx.private_mode:
         # Private Mode: Node Owner or explicitly authorized user on device.
         # Save directly to local storage on host relative to user's home directory.
         home_dir = os.path.expanduser("~")
@@ -4323,14 +4323,13 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             logging.info(f"[PrivateMode] Saved generated image locally on host: {dest_path}")
         except Exception as e:
             logging.warning(f"[PrivateMode] Local file save failed: {e}")
+
+    try:
         from api import store_ephemeral_image
         store_ephemeral_image(filename, img_data)
-    elif not gateway_uploaded:
-        # Public Mode: Guest or Paid Subscriber -> ZERO CONTACT with foreign data!
-        # Do NOT save to disk. Store solely in ephemeral in-memory cache for API delivery.
-        from api import store_ephemeral_image
-        store_ephemeral_image(filename, img_data)
-        logging.info(f"[PublicMode] Stored image {filename} in RAM buffer only (Zero Contact).")
+        logging.info(f"Stored image {filename} in RAM ephemeral cache.")
+    except Exception as e:
+        logging.warning(f"Failed to store ephemeral image: {e}")
 
     return filename, img_title, neutral_description, img_data
 

@@ -2503,6 +2503,8 @@ async def generate_character_image(request: Request, data: GenerateInput):
         is_new = data.message_nonce is None and data.message_index is None
         res = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id)
         filename, title, description = res[0], res[1], res[2]
+        if len(res) > 3 and res[3]:
+            store_ephemeral_image(filename, res[3])
         
         # [LEGACY HISTORY] Load history removed
         history = []
@@ -2536,6 +2538,8 @@ async def generate_general_image(request: Request, data: GenerateInput):
         # generate_image returns (filename, title, description, img_data)
         res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
         filename, title, description = res[0], res[1], res[2]
+        if len(res) > 3 and res[3]:
+            store_ephemeral_image(filename, res[3])
         return {
             "image": filename,
             "path": filename,
