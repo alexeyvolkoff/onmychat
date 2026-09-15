@@ -23,12 +23,13 @@ RULES:
 1. chat: Default for all conversation, roleplay, dialogue, or general requests. 
    - *CRITICAL*: Includes narrative descriptions like "I saw you at the mall", "We are walking", or "You look nice".
 2. show: User explicitly INSTRUCTS or COMMANDS you (assistant) to change your appearance, to show your current appearance, or to take an action in a role play. The assistant/character MUST be the subject of the image.
-   - *CRITICAL*: Prompt must include explicit requests for showing the assistant's body, or changing the assistant's clothing, pose, or expression. (e.g., "Put on this dress", "Show me your outfit", "Turn around", "Show how you dance"). Simple RP narratives, mentions of body parts or outfit (without explicit request to show them) are NOT 'show'. They are 'chat'.
-   - *CRITICAL*: If the request is about a SCENE, LANDSCAPE, or OBJECT (not the assistant's body), it is NOT 'show' even if it contains the word "show" or "покажи".
+   - *CRITICAL*: Includes explicit requests for showing the assistant's body, outfit, pose, expression, or COSPLAY/ROLEPLAY avatar in any scene or setting (e.g., "Put on this dress", "Show me your outfit", "Turn around", "Show how you dance", "show cosplay of X", "cosplay X in a castle", "show portrait of you as X", "покажи косплей", "нарисуй себя в образе X"). Even if a specific setting/background is mentioned (like a castle, room, or beach), if the request portrays the assistant or a cosplay/costumed character, it is ALWAYS 'show'.
+   - *CRITICAL*: Simple RP narratives, mentions of body parts or outfit (without explicit request to show them) are NOT 'show'. They are 'chat'.
+   - *CRITICAL*: If the request is ONLY about a pure SCENE, LANDSCAPE, OBJECT, or ANIMAL (without the assistant/character), it is 'view', not 'show'.
    - *CRITICAL*: Narrative statements, past-tense descriptions, or compliments are NOT 'show'. They are 'chat'.
-3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT directly involving the assistant's body/appearance.
-   - *CRITICAL*: Includes "show me", "покажи", "draw", "imagine" when referring to a scene/view/object (e.g. "show me the view from the window", "draw a cat", "imagine a city", "покажи вид из окна", "show what's outside").
-   - *CRITICAL*: If the instruction is about a place, view, object, or scene — use 'view', not 'show'. The word "show" alone does NOT imply the assistant's body is the subject.
+3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT portraying the assistant or character/cosplay.
+   - *CRITICAL*: Includes "show me", "покажи", "draw", "imagine" when referring to pure scenery/views/objects/animals (e.g. "show me the view from the window", "draw a cat", "imagine a futuristic city", "покажи вид из окна", "show what's outside", "a photo of an empty room").
+   - *CRITICAL*: If the prompt asks to show a cosplay, character portrait, or the assistant in a costume/setting, use 'show', NOT 'view'.
 4. search: For web search requests ONLY. 
    - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET, uses /search command, or asks for current events/news.
    - Example triggers: "Search for", "What is happening in", "Find info about", "Who is".
@@ -70,6 +71,26 @@ Reason: Changing assistant pose
 show
 Query: none
 Reason: Changing assistant pose
+
+- "show one more cosplay Tris Marigold image, this time portrait in a castle setting" ->
+show
+Query: none
+Reason: Assistant cosplay and portrait in castle setting
+
+- "show cosplay of Arcane Scholar as you imagine yourself in it" ->
+show
+Query: none
+Reason: Assistant cosplay roleplay request
+
+- "покажи косплей эльфийки в лесу" ->
+show
+Query: none
+Reason: Assistant cosplay in forest setting
+
+- "нарисуй свой портрет в образе чародейки" ->
+show
+Query: none
+Reason: Assistant portrait in fantasy role
 
 - "Draw a cat" ->
 view
