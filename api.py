@@ -939,10 +939,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         async def _maybe_recognize_image(full, fn, rel):
             """Если это "голая" фотография (ext ∈ IMAGE_EXTS, рядом нет
-            <image>.Readme.md) и автораспознавание включено — распознаём её и
-            создаём <image>.Readme.md рядом с файлом, затем индексируем как
-            image-карточку. Возвращает status-словарь или None (не наша работа)."""
+            <image>.Readme.md) и vision реально доступен (модель задана И есть
+            в ollama) — распознаём её и создаём <image>.Readme.md рядом с
+            файлом, затем индексируем как image-карточку. Возвращает
+            status-словарь или None (не наша работа)."""
             if not recognition_enabled():
+                return None
+            try:
+                if not await core_service.is_vision_available():
+                    return None
+            except Exception as e:
+                logging.warning(f"[rag/index] vision availability check failed: {e}")
                 return None
             if _readme_target(fn) is not None:
                 return None
