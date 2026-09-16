@@ -282,7 +282,77 @@ def search(
     return deduped[:top_k]
 
 
-# ─── Карточки памяти ─────────────────────────────────────────────────────────
+# ─── Карточки памяти и сопроводительные Readme.md ──────────────────────────
+
+def resolve_companion_readme(document_id: str) -> tuple[str | None, str | None]:
+    """
+    Разрешает путь к сопроводительному Readme.md на локальном диске для document_id.
+    Возвращает (readme_path, content_if_exists).
+    """
+    if not document_id or document_id.startswith("http") or document_id.startswith("user:note:"):
+        return None, None
+    import getpass
+    user = getpass.getuser()
+
+    # Варианты путей на диске
+    candidates = []
+    if os.path.exists(document_id):
+        candidates.append(document_id)
+    if document_id.startswith("/"):
+        candidates.append(f"/home/{user}{document_id}")
+    norm = "/" + document_id.strip("/")
+    if norm.startswith("/home/"):
+        parts = norm.split("/", 3)
+        if len(parts) == 4:
+            candidates.append(f"/home/{user}/{parts[3]}")
+
+    real_path = None
+    for c in candidates:
+        if os.path.exists(c):
+            real_path = c
+            break
+
+    if not real_path:
+        real_path = f"/home/{user}/{document_id.lstrip('/')}"
+
+    # Для папки: Readme.md внутри папки
+    if os.path.isdir(real_path):
+        for name in ("Readme.md", "readme.md", "README.md"):
+            p = os.path.join(real_path, name)
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        return p, f.read().strip()
+                except Exception:
+                    pass
+        return os.path.join(real_path, "Readme.md"), None
+
+    # Для файла: <file>.Readme.md
+    for suffix in (".Readme.md", ".readme.md", ".README.md"):
+        p = real_path + suffix
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    return p, f.read().strip()
+            except Exception:
+                pass
+    return real_path + ".Readme.md", None
+
+
+def save_companion_readme(document_id: str, text: str) -> str | None:
+    """Сохраняет текст в сопроводительный Readme.md на диске."""
+    readme_path, _ = resolve_companion_readme(document_id)
+    if not readme_path:
+        return None
+    try:
+        os.makedirs(os.path.dirname(readme_path), exist_ok=True)
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(text.strip() + "\n")
+        return readme_path
+    except Exception as e:
+        logger.error(f"[unified] save_companion_readme error {readme_path}: {e}")
+        return None
+
 
 def find_memory_card_id(document_id: str, title: str = None) -> str | None:
     """Возвращает memory_id существующей карточки по document_id (или title), либо None."""
@@ -370,6 +440,25 @@ def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=No
     """Обновляет существующую memory_card (текст/заголовок/теги), сохраняя document_id/owner/relevance."""
     coll = get_collection()
     try:
+        # Поддержка виртуального id документа document::<document_id>
+        if mem_id and mem_id.startswith("document::"):
+            doc_id = mem_id[len("document::"):]
+            existing_id = find_memory_card_id(doc_id)
+            if existing_id:
+                mem_id = existing_id
+            else:
+                new_text = (text or "").strip()
+                if not new_text:
+                    _, readme_content = resolve_companion_readme(doc_id)
+                    new_text = readme_content or ""
+                return upsert_memory_card(
+                    new_text,
+                    document_id=doc_id,
+                    title=title or doc_id.split("/")[-1],
+                    tags=tags or [],
+                    relevance="permanent",
+                )
+
         res = coll.get(ids=[mem_id], include=["documents", "metadatas"])
         if not res.get("ids"):
             return None
@@ -386,6 +475,7 @@ def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=No
             title=title if title is not None else meta.get("title", ""),
             document_id=meta.get("document_id"),
             relevance=meta.get("relevance", "contextual"),
+            image_preview=meta.get("image_preview", ""),
         )
     except Exception as e:
         logger.error(f"[unified] update_memory_card error: {e}")
@@ -477,7 +567,7 @@ def get_indexed_documents(owner=None) -> list:
         if owner:
             ann_where = {"$and": [{"type": {"$eq": "memory_card"}}, {"owner": {"$eq": owner}}]}
         try:
-            ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=500)
+            ann_res = coll.get(where=ann_where, include=["documents", "metadatas"], limit=10000)
             enriched = 0
             for i, rid in enumerate(ann_res.get("ids", [])):
                 am = ann_res["metadatas"][i]
@@ -491,6 +581,27 @@ def get_indexed_documents(owner=None) -> list:
                 logger.info(f"[unified] enriched {enriched} documents with annotations")
         except Exception as e:
             logger.warning(f"[unified] get_indexed_documents annotation enrichment error: {e}")
+
+        # Автоматически обогащаем из companion Readme.md на диске, если в ChromaDB ещё нет memory_card
+        for doc_id, d in docs.items():
+            if not d.get("text"):
+                _, readme_content = resolve_companion_readme(doc_id)
+                if readme_content:
+                    d["text"] = readme_content
+                    d["annotation"] = readme_content
+                    try:
+                        upsert_memory_card(
+                            readme_content,
+                            owner=d.get("owner"),
+                            tags=d.get("tags"),
+                            title=d.get("title"),
+                            document_id=doc_id,
+                            image_preview=d.get("image_preview", ""),
+                            relevance="permanent",
+                        )
+                    except Exception as err:
+                        logger.debug(f"[unified] auto-sync memory_card for {doc_id}: {err}")
+
         return list(docs.values())
     except Exception as e:
         logger.error(f"[unified] get_indexed_documents error: {e}")

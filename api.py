@@ -810,6 +810,13 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                         raw, document_id=folder_doc_id, owner=owner, tags=tags,
                         title=folder_title, source_stamp=last_modified, is_folder=True,
                     )
+                    try:
+                        unified_memory.upsert_memory_card(
+                            raw, document_id=folder_doc_id, owner=owner, tags=tags,
+                            title=folder_title, relevance="permanent",
+                        )
+                    except Exception as e_mem:
+                        logging.warning(f"[rag/index] memory_card upsert error {folder_doc_id}: {e_mem}")
                     logging.info(f"[rag/index] {folder_doc_id} indexed as folder from {fn} ({n} chunks)")
                     return {"action": "indexed", "doc_id": folder_doc_id, "is_folder": True, "chunks": n}
                 except Exception as e:
@@ -859,6 +866,13 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                         raw, document_id=orig_doc_id, owner=owner, tags=tags,
                         title=target, source_stamp=last_modified, image_preview=image_preview,
                     )
+                    try:
+                        unified_memory.upsert_memory_card(
+                            raw, document_id=orig_doc_id, owner=owner, tags=tags,
+                            title=target, relevance="permanent", image_preview=image_preview,
+                        )
+                    except Exception as e_mem:
+                        logging.warning(f"[rag/index] memory_card upsert error {orig_doc_id}: {e_mem}")
                     if image_preview:
                         logging.info(f"[rag/index] {orig_doc_id} indexed from {fn} as image card ({n} chunks)")
                     else:
@@ -895,6 +909,30 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     raw, document_id=doc_id, owner=owner, tags=tags,
                     title=fn, source_stamp=last_modified,
                 )
+                # Выжимка для memory_card: если есть Readme.md — берём его; иначе создаём первичное описание
+                readme_path = full + ".Readme.md"
+                summary_text = ""
+                if os.path.isfile(readme_path) or os.path.isfile(full + ".readme.md"):
+                    actual = readme_path if os.path.isfile(readme_path) else full + ".readme.md"
+                    try:
+                        with open(actual, "r", encoding="utf-8", errors="replace") as rf:
+                            summary_text = rf.read().strip()
+                    except Exception:
+                        pass
+                if not summary_text:
+                    summary_text = raw.strip()[:600]
+                    try:
+                        with open(readme_path, "w", encoding="utf-8") as rf:
+                            rf.write(summary_text + "\n")
+                    except Exception as e_write:
+                        logging.warning(f"[rag/index] cannot write companion {readme_path}: {e_write}")
+                try:
+                    unified_memory.upsert_memory_card(
+                        summary_text, document_id=doc_id, owner=owner, tags=tags,
+                        title=fn, relevance="permanent",
+                    )
+                except Exception as e_mem:
+                    logging.warning(f"[rag/index] memory_card upsert error {doc_id}: {e_mem}")
                 return {"action": "indexed", "doc_id": doc_id, "chunks": n}
             except Exception as e:
                 return {"action": "error", "doc_id": doc_id, "error": str(e)}
@@ -960,6 +998,13 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     annotation, document_id=doc_id, owner=owner, tags=merged_tags,
                     title=fn, source_stamp=last_modified, image_preview=image_preview,
                 )
+                try:
+                    unified_memory.upsert_memory_card(
+                        annotation, document_id=doc_id, owner=owner, tags=merged_tags,
+                        title=fn, relevance="permanent", image_preview=image_preview,
+                    )
+                except Exception as e_mem:
+                    logging.warning(f"[rag/index] memory_card upsert error {doc_id}: {e_mem}")
                 logging.info(f"[rag/index] {doc_id} recognised via vision ({n} chunks), wrote {readme_path}")
                 return {"action": "indexed", "doc_id": doc_id, "chunks": n}
             except Exception as e:
@@ -1976,17 +2021,27 @@ async def device_memory_endpoint(request: Request, omd_key: str | None = Depends
 
 @app.put("/api/device_memory/{mem_id:path}")
 async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
-    """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB."""
+    """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB и Readme.md на диске."""
     ctx = get_ctx(omd_key)
     if not is_private_mode(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
     body = await request.json()
     try:
+        new_text = (body.get("text") or "").strip()
+        new_title = (body.get("title") or "").strip() or None
+        new_tags = body.get("tags")
+
+        # Если это карточка документа — синхронизируем выжимку в companion Readme.md на диске
+        if mem_id.startswith("document::"):
+            doc_id = mem_id[len("document::"):]
+            if new_text:
+                unified_memory.save_companion_readme(doc_id, new_text)
+
         updated = unified_memory.update_memory_card(
             mem_id=mem_id,
-            text=(body.get("text") or "").strip() or None,
-            title=(body.get("title") or "").strip() or None,
-            tags=body.get("tags"),
+            text=new_text or None,
+            title=new_title,
+            tags=new_tags,
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Memory not found")
