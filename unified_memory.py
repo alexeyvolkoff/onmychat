@@ -327,16 +327,24 @@ def resolve_companion_readme(document_id: str) -> tuple[str | None, str | None]:
                     pass
         return os.path.join(real_path, "Readme.md"), None
 
-    # Для файла: <file>.Readme.md
+    # Для файла: <file>.Readme.md (без исходного расширения, напр. photo.Readme.md)
+    base_path = os.path.splitext(real_path)[0]
     for suffix in (".Readme.md", ".readme.md", ".README.md"):
-        p = real_path + suffix
+        p = base_path + suffix
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as f:
                     return p, f.read().strip()
             except Exception:
                 pass
-    return real_path + ".Readme.md", None
+        p_full = real_path + suffix
+        if os.path.isfile(p_full):
+            try:
+                with open(p_full, "r", encoding="utf-8", errors="replace") as f:
+                    return p_full, f.read().strip()
+            except Exception:
+                pass
+    return base_path + ".Readme.md", None
 
 
 def save_companion_readme(document_id: str, text: str) -> str | None:

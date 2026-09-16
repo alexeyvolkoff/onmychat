@@ -861,6 +861,20 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 # В индекс вносим ОРИГИНАЛ, текстом берём само описание.
                 orig_full = os.path.join(os.path.dirname(full), target)
                 orig_rel = re.sub(r"(?i)\.readme\.md$", "", rel)
+                if not os.path.isfile(orig_full):
+                    # Если target без расширения (напр. "photo" от "photo.Readme.md"),
+                    # ищем оригинальный файл с подходящим расширением (photo.jpg, etc.)
+                    parent_dir = os.path.dirname(full)
+                    try:
+                        for candidate in os.listdir(parent_dir):
+                            c_base, _ = os.path.splitext(candidate)
+                            if c_base.lower() == target.lower() and not candidate.lower().endswith(".readme.md"):
+                                target = candidate
+                                orig_full = os.path.join(parent_dir, target)
+                                orig_rel = os.path.join(os.path.dirname(rel), target)
+                                break
+                    except Exception:
+                        pass
                 orig_doc_id = _doc_id_of(orig_full, orig_rel)
                 readme_doc_id = _doc_id_of(full, rel)
                 if not os.path.isfile(orig_full):
@@ -915,7 +929,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
             # У оригинального файла есть описание *.Readme.md — индексируем только
             # через ветку описания, чтобы не дублировать и не плодить лишние сущности.
-            if os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
+            base_full = os.path.splitext(full)[0]
+            if os.path.isfile(base_full + ".Readme.md") or os.path.isfile(base_full + ".readme.md") or os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
                 return None
 
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
@@ -942,15 +957,19 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     title=fn, source_stamp=last_modified,
                 )
                 # Выжимка для memory_card: если есть Readme.md — берём его; иначе создаём первичное описание
-                readme_path = full + ".Readme.md"
+                base_full = os.path.splitext(full)[0]
+                readme_path = base_full + ".Readme.md"
                 summary_text = ""
-                if os.path.isfile(readme_path) or os.path.isfile(full + ".readme.md"):
-                    actual = readme_path if os.path.isfile(readme_path) else full + ".readme.md"
-                    try:
-                        with open(actual, "r", encoding="utf-8", errors="replace") as rf:
-                            summary_text = rf.read().strip()
-                    except Exception:
-                        pass
+                for candidate_readme in (readme_path, base_full + ".readme.md", full + ".Readme.md", full + ".readme.md"):
+                    if os.path.isfile(candidate_readme):
+                        try:
+                            with open(candidate_readme, "r", encoding="utf-8", errors="replace") as rf:
+                                summary_text = rf.read().strip()
+                            if summary_text:
+                                readme_path = candidate_readme
+                                break
+                        except Exception:
+                            pass
                 if not summary_text:
                     summary_text = raw.strip()[:600]
                     try:
@@ -990,7 +1009,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
             if ext not in IMAGE_EXTS:
                 return None
-            if os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
+            base_full = os.path.splitext(full)[0]
+            if os.path.isfile(base_full + ".Readme.md") or os.path.isfile(base_full + ".readme.md") or os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
                 return None
             try:
                 with open(full, "rb") as f:
@@ -1012,7 +1032,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             except Exception as e:
                 logging.warning(f"[rag/index] recognise tags error {fn}: {e}")
             try:
-                readme_path = full + ".Readme.md"
+                readme_path = base_full + ".Readme.md"
                 with open(readme_path, "w", encoding="utf-8") as f:
                     f.write(annotation + "\n")
             except Exception as e:
