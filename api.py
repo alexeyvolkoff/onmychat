@@ -236,6 +236,16 @@ IMAGE_EXTS = {
     "tif", "tiff", "svg", "avif", "heic", "heif",
 }
 
+FOLDER_COVER_NAMES = {
+    "folder.jpg", "folder.jpeg", "folder.png",
+    "cover.jpg", "cover.jpeg", "cover.png",
+}
+
+def is_folder_cover_image(fn: str) -> bool:
+    """Проверяет, является ли файл обложкой папки (folder.jpg, cover.jpg и т.п.)."""
+    clean = (fn or "").strip().lower()
+    return clean in FOLDER_COVER_NAMES or clean.endswith((".cover.jpg", ".cover.png", ".cover.jpeg"))
+
 def _readme_target(fn: str):
     """Если fn — описание (*.Readme.md), возвращает имя оригинального файла, иначе None."""
     m = re.match(r"(?i)^(.+)\.readme\.md$", fn or "")
@@ -776,6 +786,10 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         def _index_one_sync(full, fn, rel):
             """Performs ChromaDB-heavy indexing in the thread pool, returning a status dict."""
+            if is_folder_cover_image(fn):
+                unified_memory.delete_document(_doc_id_of(full, rel))
+                return None
+
             if fn.lower() == "readme.md":
                 # Readme.md в корне папки — это описание САМОЙ ПАПКИ (напр. альбома
                 # с фото), а не самостоятельный документ. В индекс вносим ПАПКУ:
@@ -805,15 +819,31 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 folder_title = os.path.basename(folder_doc_id.rstrip("/")) or folder_doc_id
                 if not force and unified_memory.has_document(folder_doc_id, source_stamp=last_modified):
                     return {"action": "skip", "doc_id": folder_doc_id, "is_folder": True}
+
+                # Ищем ассоциированную обложку папки (folder.jpg, cover.jpg и т.п.)
+                folder_preview = ""
+                for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
+                    cpath = os.path.join(folder_full, cname)
+                    if os.path.isfile(cpath):
+                        try:
+                            with open(cpath, "rb") as cf:
+                                folder_preview = _image_preview_data_url(cf.read())
+                            if folder_preview:
+                                break
+                        except Exception:
+                            pass
+
                 try:
                     n = unified_memory.chunk_and_index_document(
                         raw, document_id=folder_doc_id, owner=owner, tags=tags,
                         title=folder_title, source_stamp=last_modified, is_folder=True,
+                        image_preview=folder_preview,
                     )
                     try:
                         unified_memory.upsert_memory_card(
                             raw, document_id=folder_doc_id, owner=owner, tags=tags,
                             title=folder_title, relevance="permanent",
+                            image_preview=folder_preview,
                         )
                     except Exception as e_mem:
                         logging.warning(f"[rag/index] memory_card upsert error {folder_doc_id}: {e_mem}")
@@ -824,6 +854,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
             target = _readme_target(fn)
             if target is not None:
+                if is_folder_cover_image(target):
+                    return None
                 # *.Readme.md — это НЕ самостоятельный документ, а описание
                 # оригинального файла (<файл>.Readme.md вместо <файл>.<ext>).
                 # В индекс вносим ОРИГИНАЛ, текстом берём само описание.
@@ -943,6 +975,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             в ollama) — распознаём её и создаём <image>.Readme.md рядом с
             файлом, затем индексируем как image-карточку. Возвращает
             status-словарь или None (не наша работа)."""
+            if is_folder_cover_image(fn):
+                return None
             if not recognition_enabled():
                 return None
             try:
@@ -1040,6 +1074,10 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
+                if is_folder_cover_image(fn):
+                    cover_doc_id = _doc_id_of(full, rel)
+                    unified_memory.delete_document(cover_doc_id)
+                    continue
                 # Автораспознавание "голых" фотографий: если VISION_MODEL задан и у
                 # картинки нет companion <image>.Readme.md, распознаём (объекты,
                 # ориентиры, OCR) и пишем README рядом с файлом ДО индексации.
@@ -2002,7 +2040,41 @@ def _device_cards_response():
             c["created"] = c.get("timestamp", "") or ""
         if not c.get("title"):
             c["title"] = (c.get("document_id") or "").split("/")[-1]
+
+        doc_id = c.get("document_id") or ""
+        # Для папок: если выжимки нет или в тексте только имя/заголовок папки — подтягиваем из Readme.md
+        if c.get("is_folder") and doc_id:
+            cur_text = (c.get("text") or "").strip()
+            cur_title = (c.get("title") or "").strip()
+            if not cur_text or cur_text in (cur_title, f"# {cur_title}"):
+                readme_path, readme_content = unified_memory.resolve_companion_readme(doc_id)
+                if readme_content:
+                    c["text"] = readme_content
+                    c["annotation"] = readme_content
+
+        # Превью обложки для папки (folder.jpg, cover.jpg и т.п.)
         c["imagePreview"] = c.get("image_preview") or c.get("imagePreview") or ""
+        if c.get("is_folder") and not c["imagePreview"] and doc_id:
+            readme_path, _ = unified_memory.resolve_companion_readme(doc_id)
+            if readme_path:
+                folder_dir = os.path.dirname(readme_path)
+                for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
+                    cpath = os.path.join(folder_dir, cname)
+                    if os.path.isfile(cpath):
+                        try:
+                            with open(cpath, "rb") as cf:
+                                c["imagePreview"] = _image_preview_data_url(cf.read())
+                            if c["imagePreview"]:
+                                break
+                        except Exception:
+                            pass
+
+        # Если теги пусты, но в тексте есть хештеги — извлекаем их
+        if not c.get("tags") and c.get("text"):
+            found_tags = [w.lstrip("#").lower() for w in re.findall(r"(?<!\w)#[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", c["text"])]
+            if found_tags:
+                c["tags"] = sorted(set(found_tags))
+
         out.append(c)
     return out
 
