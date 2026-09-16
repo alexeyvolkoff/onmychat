@@ -6,7 +6,7 @@ import json
 import zipfile
 import shutil
 import logging
-from PIL import Image, PngImagePlugin
+from PIL import Image, PngImagePlugin, ImageOps, ExifTags
 import io
 
 import aiohttp
@@ -4452,44 +4452,170 @@ async def recognize_image_annotation(ctx: UserContext, img: bytes, prompt: str =
 
     return response.strip()
 
-async def recognize_image_readme(ctx: UserContext, img: bytes, title: str = ""):
+def extract_image_exif_metadata(img_bytes: bytes) -> dict:
+    """Извлекает дату/время, GPS координаты и модель камеры из EXIF метаданных изображения."""
+    meta = {}
+    if not img_bytes:
+        return meta
+    try:
+        pil_img = Image.open(io.BytesIO(img_bytes))
+        raw_exif = pil_img._getexif() or {}
+        for k, v in raw_exif.items():
+            name = ExifTags.TAGS.get(k, k)
+            if name == "DateTimeOriginal" or (name == "DateTime" and "date_time" not in meta):
+                s = str(v).strip()
+                if len(s) >= 19 and s[4] == ":" and s[7] == ":":
+                    s = s[:4] + "-" + s[5:7] + "-" + s[8:]
+                meta["date_time"] = s
+            elif name == "Make":
+                meta["make"] = str(v).strip()
+            elif name == "Model":
+                meta["model"] = str(v).strip()
+            elif name == "GPSInfo" and isinstance(v, dict):
+                try:
+                    def to_deg(val):
+                        return float(val[0]) + float(val[1]) / 60.0 + float(val[2]) / 3600.0
+                    lat = to_deg(v[2])
+                    if v.get(1) == "S": lat = -lat
+                    lon = to_deg(v[4])
+                    if v.get(3) == "W": lon = -lon
+                    meta["gps_coords"] = f"{lat:.5f}, {lon:.5f}"
+                except Exception:
+                    pass
+    except Exception as e:
+        logging.debug(f"[exif] parse error: {e}")
+    return meta
+
+
+def prepare_image_for_vision(img_bytes: bytes, max_side: int = 1600) -> tuple[bytes, dict]:
     """
-    Vision-аннотация для авто-индексации фотографий: даунскейлит изображение
-    до 1600px (чтобы ollama не утонула в мега-файлах), затем распознаёт по
-    промпту prompts/recognition.txt (объекты, ориентиры, OCR, описание) и
-    возвращает текст, который кладётся в <image>.Readme.md. Английский.
+    Качественный скейлинг и извлечение фактологии для модели видения:
+    - Извлекает EXIF метаданные (дата/время съемки, GPS координаты, устройство)
+    - Поворачивает изображение в правильную ориентацию через ImageOps.exif_transpose
+    - Выполняет даунскейл методом LANCZOS для максимального сохранения резкости мелких объектов и текста
+    - Кодирует в качественный JPEG (92), оптимизируя размер для Ollama
+    """
+    meta = extract_image_exif_metadata(img_bytes)
+    if not img_bytes:
+        return b"", meta
+    try:
+        pil_img = Image.open(io.BytesIO(img_bytes))
+        try:
+            pil_img = ImageOps.exif_transpose(pil_img)
+        except Exception:
+            pass
+
+        if pil_img.mode in ("RGBA", "LA", "P"):
+            bg = Image.new("RGB", pil_img.size, (255, 255, 255))
+            if pil_img.mode == "P":
+                pil_img = pil_img.convert("RGBA")
+            bg.paste(pil_img, mask=pil_img.split()[-1] if pil_img.mode in ("RGBA", "LA") else None)
+            pil_img = bg
+        elif pil_img.mode not in ("RGB", "L"):
+            pil_img = pil_img.convert("RGB")
+
+        w, h = pil_img.size
+        if max(w, h) > max_side:
+            resample_filter = getattr(Image, "Resampling", Image).LANCZOS
+            pil_img.thumbnail((max_side, max_side), resample=resample_filter)
+
+        buf = io.BytesIO()
+        pil_img.save(buf, format="JPEG", quality=92, optimize=True)
+        return buf.getvalue(), meta
+    except Exception as e:
+        logging.warning(f"[prepare_image_for_vision] error: {e}")
+        return img_bytes, meta
+
+
+def format_readme_description(response: str, fallback_title: str = "") -> str:
+    """Форматирует описание по правилам Readme.md: # Заголовок\n\n2-3 предложения фактологии."""
+    text = (response or "").strip()
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return ""
+
+    title = ""
+    body_lines = []
+
+    if lines[0].startswith("#"):
+        title = lines[0].lstrip("#").strip()
+        body_lines = lines[1:]
+    else:
+        if len(lines[0]) < 80 and len(lines) > 1:
+            title = lines[0]
+            body_lines = lines[1:]
+        else:
+            title = fallback_title or "Photo Description"
+            body_lines = lines
+
+    body = " ".join(body_lines).strip()
+    body = re.sub(r"#+\s*", "", body)
+
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    if len(sentences) > 3:
+        body = " ".join(sentences[:3]).strip()
+
+    title_clean = title.replace("\n", " ").strip()
+    return f"# {title_clean}\n\n{body}"
+
+
+async def recognize_image_readme(
+    ctx: UserContext,
+    img: bytes,
+    title: str = "",
+    folder_name: str = "",
+    date_time: str = "",
+    gps_coords: str = "",
+):
+    """
+    Vision-аннотация для авто-индексации фотографий:
+    - Извлекает EXIF (дата, GPS, устройство) и скейлит изображение через prepare_image_for_vision
+    - Передает в модель контекст (название альбома/папки, время, местоположение)
+    - Возвращает структурированное описание: # Заголовок\n\n2-3 емких фактологических предложения
     """
     if not img:
         return ""
     try:
         import base64 as _b64
 
-        with_image = img
-        try:
-            pil_img = Image.open(io.BytesIO(img))
-            pil_img.thumbnail((1600, 1600))
-            fmt = "PNG"
-            if pil_img.mode in ("RGBA", "LA", "P"):
-                pil_img = pil_img.convert("RGBA")
-            elif pil_img.mode not in ("RGB", "L"):
-                pil_img = pil_img.convert("RGB")
-            buf = io.BytesIO()
-            pil_img.save(buf, format=fmt)
-            with_image = buf.getvalue()
-        except Exception as e:
-            logging.warning(f"[recognize_image_readme] downscale failed, sending raw: {e}")
-
-        img_b64 = _b64.b64encode(with_image).decode("utf-8")
+        scaled_bytes, meta = prepare_image_for_vision(img)
+        img_b64 = _b64.b64encode(scaled_bytes).decode("utf-8")
     except Exception as e:
-        logging.error(f"[recognize_image_readme] b64 error: {e}")
+        logging.error(f"[recognize_image_readme] prepare error: {e}")
         return ""
 
+    # Метаданные: объединяем переданные параметры с извлеченными из EXIF
+    eff_folder = (folder_name or "").strip()
+    eff_date = (date_time or meta.get("date_time", "")).strip()
+    eff_gps = (gps_coords or meta.get("gps_coords", "")).strip()
+    device_info = f"{meta.get('make', '')} {meta.get('model', '')}".strip()
+
+    context_lines = []
+    if eff_folder:
+        context_lines.append(f"Folder/Album: {eff_folder}")
+    if title:
+        context_lines.append(f"Filename: {title}")
+    if eff_date:
+        context_lines.append(f"Date & Time: {eff_date}")
+    if eff_gps:
+        context_lines.append(f"Location coordinates (GPS): {eff_gps}")
+    if device_info:
+        context_lines.append(f"Camera: {device_info}")
+
+    context_block = ""
+    if context_lines:
+        context_block = "Metadata context:\n" + "\n".join(f"- {c}" for c in context_lines) + "\n\n"
+
     system_prompt = RECOGNITION_PROMPT or (
-        "Analyze the image and write a concise factual caption: main subject, "
-        "key objects and their arrangement, recognizable places, visible text (OCR), "
-        "colors and mood. 4-6 plain prose sentences, English, no markdown."
+        "You are an expert computer-vision analyst. Examine the photograph and metadata context. "
+        "Produce a concise factual README note in the format:\n"
+        "# <Short Title>\n\n<2-3 dense factual sentences describing the scene, landmarks, OCR text, and key details.>"
     )
-    user_content = f"Describe this photograph ({title})." if (title or "").strip() else "Describe this photograph."
+    user_content = (
+        f"{context_block}Examine this photograph and produce the factual README note (# Title and 2-3 sentences)."
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -4513,7 +4639,8 @@ async def recognize_image_readme(ctx: UserContext, img: bytes, title: str = ""):
         logging.error(f"[recognize_image_readme] LLM error: {e}")
         return ""
 
-    return (response or "").strip()
+    fallback_title = os.path.splitext(title)[0] if title else (eff_folder or "Photo")
+    return format_readme_description(response, fallback_title=fallback_title)
 
 # Суммаризация документа
 

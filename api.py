@@ -999,7 +999,10 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 return {"action": "error", "doc_id": _doc_id_of(full, rel), "error": f"{fn}: {e}"}
             if not img_bytes:
                 return None
-            annotation = await core_service.recognize_image_readme(ctx, img_bytes, fn)
+            folder_name = os.path.basename(os.path.dirname(full))
+            annotation = await core_service.recognize_image_readme(
+                ctx, img_bytes, title=fn, folder_name=folder_name
+            )
             if not annotation:
                 # Распознать не вышло (пустой ответ/heic/svg) — ведём себя как раньше
                 return None
@@ -2076,7 +2079,14 @@ def _device_cards_response():
                 c["tags"] = sorted(set(found_tags))
 
         out.append(c)
-    return out
+
+    # Сортировка карточек: папки первыми (чтобы не терялись среди сотен файлов),
+    # внутри каждой группы — по дате изменения/создания (свежие сверху)
+    folders = [c for c in out if c.get("is_folder")]
+    non_folders = [c for c in out if not c.get("is_folder")]
+    folders.sort(key=lambda c: c.get("created") or c.get("timestamp") or "", reverse=True)
+    non_folders.sort(key=lambda c: c.get("created") or c.get("timestamp") or "", reverse=True)
+    return folders + non_folders
 
 
 @app.get("/api/device_memory")
