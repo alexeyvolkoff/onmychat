@@ -2069,6 +2069,9 @@ def _folder_cover_exists(doc_id: str) -> bool:
     return False
 
 
+DEVICE_CARD_TEXT_LIMIT = 300
+
+
 def _device_cards_response():
     """Карточки on-device: memory_card + проиндексированные документы (группы file_chunk).
 
@@ -2114,6 +2117,14 @@ def _device_cards_response():
         # Гарантированно выпиливаем base64-превью из ответа
         c.pop("image_preview", None)
         c.pop("imagePreview", None)
+
+        # annotation карточками/модалкой on-device не используется (модалка читает
+        # c.text), но весит столько же, сколько text. text нужен для превью и
+        # поиска — обрезаем, чтобы не забивать P2P-туннель мегабайтами.
+        c.pop("annotation", None)
+        text = c.get("text")
+        if isinstance(text, str) and len(text) > DEVICE_CARD_TEXT_LIMIT:
+            c["text"] = text[:DEVICE_CARD_TEXT_LIMIT].rstrip() + "…"
 
         out.append(c)
 
