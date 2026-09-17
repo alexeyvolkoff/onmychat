@@ -15,6 +15,7 @@ unified_memory.py  —  OMD 3.0 RAG
 
 import os
 import math
+import time
 import uuid
 import logging
 import shutil
@@ -284,13 +285,11 @@ def search(
 
 # ─── Карточки памяти и сопроводительные Readme.md ──────────────────────────
 
-def resolve_companion_readme(document_id: str) -> tuple[str | None, str | None]:
-    """
-    Разрешает путь к сопроводительному Readme.md на локальном диске для document_id.
-    Возвращает (readme_path, content_if_exists).
-    """
-    if not document_id or document_id.startswith("http") or document_id.startswith("user:note:"):
-        return None, None
+def resolve_doc_path(document_id: str) -> str | None:
+    """Виртуальный путь документа (document_id) → реальный путь на диске ноды,
+    если файл/папка существует, иначе None."""
+    if not document_id or document_id.startswith(("http", "user:")):
+        return None
     import getpass
     user = getpass.getuser()
 
@@ -306,12 +305,23 @@ def resolve_companion_readme(document_id: str) -> tuple[str | None, str | None]:
         if len(parts) == 4:
             candidates.append(f"/home/{user}/{parts[3]}")
 
-    real_path = None
     for c in candidates:
         if os.path.exists(c):
-            real_path = c
-            break
+            return c
+    return None
 
+
+def resolve_companion_readme(document_id: str) -> tuple[str | None, str | None]:
+    """
+    Разрешает путь к сопроводительному Readme.md на локальном диске для document_id.
+    Возвращает (readme_path, content_if_exists).
+    """
+    if not document_id or document_id.startswith("http") or document_id.startswith("user:note:"):
+        return None, None
+    import getpass
+    user = getpass.getuser()
+
+    real_path = resolve_doc_path(document_id)
     if not real_path:
         real_path = f"/home/{user}/{document_id.lstrip('/')}"
 
@@ -356,6 +366,7 @@ def save_companion_readme(document_id: str, text: str) -> str | None:
         os.makedirs(os.path.dirname(readme_path), exist_ok=True)
         with open(readme_path, "w", encoding="utf-8") as f:
             f.write(text.strip() + "\n")
+        _invalidate_indexed_docs_cache()
         return readme_path
     except Exception as e:
         logger.error(f"[unified] save_companion_readme error {readme_path}: {e}")
@@ -441,6 +452,7 @@ def upsert_memory_card(
         documents=[text.strip()],
         metadatas=[metadata],
     )
+    _invalidate_indexed_docs_cache()
     return mem_id
 
 
@@ -501,8 +513,29 @@ def delete_memory_card(mem_id=None, document_id=None):
                 {"type": {"$eq": "memory_card"}},
                 {"document_id": {"$eq": document_id}},
             ]})
+        _invalidate_indexed_docs_cache()
     except Exception as e:
         logger.error(f"[unified] delete_memory_card error: {e}")
+
+
+# ─── Кэш списка проиндексированных документов ─────────────────────────────────
+# get_indexed_documents читает ВСЕ file_chunk + ВСЕ memory_card на каждый вызов
+# (главный источник медленного /api/device_memory при тысячах записей).
+# Кэшируем с TTL и инвалидируем при любой записи в unified коллекцию.
+
+_INDEXED_DOCS_CACHE_TTL = 30.0
+_indexed_docs_cache: dict = {"valid": False, "ts": 0.0, "data": None}
+
+
+def _invalidate_indexed_docs_cache():
+    _indexed_docs_cache["valid"] = False
+
+
+def _indexed_docs_cache_fresh() -> bool:
+    return bool(
+        _indexed_docs_cache["valid"]
+        and (_indexed_docs_cache["ts"] + _INDEXED_DOCS_CACHE_TTL) > time.time()
+    )
 
 
 def get_all_memory_cards(owner=None) -> list:
@@ -534,7 +567,15 @@ def get_all_memory_cards(owner=None) -> list:
 
 
 def get_indexed_documents(owner=None) -> list:
-    """Возвращает проиндексированные документы (file_chunk), сгруппированные по document_id."""
+    """Возвращает проиндексированные документы (file_chunk), сгруппированные по document_id.
+
+    Результат кэшируется (TTL 30s + инвалидация при записи), т.к. перечитывание
+    ВСЕХ чанков и карточек на каждый вызов стоит секунды при тысячах записей.
+    Опциональный owner минует кэш (на практике вызовы идут с owner=None).
+    """
+    if owner is None and _indexed_docs_cache_fresh():
+        return [dict(d) for d in _indexed_docs_cache["data"]]
+
     coll = get_collection()
     try:
         where = {"type": {"$eq": "file_chunk"}}
@@ -555,14 +596,16 @@ def get_indexed_documents(owner=None) -> list:
                 "timestamp": meta.get("timestamp", ""),
                 "tags_list": set(),
                 "chunks": 0,
-                "image_preview": "",
+                "has_preview": False,
                 "is_folder": False,
             })
             d["chunks"] += 1
             if meta.get("is_folder"):
                 d["is_folder"] = True
-            if meta.get("image_preview") and not d["image_preview"]:
-                d["image_preview"] = meta["image_preview"]
+            # Превью не тащим в листинг (base64 по картинке = сотни МБ при тысячах
+            # фото). Оставляем только флаг для ленивой подгрузки thumb-эндпоинтом.
+            if meta.get("image_preview"):
+                d["has_preview"] = True
             d["tags_list"].update(k[2:] for k in meta if k.startswith("t_"))
             ts = meta.get("timestamp", "")
             if ts and ts > d["timestamp"]:
@@ -604,13 +647,18 @@ def get_indexed_documents(owner=None) -> list:
                             tags=d.get("tags"),
                             title=d.get("title"),
                             document_id=doc_id,
-                            image_preview=d.get("image_preview", ""),
                             relevance="permanent",
                         )
                     except Exception as err:
                         logger.debug(f"[unified] auto-sync memory_card for {doc_id}: {err}")
 
-        return list(docs.values())
+        out = list(docs.values())
+        if owner is None:
+            _indexed_docs_cache["valid"] = True
+            _indexed_docs_cache["ts"] = time.time()
+            _indexed_docs_cache["data"] = out
+            return [dict(d) for d in out]
+        return out
     except Exception as e:
         logger.error(f"[unified] get_indexed_documents error: {e}")
         return []
@@ -623,6 +671,7 @@ def delete_document(document_id: str):
     coll = get_collection()
     try:
         coll.delete(where={"document_id": {"$eq": document_id}})
+        _invalidate_indexed_docs_cache()
     except Exception as e:
         logger.error(f"[unified] delete_document error: {e}")
 
@@ -719,6 +768,7 @@ def chunk_and_index_document(
         if "DuplicateIDError" not in type(e).__name__ and "Expected IDs to be unique" not in str(e):
             logger.error(f"[unified] chunk upsert error: {e}")
 
+    _invalidate_indexed_docs_cache()
     return len(chunks)
 
 
@@ -726,6 +776,7 @@ def delete_document(document_id: str):
     """Удаляет все записи документа из индекса."""
     try:
         get_collection().delete(where={"document_id": {"$eq": document_id}})
+        _invalidate_indexed_docs_cache()
     except Exception as e:
         logger.error(f"[unified] delete_document error {document_id}: {e}")
 

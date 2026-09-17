@@ -2052,8 +2052,30 @@ async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends
 
 # ─── On-device memory cards (unified ChromaDB, только владелец AI-ноды) ─────
 
+def _folder_cover_exists(doc_id: str) -> bool:
+    """Есть ли файл-обложка (folder.jpg/cover.jpg и т.п.) у папки на диске."""
+    if not doc_id:
+        return False
+    try:
+        readme_path, _ = unified_memory.resolve_companion_readme(doc_id)
+    except Exception:
+        readme_path = None
+    if not readme_path:
+        return False
+    folder_dir = os.path.dirname(readme_path)
+    for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
+        if os.path.isfile(os.path.join(folder_dir, cname)):
+            return True
+    return False
+
+
 def _device_cards_response():
-    """Карточки on-device: memory_card + проиндексированные документы (группы file_chunk)."""
+    """Карточки on-device: memory_card + проиндексированные документы (группы file_chunk).
+
+    Внимание: base64-превью НЕ отдаём в списке (4611+ фото = сотни МБ JSON и
+    зависание клиента). Вместо них — флаг hasPreview, а сами картинки клиент
+    подгружает лениво через /api/device_memory_thumb?path=...
+    """
     cards = unified_memory.get_all_memory_cards() + unified_memory.get_indexed_documents()
     out = []
     for c in cards:
@@ -2075,28 +2097,23 @@ def _device_cards_response():
                     c["text"] = readme_content
                     c["annotation"] = readme_content
 
-        # Превью обложки для папки (folder.jpg, cover.jpg и т.п.)
-        c["imagePreview"] = c.get("image_preview") or c.get("imagePreview") or ""
-        if c.get("is_folder") and not c["imagePreview"] and doc_id:
-            readme_path, _ = unified_memory.resolve_companion_readme(doc_id)
-            if readme_path:
-                folder_dir = os.path.dirname(readme_path)
-                for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
-                    cpath = os.path.join(folder_dir, cname)
-                    if os.path.isfile(cpath):
-                        try:
-                            with open(cpath, "rb") as cf:
-                                c["imagePreview"] = _image_preview_data_url(cf.read())
-                            if c["imagePreview"]:
-                                break
-                        except Exception:
-                            pass
+        # Превью: только флаг, без base64-данных (см. docstring функции).
+        has_any_preview = bool(
+            c.get("has_preview") or c.get("image_preview") or c.get("imagePreview")
+        )
+        if c.get("is_folder") and not has_any_preview:
+            has_any_preview = _folder_cover_exists(doc_id)
+        c["hasPreview"] = has_any_preview
 
         # Если теги пусты, но в тексте есть хештеги — извлекаем их
         if not c.get("tags") and c.get("text"):
             found_tags = [w.lstrip("#").lower() for w in re.findall(r"(?<!\w)#[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", c["text"])]
             if found_tags:
                 c["tags"] = sorted(set(found_tags))
+
+        # Гарантированно выпиливаем base64-превью из ответа
+        c.pop("image_preview", None)
+        c.pop("imagePreview", None)
 
         out.append(c)
 
@@ -2119,6 +2136,50 @@ async def device_memory_endpoint(request: Request, omd_key: str | None = Depends
     except Exception as e:
         logging.error(f"[device_memory] list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/device_memory_thumb")
+async def device_memory_thumb_endpoint(
+    request: Request,
+    path: str = "",
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Ленивая миниатюра карточки on-device (/api/device_memory не тащит base64).
+
+    path = document_id карточки (виртуальный путь, напр. /Pictures/photo.png).
+    Для папок ищем обложку (folder.jpg/cover.jpg/...) внутри папки.
+    """
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    real = unified_memory.resolve_doc_path(path)
+    if not real:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Папка → обложка внутри неё
+    if os.path.isdir(real):
+        for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
+            cpath = os.path.join(real, cname)
+            if os.path.isfile(cpath):
+                real = cpath
+                break
+        else:
+            raise HTTPException(status_code=404, detail="No folder cover")
+
+    ext = os.path.splitext(real)[1].lower().lstrip(".")
+    if ext not in IMAGE_EXTS:
+        raise HTTPException(status_code=404, detail="Not an image")
+
+    try:
+        return serve_file(real, request, size=256)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.warning(f"[device_memory_thumb] serve error {real}: {e}")
+        raise HTTPException(status_code=404, detail="Unreadable image")
 
 
 @app.put("/api/device_memory/{mem_id:path}")
