@@ -30,9 +30,12 @@ RULES:
 3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT portraying the assistant or character/cosplay.
    - *CRITICAL*: Includes "show me", "покажи", "draw", "imagine" when referring to pure scenery/views/objects/animals (e.g. "show me the view from the window", "draw a cat", "imagine a futuristic city", "покажи вид из окна", "show what's outside", "a photo of an empty room").
    - *CRITICAL*: If the prompt asks to show a cosplay, character portrait, or the assistant in a costume/setting, use 'show', NOT 'view'.
-4. search: For web search requests ONLY. 
-   - *CRITICAL*: ONLY use this if the user is asking for information from the INTERNET, uses /search command, or asks for current events/news.
-   - Example triggers: "Search for", "What is happening in", "Find info about", "Who is".
+   - *CRITICAL*: If the request is to FIND/LOCATE the user's OWN existing files or photos on their disk ("покажи мои фотографии", "найди моё фото", "where is my photo/file"), it is 'search' (retrieval from the user's knowledge base), NOT 'view'. 'view' is ONLY for generating new pictures/scenery.
+4. search: For web search requests AND retrieval of the user's own files/photos/documents from their storage or knowledge base (RAG research).
+   - Web retrieval: user asks for information from the INTERNET, uses /search or /research command, or asks for current events/news.
+   - *CRITICAL*: Requests to find, locate, or recall the user's own FILES, DOCUMENTS, PHOTOS, IMAGES, FOLDERS on their disk (e.g. "find my photo from Rome", "найди мои фотографии", "покажи мои фотографии", "where is the file about ...", "когда я фотографировал ...", "у меня есть файл/документ где ...") are ALWAYS 'search' — they trigger knowledge base / indexed-file retrieval (RAG). NEVER 'chat', NEVER 'view'.
+   - *CRITICAL*: Requests to GENERATE a brand-new artistic image/picture/scenery ("draw a cat", "нарисуй закат") are 'view', NOT 'search' — they do not retrieve existing user files.
+   - Example triggers: "Search for", "What is happening in", "Find info about", "Who is", "Find my files", "Where is the file", "Найди мои файлы/фотографии", "Покажи мои фотографии".
 5. explain: For general questions, code requests, deep explanations, architecture, protocols, specifications, guides, or ANY question about the assistant's knowledge base or documentation (OMD, OnMyDisk, OnMyChat, technical docs, manuals).
    - *CRITICAL*: "What is X", "How does X work", "Explain how X is implemented", "Show documentation for X", "Tell me about X" are ALWAYS 'explain', NEVER 'tools', NEVER 'chat'.
 6. recognize:<path>: For describing/analyzing the content of an image path/url present in user prompt.
@@ -211,6 +214,46 @@ Reason: Explicit template processing tool instruction
 tools:/contracts/agreement.odt
 Query: none
 Reason: Explicit template processing tool instruction
+
+- "Find my photos from the trip to Rome" ->
+search
+Query: my photos trip Rome
+Reason: Retrieval of user's own photos from storage
+
+- "Найди мои фотографии из поездки в Рим" ->
+search
+Query: мои фотографии поездка Рим
+Reason: Retrieval of user's own photos from storage
+
+- "Покажи мои фотографии за июнь" ->
+search
+Query: фотографии июнь
+Reason: User photo retrieval from own disk, not image generation
+
+- "Where is the file I created about the tax report?" ->
+search
+Query: tax report file
+Reason: Retrieval of user's own file from knowledge base
+
+- "Найди документ, в котором я записывал идеи про проект" ->
+search
+Query: идеи проект документ
+Reason: Retrieval of user's own document from knowledge base
+
+- "Когда я последний раз редактировал файл отчёта?" ->
+search
+Query: файл отчёта последнее изменение
+Reason: Locating/recalling user's file and its modification time
+
+- "Найди мою папку с отпуском на море" ->
+search
+Query: папка отпуск море
+Reason: Retrieval of user's own folder from storage
+
+- "Draw a photo of a sunset" ->
+view
+Query: none
+Reason: Generating a new picture, not retrieving user files
 
 If in doubt, respond with 'chat'.
 Return NOTHING except the classification, query, and reason.

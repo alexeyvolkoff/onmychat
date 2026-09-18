@@ -50,6 +50,13 @@ SEARCH_THRESHOLD = float(SETTINGS.get("SEARCH_THRESHOLD", "0.75"))
 RAG_TOP_K       = int(SETTINGS.get("RAG_TOP_K",   "8"))
 SEARCH_TOP_K    = int(SETTINGS.get("SEARCH_TOP_K", "20"))
 
+# Буст «свежести» файла при RAG-поиске (факт-инъекциях):
+# более новый файл получает усиление к оценке релевантности.
+# RECENCY_WEIGHT        - максимальный множитель (0 = отключено)
+# RECENCY_HALF_LIFE_DAYS- возраст файла в днях, на котором буст падает вдвое
+RECENCY_WEIGHT         = float(SETTINGS.get("RECENCY_WEIGHT", "0.35"))
+RECENCY_HALF_LIFE_DAYS = float(SETTINGS.get("RECENCY_HALF_LIFE_DAYS", "30"))
+
 # ─── Embedding model ──────────────────────────────────────────────────────────
 
 _model: Optional[SentenceTransformer] = None
@@ -148,6 +155,50 @@ def _norm(v: list) -> float:
     return math.sqrt(sum(x * x for x in v))
 
 
+def _parse_meta_time(value) -> Optional[datetime]:
+    """
+    ISO-строка метады (source_stamp — mtime файла, либо timestamp — время
+    индексации) → aware-datetime в локальной таймзоне. None при ошибке.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt
+
+
+def _recency_factor(ts: datetime, now: datetime, half_life_days: float) -> float:
+    """Гармонический спад: 1.0 при ts == now, ~0.5 на half_life, → 0 со временем."""
+    age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+    return 1.0 / (1.0 + age_days / max(half_life_days, 1.0))
+
+
+def _apply_recency_rerank(rows: list, half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> None:
+    """
+    Переранжирует найденные записи по relevance × recency на месте (in-place):
+    свежие файлы/заметки поднимаются выше при сопоставимой релевантности.
+    Для каждой записи заполняет recency_factor, recency_boost и combined final_score.
+    """
+    if RECENCY_WEIGHT <= 0:
+        return
+    now = datetime.now().astimezone()
+    for r in rows:
+        ts = _parse_meta_time(r.get("source_stamp") or r.get("timestamp"))
+        if ts is not None:
+            rf = _recency_factor(ts, now, half_life_days)
+            r["recency_factor"] = round(rf, 4)
+            r["recency_boost"]  = round(RECENCY_WEIGHT * rf, 4)
+        else:
+            r["recency_factor"] = 0.0
+            r["recency_boost"]  = 0.0
+        r["final_score"] = round(float(r.get("relevance", 0.0)) * (1.0 + r.get("recency_boost", 0.0)), 3)
+    rows.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+
+
 # ─── Поиск ───────────────────────────────────────────────────────────────────
 
 def search(
@@ -158,6 +209,7 @@ def search(
     threshold=None,
     record_types=None,
     document_id=None,
+    recent_first=False,
 ) -> list:
     """
     Единая точка поиска.
@@ -172,6 +224,8 @@ def search(
         record_types  - фильтр по type: ["file_chunk", "memory_card", ...]
         document_id   - фильтр по document_id (напр. "/Documents/a.pdf" для
                         /learn — граничит факты конкретно этим файлом/карточкой)
+        recent_first  - переранжировать по relevance × recency: свежие файлы
+                        (source_stamp/timestamp) поднимаются выше
     """
     if top_k is None:
         top_k = RAG_TOP_K
@@ -280,6 +334,8 @@ def search(
             continue
         seen.add(r["id"])
         deduped.append(r)
+    if recent_first:
+        _apply_recency_rerank(deduped)
     return deduped[:top_k]
 
 
@@ -880,6 +936,7 @@ def search_for_rag(
     - private_mode=True  + нет тегов   -> вся база (владелец ноды, все владельцы)
     - private_mode=False + нет тегов   -> только PUBLIC_TAGS (гость)
     - document_id (focus /learn)       -> только чанки/карточка этого файла (теги не фильтруем)
+    - recency: результат ранжируется relevance × recency (свежие файлы выше)
     owner-фильтра больше нет: в private-режиме видны записи всех владельцев ноды.
     """
     if top_k is None:
@@ -900,6 +957,7 @@ def search_for_rag(
         threshold=RAG_THRESHOLD,
         record_types=["file_chunk", "memory_card"],
         document_id=document_id,
+        recent_first=True,
     )
 
 
