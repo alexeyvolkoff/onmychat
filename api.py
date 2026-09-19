@@ -1135,17 +1135,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             return
 
         for dirpath, dirnames, filenames in os.walk(local_root):
-             dirnames[:] = [d for d in dirnames
-                            if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
-             # Отсекаем поддиректории, попавшие под index_exclusions.json.
-             # Строим полный логический путь /<logical_root>/<rel> и физический,
-             # затем проверяем префиксным правилом _is_path_excluded (стр. 78).
-             def _keep_dir(_d):
-                 _phys = os.path.join(dirpath, _d)
-                 _rel = os.path.relpath(_phys, local_root).replace("\\", "/")
-                 _log = doc_root.rstrip("/") + ("/" + _rel if _rel != "." else "")
-                 return _is_path_excluded(_log, _phys) is None
-             dirnames[:] = [d for d in dirnames if _keep_dir(d)]
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
+            # Отсекаем поддиректории, попавшие под index_exclusions.json.
+            # Строим полный логический путь /<logical_root>/<rel> и физический,
+            # затем проверяем префиксным правилом _is_path_excluded (стр. 78).
+            def _keep_dir(_d):
+                _phys = os.path.join(dirpath, _d)
+                _rel = os.path.relpath(_phys, local_root).replace("\\", "/")
+                _log = doc_root.rstrip("/") + ("/" + _rel if _rel != "." else "")
+                return _is_path_excluded(_log, _phys) is None
+            dirnames[:] = [d for d in dirnames if _keep_dir(d)]
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
