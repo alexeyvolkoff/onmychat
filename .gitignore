@@ -9,3 +9,5 @@ test_data/
 opencode.conf
 agent_sessions.json
 .knowledge/
+
+index_exclusions.json

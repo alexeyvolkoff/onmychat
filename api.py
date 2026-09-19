@@ -56,6 +56,38 @@ import user_context
 # Create a global session for proxying to avoid socket exhaustion
 _proxy_session = None
 
+# ---------------------------------------------------------------------------
+# Исключения из индексации (папки, которые не надо тащить в RAG-индекс).
+# Читаются из JSON: логические пути (/<share>/... относительно шары) и
+# физические абсолютные пути. Для совпадения достаточно ПРЕФИКСА пути.
+# ---------------------------------------------------------------------------
+def _load_index_exclusions():
+    try:
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index_exclusions.json")
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        logical = [str(p).strip("/ ").lower() for p in (cfg.get("logical") or []) if str(p).strip()]
+        physical = [str(p).rstrip("/\\").lower() for p in (cfg.get("physical") or []) if str(p).strip()]
+        return logical, physical
+    except Exception as e:
+        logging.warning(f"[index_exclusions] cannot load {cfg_path}: {e}")
+        return [], []
+
+INDEX_EXCL_LOGICAL, INDEX_EXCL_PHYSICAL = _load_index_exclusions()
+
+def _is_path_excluded(logical_path: str, physical_path: str) -> Optional[str]:
+    """Возвращает правило-исключение, если путь (логический или физический)
+    попадает под список неиндексируемых директорий."""
+    logical = (logical_path or "").strip("/ ").lower()
+    physical = (physical_path or "").rstrip("/\\").lower()
+    for rule in INDEX_EXCL_LOGICAL:
+        if logical == rule or logical.startswith(rule + "/"):
+            return rule
+    for rule in INDEX_EXCL_PHYSICAL:
+        if physical == rule or physical.startswith(rule + "/") or (physical + "/").startswith(rule + "/"):
+            return rule
+    return None
+
 # The question tool must only ever ask ONE question at a time: when an agent
 # streams a "question" tool call its arguments are rewritten so that only the
 # first question survives (SSH tunnel agents still rely on this contract).
@@ -770,6 +802,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
     scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
 
     doc_root = ("/" + logical_path.strip("/")) if logical_path else _norm_doc_path(source_path)          # /<share>/... для названий карточек
+
+    # ------------------------------------------------------------------
+    # Исключения из индексации (index_exclusions.json): логические пути
+    # относительно шар и физические. Если локаль попадает под правило —
+    # не тянем её в RAG-индекс, возвращаем skipped.
+    # ------------------------------------------------------------------
+    skipped_rule = _is_path_excluded(logical_path, source_path)
+    if skipped_rule:
+        logging.info(f"[rag/index] skip excluded location: {doc_root} (rule: {skipped_rule}, path: {source_path})")
+        return {"done": True, "indexed": 0, "failed": 0, "note": f"excluded:{skipped_rule}"}
+
     ctx = await _build_ctx_from_request(request)
     owner = ctx.user_id or user_context.node_owner()
     tags = _rag_scope_tags(body.get("tags") or [], scope)
@@ -1092,8 +1135,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             return
 
         for dirpath, dirnames, filenames in os.walk(local_root):
-            dirnames[:] = [d for d in dirnames
-                           if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
+             dirnames[:] = [d for d in dirnames
+                            if not d.startswith(".") and d.lower() not in ("node_modules", "build", "dist", "target", "venv", "__pycache__")]
+             # Отсекаем поддиректории, попавшие под index_exclusions.json.
+             # Строим полный логический путь /<logical_root>/<rel> и физический,
+             # затем проверяем префиксным правилом _is_path_excluded (стр. 78).
+             def _keep_dir(_d):
+                 _phys = os.path.join(dirpath, _d)
+                 _rel = os.path.relpath(_phys, local_root).replace("\\", "/")
+                 _log = doc_root.rstrip("/") + ("/" + _rel if _rel != "." else "")
+                 return _is_path_excluded(_log, _phys) is None
+             dirnames[:] = [d for d in dirnames if _keep_dir(d)]
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")
