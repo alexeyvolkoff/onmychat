@@ -171,6 +171,7 @@ INTENT_PROMPT = get_prompt("intent.txt")
 CHAT_SUMMARY_PROMPT = get_prompt("chat_summary.txt")
 CONTENT_FILTER_PROMPT = get_prompt("content_filter.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
+DOC_README_PROMPT = get_prompt("doc_readme.txt")
 FUN_PREPHASE = get_prompt("fun_prephase.txt")
 DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
 IMAGE_NEUTRAL_DESC_PROMPT = get_prompt("image_neutral_desc.txt")
@@ -4676,6 +4677,39 @@ async def summarize_for_memory(ctx: UserContext, raw_text: str, limit: int = 800
 
     logging.info(f"Summary: {response}")
     return response.strip()
+
+
+async def summarize_document_for_readme(ctx: UserContext, raw_text: str, limit: int = 8000) -> str:
+    """
+    Генерирует короткое LLM-описание документа для companion <файл>.Readme.md:
+    строка '# Заголовок' + 2-3 фактических предложения на языке документа.
+    Возвращает пустую строку, если LLM недоступен/пустой ответ.
+    """
+    text_to_process = raw_text[:limit]
+
+    messages = [
+        {"role": "system", "content": DOC_README_PROMPT},
+        {"role": "user", "content": text_to_process},
+    ]
+
+    request_payload = {
+        "messages": messages,
+        "model": get_llm_model(ctx),
+        "stream": False,
+        "options": {"temperature": 0.1},
+    }
+
+    data = await llm_request(request_payload)
+
+    response = ""
+    if isinstance(data, dict):
+        if isinstance(data.get("message"), dict) and data["message"].get("content"):
+            response = data["message"]["content"]
+        else:
+            response = data.get("content") or ""
+
+    logging.info(f"Doc README summary: {(response or '')[:200]}")
+    return (response or "").strip()
 
 
 async def extract_tags_from_text(ctx: UserContext, raw_text: str, limit: int = 4000) -> list:

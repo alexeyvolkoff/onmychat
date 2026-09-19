@@ -296,6 +296,35 @@ def recognition_enabled():
     cfg = str(SETTINGS.get("AUTO_RECOGNIZE_IMAGES", "true")).strip().lower()
     return cfg in ("1", "true", "yes", "on")
 
+
+def _llm_document_summary(ctx, raw: str, fn: str) -> str:
+    """LLM-выжимка документа (doc_readme prompt: '# Заголовок' + 2-3 предложения
+    на языке документа) для companion <файл>.Readme.md. Вызывается из синхронного
+    _index_one_sync (thread-pool), поэтому поднимает собственный event loop.
+    Возвращает '' при любой ошибке/недоступности LLM — вызывающий код тогда
+    падает на старое превью raw[:600]."""
+    try:
+        text = (raw or "").strip()
+        if not text:
+            return ""
+        sample = text[:8000]
+
+        async def _inner():
+            try:
+                return await core_service.summarize_document_for_readme(ctx, sample, limit=len(sample))
+            except Exception:
+                return ""
+
+        response = asyncio.run(_inner())
+        if not response:
+            return ""
+        if not response.startswith("#"):
+            response = core_service.format_readme_description(response, fallback_title=os.path.splitext(fn)[0])
+        return response or ""
+    except Exception as e_sum:
+        logging.warning(f"[rag/index] LLM companion summary failed: {e_sum}")
+        return ""
+
 def _rag_scope_tags(body_tags, scope: str) -> list:
     tags = [t for t in (body_tags or []) if t]
     if scope == "public" and "public" not in tags:
@@ -1014,7 +1043,11 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                         except Exception:
                             pass
                 if not summary_text:
-                    summary_text = raw.strip()[:600]
+                    # LLM-выжимка: '# Заголовок' + 2-3 предложения на языке документа.
+                    # Выполняется синхронно (мы в thread-pool) — поднимаем свой event loop.
+                    summary_text = _llm_document_summary(ctx, raw, fn)
+                    if not summary_text:
+                        summary_text = raw.strip()[:600]
                     try:
                         with open(readme_path, "w", encoding="utf-8") as rf:
                             rf.write(summary_text + "\n")
