@@ -297,6 +297,51 @@ def recognition_enabled():
     return cfg in ("1", "true", "yes", "on")
 
 
+def _force_regen_companion(force: bool, base_full: str, full: str, fn: str, ctx) -> bool:
+    """При force-переиндексации перегенерирует LLM-выжимку существующего
+    companion <файл>.Readme.md (только для конвертируемых текстовых документов:
+    pdf/pandoc/txt; изображения пропускаются — их описания делает vision).
+    Возвращает True, если companion существует и ветку надо пропустить."""
+    companion = os.path.isfile(base_full + ".Readme.md") or os.path.isfile(base_full + ".readme.md") \
+        or os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md")
+    if not companion:
+        return False
+    if not force:
+        return True
+    ext = os.path.splitext(fn)[1].lower().lstrip(".")
+    if ext in IMAGE_EXTS:
+        return True
+    # Переписываем именно авто-помощников (LLM либо сыре превью); содержимое
+    # companion остаётся как фолбек при недоступности LLM.
+    readme_path = base_full + ".Readme.md"
+    for candidate in (base_full + ".Readme.md", base_full + ".readme.md", full + ".Readme.md", full + ".readme.md"):
+        if os.path.isfile(candidate):
+            readme_path = candidate
+            break
+    try:
+        with open(readme_path, "r", encoding="utf-8", errors="replace") as rf:
+            old_summary = rf.read().strip()
+    except Exception:
+        old_summary = ""
+    try:
+        with open(full, "rb") as f:
+            raw = unified_memory.convert_bytes_to_text(f.read(), fn)
+    except Exception as e_conv:
+        logging.warning(f"[rag/index] companion regen: {fn}: {e_conv}")
+        return True
+    if not raw or not raw.strip():
+        return True
+    new_summary = _llm_document_summary(ctx, raw, fn)
+    if new_summary and new_summary.startswith("#") and new_summary != old_summary:
+        try:
+            with open(readme_path, "w", encoding="utf-8") as rf:
+                rf.write(new_summary + "\n")
+            logging.info(f"[rag/index] companion regenerated (force): {readme_path}")
+        except Exception as e_write:
+            logging.warning(f"[rag/index] companion regen write failed {readme_path}: {e_write}")
+    return True
+
+
 def _llm_document_summary(ctx, raw: str, fn: str) -> str:
     """LLM-выжимка документа (doc_readme prompt: '# Заголовок' + 2-3 предложения
     на языке документа) для companion <файл>.Readme.md. Вызывается из синхронного
@@ -1002,7 +1047,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             # У оригинального файла есть описание *.Readme.md — индексируем только
             # через ветку описания, чтобы не дублировать и не плодить лишние сущности.
             base_full = os.path.splitext(full)[0]
-            if os.path.isfile(base_full + ".Readme.md") or os.path.isfile(base_full + ".readme.md") or os.path.isfile(full + ".Readme.md") or os.path.isfile(full + ".readme.md"):
+            if _force_regen_companion(force, base_full, full, fn, ctx):
                 return None
 
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
