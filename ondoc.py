@@ -49,6 +49,7 @@ class Builder:
         self.paras = []
         self.runs = []      # [st, ed, ts]
         self.images = []
+        self.tables = {}    # tableId -> ITable
 
     def _st(self):
         return len("".join(self.chars))
@@ -70,6 +71,50 @@ class Builder:
         self.chars.append("\r")
         self.paras.append({"startIndex": self._st() - 1, "paragraphStyle": {}})
 
+    def add_table(self, rows):
+        """Emit a native docs table: DataStreamTreeTokenType markers plus an
+        ITable entry (cells carry inline \r paragraph + \n section break,
+        mirroring the docs-ui genEmptyTable shape)."""
+        rows = [r for r in rows if r]
+        if not rows:
+            return
+        cols = max(len(r) for r in rows)
+        for r in rows:
+            while len(r) < cols:
+                r.append("")
+        ST, RS, CS, CE, RE, TE = "\x1A", "\x1B", "\x1C", "\x1D", "\x0E", "\x0F"
+        tid = "tbl-" + uuid.uuid4().hex[:8]
+        table_rows = []
+        self.chars.append(ST)
+        for row in rows:
+            self.chars.append(RS)
+            cells = []
+            for cell in row:
+                self.chars.append(CS)
+                self.chars.append(cell)
+                self.chars.append("\r")
+                self.paras.append({"startIndex": self._st() - 1, "paragraphStyle": {}})
+                self.chars.append("\n")
+                self.chars.append(CE)
+                cells.append({})
+            self.chars.append(RE)
+            table_rows.append({"tableCells": cells, "trHeight": {"val": {"v": 22}, "hRule": 0}})
+        self.chars.append(TE)
+        content_w = PAGE["width"] - 2 * MARGIN
+        self.tables[tid] = {
+            "tableId": tid,
+            "tableRows": table_rows,
+            "tableColumns": [{"size": {"type": 1, "width": {"v": int(content_w / cols / 0.75)}}} for _ in range(cols)],
+            "align": 0, "indent": {"v": 0}, "textWrap": 0,
+            "position": {
+                "positionH": {"relativeFrom": 0, "posOffset": 0},
+                "positionV": {"relativeFrom": 0, "posOffset": 0},
+            },
+            "dist": {"distB": 0, "distL": 0, "distR": 0, "distT": 0},
+            "size": {"type": 0, "width": {"v": int(content_w / 0.75)}},
+            "cellMargin": {"start": {"v": 8}, "end": {"v": 8}, "top": {"v": 4}, "bottom": {"v": 4}},
+        }
+
     def snapshot(self):
         data = "".join(self.chars) or "\r\n"
         if not data.endswith("\r\n"):
@@ -88,6 +133,8 @@ class Builder:
             "paragraphs": self.paras,
             "sectionBreaks": [{"startIndex": len(data) - 1}],
         }
+        if self.tables:
+            body["tables"] = dict(self.tables)
         snap = {
             "id": "omd-doc-" + uuid.uuid4().hex[:12],
             "title": self.title,
@@ -176,6 +223,14 @@ def inline_odt(node, ts=None):
             out.append(("\t", dict(cur)))
         elif t == "line-break":
             out.append((" ", dict(cur)))
+        elif t == "image":
+            href = _at(n, "href") or _at(n, "*href") or ""
+            base = href.split("/")[-1].split("#")[-1].strip()
+            if base:
+                out.append(("[[omd-img:" + base + "]]", dict(cur)))
+                if n.tail:
+                    out.append((n.tail, dict(cur)))
+                return
         else:
             c = dict(cur)
             lo = _at(n, "style-name").lower()
@@ -240,6 +295,7 @@ def od_list(node, b):
 
 
 def od_table(node, b):
+    grid = []
     for tr in node:
         if _tg(tr) != "table-row":
             continue
@@ -247,9 +303,10 @@ def od_table(node, b):
         for tc in tr:
             if _tg(tc) != "table-cell":
                 continue
-            cells.append(" | ".join(t for t, _ in inline_odt(tc) if t).strip())
-        if cells:
-            b.add_runs([(" | ".join(cells) + " | ", {"fs": 11})], {"textStyle": {}})
+            cells.append(" ".join(t for t, _ in inline_odt(tc) if t).strip())
+        grid.append(cells)
+    if grid:
+        b.add_table(grid)
 
 
 # ---------------------------------------------------------------------- DOCX
