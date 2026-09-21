@@ -31,6 +31,19 @@ MARGIN = 72
 HEAD_SIZE = {1: 24, 2: 20, 3: 16, 4: 14, 5: 13, 6: 12}
 
 
+def _len_to_pt(raw):
+    """Convert odt length (in/cm/mm/pt/px/pc) to pt float; None when unknown."""
+    if not raw:
+        return None
+    m = re.match(r"([0-9.]+)\s*(in|cm|mm|pt|px|pc)?", raw.strip())
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = m.group(2) or "pt"
+    factor = {"in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "pt": 1.0, "px": 0.75, "pc": 12.0}.get(unit, 1.0)
+    return round(val * factor, 2)
+
+
 def _tg(node):
     return node.tag.split('}')[-1]
 
@@ -215,7 +228,7 @@ def parse_odt(path, b):
 def inline_odt(node, ts=None):
     out = []
     ts = dict(ts or {})
-    def walk(n, cur):
+    def walk(n, cur, parent=None):
         t = _tg(n)
         if t == "s":
             out.append((" " * max(1, int(_at(n, "c") or 1)), dict(cur)))
@@ -227,7 +240,22 @@ def inline_odt(node, ts=None):
             href = _at(n, "href") or _at(n, "*href") or ""
             base = href.split("/")[-1].split("#")[-1].strip()
             if base:
-                out.append(("[[omd-img:" + base + "]]", dict(cur)))
+                mk = "[[omd-img:" + base
+                fp = parent
+                if fp is not None:
+                    wpt = None
+                    hpt = None
+                    for akey, aval in fp.attrib.items():
+                        tail = akey.split('}')[-1]
+                        if tail == "width" and wpt is None:
+                            wpt = _len_to_pt(aval)
+                        elif tail == "height" and hpt is None:
+                            hpt = _len_to_pt(aval)
+                    if wpt:
+                        mk += "|w=" + str(wpt)
+                    if hpt:
+                        mk += "|h=" + str(hpt)
+                out.append((mk + "]]", dict(cur)))
                 if n.tail:
                     out.append((n.tail, dict(cur)))
                 return
@@ -241,7 +269,7 @@ def inline_odt(node, ts=None):
             if n.text:
                 out.append((n.text, dict(c)))
             for ch in n:
-                        walk(ch, c)
+                        walk(ch, c, n)
         if n.tail:
             out.append((n.tail, dict(cur)))
     if node.text:
