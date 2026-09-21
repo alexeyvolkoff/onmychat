@@ -3576,3 +3576,8 @@ async def qa_match(data: dict):
     return memory_index.qa_match_query(question, min_score, top_k, include_score)
 
 
+
+
+# --- On My Document: native Univer docs converter (odt/docx -> univer.json) ---
+import ondoc as _ondoc_module
+_ondoc_module.mount(app)
