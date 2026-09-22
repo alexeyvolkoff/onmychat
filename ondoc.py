@@ -465,6 +465,76 @@ def parse_docx(path, b):
     with ZipFile(path) as z:
         content = z.read("word/document.xml").decode("utf-8", "replace")
         collect_images(z, b, "word/media/")
+
+        # part XML cache while the zip is open (headers/footers/rels)
+        part_xml = {}
+        for nm in z.namelist():
+            if nm.startswith("word/header") or nm.startswith("word/footer") or nm.startswith("word/_rels/"):
+                try:
+                    part_xml[nm] = z.read(nm).decode("utf-8", "replace")
+                except Exception:
+                    pass
+
+    RELS = {}
+    try:
+        for rel in ET.fromstring(part_xml.get("word/_rels/document.xml.rels", "")):
+            try:
+                rid = rel.get("Id")
+                tgt = rel.get("Target") or ""
+                if rid and ("media/" in tgt or "image" in tgt.lower() or "header" in tgt.lower() or "footer" in tgt.lower()):
+                    RELS[rid] = tgt.split("/")[-1]
+            except Exception:
+                continue
+    except Exception:
+        RELS = {}
+
+    NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    NS_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    NS_WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+
+    def drawing_to_marker(drawing):
+        """w:drawing -> [[omd-img:..|w=..|h=..|anchor=..|pos=..]] text."""
+        wp = drawing.find(NS_WP + "inline")
+        if wp is None:
+            wp = drawing.find(NS_WP + "anchor")
+        if wp is None:
+            return None
+        blip = wp.find(".//" + NS_A + "blip")
+        if blip is None:
+            return None
+        rid = blip.get(NS_R + "embed") or ""
+        base = RELS.get(rid)
+        if not base:
+            return None
+        anchor = "as-char"
+        if wp is not None and wp.tag.endswith("anchor"):
+            anchor = "paragraph"
+        ext = wp.find(NS_WP + "extent")
+        wpt = hpt = None
+        if ext is not None:
+            try:
+                wpt = round(int(ext.get("cx")) / 12700.0, 2)
+                hpt = round(int(ext.get("cy")) / 12700.0, 2)
+            except Exception:
+                wpt = hpt = None
+        mk = "[[omd-img:" + base
+        if anchor != "as-char":
+            mk += "|anchor=" + anchor
+            ph = wp.find(NS_WP + "positionH")
+            if ph is not None:
+                al = ph.find(NS_WP + "align")
+                val = (al.text or "").strip().lower() if al is not None else ""
+                off = ph.find(NS_WP + "posOffset")
+                if not val and off is not None:
+                    val = (off.text or "").strip()
+                if val in ("left", "right"):
+                    mk += "|pos=" + val
+        if wpt:
+            mk += "|w=" + str(wpt)
+        if hpt:
+            mk += "|h=" + str(hpt)
+        return mk + "]]"
+
     root = ET.fromstring(content)
     body = None
     for el in root:
@@ -513,6 +583,12 @@ def parse_docx(path, b):
             if tag == W + "r":
                 rpr = child.find(W + "rPr")
                 ts = dict(ts_of(rpr, default_ts))
+                drawing = child.find(W + "drawing")
+                if drawing is not None:
+                    mk = drawing_to_marker(drawing)
+                    if mk:
+                        segs.append((mk, ts))
+                        continue
                 text = "".join(t.text or "" for t in child.findall(W + "t"))
                 br = child.find(W + "br")
                 if br is not None:
@@ -542,6 +618,7 @@ def parse_docx(path, b):
         default_ts = {}
         ppr = p.find(W + "pPr")
         lvl = 0
+        para_style = {}
         if ppr is not None:
             st = ppr.find(W + "pStyle")
             val = st.get(W + "val", "") if st is not None else ""
@@ -550,7 +627,12 @@ def parse_docx(path, b):
             if lvl == 0 and (val or "").lower() == "title":
                 lvl = 1
             lsty = ppr.find(W + "numPr")
-            listmark = "• " if lsty is not None else ""
+            listmark = "\u2022 " if lsty is not None else ""
+            jc = ppr.find(W + "jc")
+            if jc is not None:
+                jval = str(jc.get(W + "val") or "").lower()
+                if jval in ("center", "right", "left", "both", "justify"):
+                    para_style["horizontalAlign"] = {"left": 1, "center": 2, "right": 3, "both": 4, "justify": 4}[jval]
             prpr = ppr.find(W + "rPr")
             if prpr is not None:
                 default_ts = ts_of(prpr)
@@ -560,27 +642,117 @@ def parse_docx(path, b):
         if lvl:
             fs = HEAD_SIZE.get(lvl, 16)
             segs = [(t, dict(ts, bl=1, fs=fs)) for t, ts in segs]
-            b.add_runs(segs, {"headingId": f"Heading {lvl}", "textStyle": {"bl": 1, "fs": fs}})
+            stl = {"headingId": f"Heading {lvl}", "textStyle": {"bl": 1, "fs": fs}}
+            if para_style.get("horizontalAlign"):
+                stl["horizontalAlign"] = para_style["horizontalAlign"]
+            b.add_runs(segs, stl)
         else:
             segs0 = [s for s in segs if s[0]]
             if segs0:
-                b.add_runs(segs0, {}, listmark)
+                b.add_runs(segs0, para_style or None, listmark)
             else:
-                b.add_mark()
+                b.add_mark(para_style or None)
 
     def docx_table(node, b):
+        grid = []
         for tr in node.findall(W + "tr"):
             cells = []
             for tc in tr.findall(W + "tc"):
-                cells.append("".join(t.text or "" for t in tc.iter(W + "t")))
-            if cells:
-                b.add_runs([(" | ".join(cells) + " | ", {"fs": 11})], {"textStyle": {}})
+                lines = []
+                for tpc in tc.findall(W + "p"):
+                    lines.append(" ".join(x.strip() for x, _ in runs_of(tpc, {}) if x))
+                cells.append(" ".join(l for l in lines if l).strip())
+            grid.append(cells)
+        if grid:
+            b.add_table(grid)
 
     for el in body:
         if el.tag == W + "p":
             paragraph(el)
         elif el.tag == W + "tbl":
             docx_table(el, b)
+
+    # header/footer parts (word/headerN.xml etc) via sectPr refs
+    sroot = None
+    try:
+        sroot = ET.fromstring(content)
+    except Exception:
+        sroot = None
+    if sroot is not None:
+        sect = None
+        for sx in sroot.iter(W + "sectPr"):
+            sect = sx
+            break
+
+        def _part_text(rid):
+            name = RELS.get(rid)
+            if not name:
+                return ""
+            try:
+                pxml = part_xml.get("word/" + name, "")
+            except Exception:
+                pxml = ""
+            if not pxml:
+                return ""
+            try:
+                proot = ET.fromstring(pxml)
+            except Exception:
+                return ""
+            prels = {}
+            try:
+                relxml = part_xml.get("word/_rels/" + name + ".rels", "")
+                for rel in ET.fromstring(relxml):
+                    try:
+                        prels[rel.get("Id")] = (rel.get("Target") or "").split("/")[-1]
+                    except Exception:
+                        pass
+            except Exception:
+                prels = {}
+            A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+            WP2 = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+            R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+            mark_text = ""
+            for tmp in proot.iter():
+                tmp_tg = tmp.tag.split('}')[-1]
+                if tmp_tg == "t":
+                    if tmp.text:
+                        mark_text_pieces = None
+                else:
+                    mark_text_pieces = None
+            out = []
+            for el in proot.iter():
+                tg2 = el.tag.split('}')[-1]
+                if tg2 == "t":
+                    if el.text:
+                        out.append(el.text)
+                elif tg2 == "drawing":
+                    wp = el.find(WP2 + "inline") or el.find(WP2 + "anchor")
+                    blip = el.find(".//" + A_NS + "blip")
+                    if blip is not None:
+                        img_base = prels.get(blip.get(R_NS + "embed") or "")
+                        if img_base:
+                            ext = wp.find(WP2 + "extent") if wp is not None else None
+                            mk = "[[omd-img:" + img_base
+                            if ext is not None:
+                                try:
+                                    mk += "|w=" + str(round(int(ext.get("cx")) / 12700.0, 2))
+                                    mk += "|h=" + str(round(int(ext.get("cy")) / 12700.0, 2))
+                                except Exception:
+                                    pass
+                            mk += "]]"
+                            out.append(mk)
+            return " ".join(x.strip() for x in out if x.strip()).strip()
+
+        if sect is not None:
+            for ref in sect:
+                tg3 = ref.tag.split('}')[-1]
+                rid = ref.get(NS_R + "id")
+                if not rid:
+                    continue
+                if tg3 == "headerReference":
+                    b.header_text = b.header_text or _part_text(rid)
+                elif tg3 == "footerReference":
+                    b.footer_text = b.footer_text or _part_text(rid)
     return b
 
 
