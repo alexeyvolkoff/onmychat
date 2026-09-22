@@ -58,6 +58,8 @@ def _at(node, key):
 class Builder:
     def __init__(self, title):
         self.title = title
+        self.header_text = ""
+        self.footer_text = ""
         self.chars = []
         self.paras = []
         self.runs = []      # [st, ed, ts]
@@ -80,9 +82,9 @@ class Builder:
         self.chars.append("\r")
         self.paras.append({"startIndex": self._st() - 1, "paragraphStyle": para_style or {}})
 
-    def add_mark(self):
+    def add_mark(self, para_style=None):
         self.chars.append("\r")
-        self.paras.append({"startIndex": self._st() - 1, "paragraphStyle": {}})
+        self.paras.append({"startIndex": self._st() - 1, "paragraphStyle": para_style or {}})
 
     def add_table(self, rows):
         """Emit a native docs table: DataStreamTreeTokenType markers plus an
@@ -159,6 +161,10 @@ class Builder:
             },
             "settings": {},
         }
+        snap["settings"] = {}
+        if getattr(self, "header_text", "") or getattr(self, "footer_text", ""):
+            snap["settings"]["omdHeader"] = self.header_text
+            snap["settings"]["omdFooter"] = self.footer_text
         if self.images:
             snap["notes"] = {"omdImages": self.images}
         return snap
@@ -166,6 +172,75 @@ class Builder:
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TEXT_NS = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+# --- odt styles registry (module scope, reset per doc) ----------------------
+_OSTYLES = {}
+_PARENTS = {}
+
+
+def _load_od_styles(xml_text):
+    """Merge one XML source into the registry (called per document part)."""
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return
+    for st in root.iter():
+        if _tg(st) != "style":
+            continue
+        name = _at(st, "name")
+        if not name:
+            continue
+        props = {}
+        for child in st:
+            ct = _tg(child)
+            if ct == "text-properties":
+                if _at(child, "font-weight") == "bold":
+                    props["bl"] = 1
+                if _at(child, "font-style") == "italic":
+                    props["it"] = 1
+                col = _at(child, "color")
+                if col and col not in ("none",):
+                    props["cl"] = col
+                strike = _at(child, "font-strike")
+                if strike in ("single", "true", "1"):
+                    props["st"] = {"s": 1}
+                uline = _at(child, "text-underline-style")
+                if uline and uline != "none":
+                    props["ul"] = {"s": 1}
+            elif ct == "paragraph-properties":
+                al = _at(child, "text-align")
+                if al == "center":
+                    props["align"] = 2
+                elif al == "right":
+                    props["align"] = 3
+                elif al == "justify":
+                    props["align"] = 4
+                elif al == "left":
+                    props["align"] = 1
+            elif ct == "graphic-properties":
+                wrap = _at(child, "wrap")
+                hpos = _at(child, "horizontal-pos")
+                if wrap:
+                    props["wrap"] = wrap
+                if hpos:
+                    props["hpos"] = hpos
+        _OSTYLES[name] = props
+        p_name = _at(st, "parent-style-name")
+        if p_name:
+            _PARENTS[name] = p_name
+
+
+def _resolve_style(style_name, seen=None):
+    if not style_name:
+        return {}
+    merged = {}
+    parent = _PARENTS.get(style_name)
+    if parent and parent != style_name and (seen is None or len(seen) < 8):
+        seen = (seen or set()) | {style_name}
+        merged = _resolve_style(parent, seen)
+    merged.update(_OSTYLES.get(style_name, {}))
+    return merged
+
+
 
 
 def collect_images(zdir, b, prefix):
@@ -193,6 +268,32 @@ def parse_odt(path, b):
     with ZipFile(path) as z:
         content = z.read("content.xml").decode("utf-8", "replace")
         collect_images(z, b, "Pictures/")
+        try:
+            styles_xml = z.read("styles.xml").decode("utf-8", "replace")
+        except KeyError:
+            styles_xml = ""
+    _load_od_styles(content)
+    _load_od_styles(styles_xml)
+    # headers/footers from the first master page in styles.xml
+    try:
+        sroot = ET.fromstring(styles_xml)
+    except Exception:
+        sroot = None
+    if sroot is not None:
+        for mp in sroot.iter():
+            if _tg(mp) != "master-page":
+                continue
+            header = ""
+            footer = ""
+            for k in mp:
+                if _tg(k) == "header":
+                    header = " ".join(x.strip() for x, _ in inline_odt(k) if x)
+                elif _tg(k) == "footer":
+                    footer = " ".join(x.strip() for x, _ in inline_odt(k) if x)
+            if header or footer:
+                b.header_text = header
+                b.footer_text = footer
+            break
     root = ET.fromstring(content)
     textroot = None
     for el in root:
@@ -208,10 +309,14 @@ def parse_odt(path, b):
         tg = _tg(node)
         if tg == "p":
             segs = [s for s in inline_odt(node) if s[0]]
+            sprops = _resolve_style(_at(node, "style-name"))
+            para_style = {}
+            if sprops.get("align"):
+                para_style["horizontalAlign"] = sprops["align"]
             if segs:
-                b.add_runs(segs)
+                b.add_runs(segs, para_style or None)
             else:
-                b.add_mark()
+                b.add_mark(para_style or None)
         elif tg == "h":
             od_heading(node, b)
         elif tg == "list":
@@ -241,8 +346,18 @@ def inline_odt(node, ts=None):
             base = href.split("/")[-1].split("#")[-1].strip()
             if base:
                 mk = "[[omd-img:" + base
-                fp = parent
+                fp = parent if parent is not None else n.getparent()
                 if fp is not None:
+                    anchor = _at(fp, "anchor-type") or _at(n, "anchor-type") or ""
+                    gprops = _resolve_style(_at(fp, "style-name"))
+                    wrap = gprops.get("wrap") or _at(fp, "wrap") or ""
+                    hpos = gprops.get("hpos") or _at(fp, "horizontal-pos") or ""
+                    if anchor and anchor != "as-char":
+                        mk += "|anchor=" + anchor
+                    if wrap:
+                        mk += "|wrap=" + wrap
+                    if hpos:
+                        mk += "|pos=" + hpos
                     wpt = None
                     hpt = None
                     for akey, aval in fp.attrib.items():
@@ -261,7 +376,14 @@ def inline_odt(node, ts=None):
                 return
         else:
             c = dict(cur)
-            lo = _at(n, "style-name").lower()
+            sname = _at(n, "style-name")
+            sp = _resolve_style(sname)
+            if sp.get("bl"): c["bl"] = 1
+            if sp.get("it"): c["it"] = 1
+            if sp.get("st") and "st" not in c: c["st"] = sp["st"]
+            if sp.get("ul") and "ul" not in c: c["ul"] = sp["ul"]
+            if sp.get("cl") and "cl" not in c: c["cl"] = {"rgb": sp["cl"]}
+            lo = sname.lower()
             if "bold" in lo or "strong" in lo:
                 c["bl"] = 1
             if "italic" in lo:
