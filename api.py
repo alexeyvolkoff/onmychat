@@ -1319,6 +1319,15 @@ async def rag_status_endpoint(request: Request, path: str = "", docId: str = "")
     return {"path": raw or _norm_doc_path(raw), **entry}
 
 
+@app.get("/indexer/from_crawl")
+async def indexer_from_crawl_endpoint(request: Request, url: str = ""):
+    """Легаси-вызов из C++-ноды/устаревшего приложения (from_crawl). Полноценная
+    crawl-индексация на этом бэкенде не настроена — отвечаем безопасным 200,
+    чтобы нода не спамила 404 в логах."""
+    return {"ok": True, "indexed": 0, "failed": 0, "action": "ignored",
+            "note": "from_crawl indexing not configured", "url": url}
+
+
 @app.post("/rag/delete")
 async def rag_delete_endpoint(request: Request):
     """Удаление документа/потоков из индекса (source — itemPath/URL/docId)."""
