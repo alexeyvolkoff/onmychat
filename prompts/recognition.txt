@@ -8,11 +8,15 @@ Required Output Format:
 Guidelines:
 1. Title: Start with '# ' followed by a specific title (e.g., '# Maspalomas Sand Dunes, Gran Canaria' or '# Family Dinner at Waterfront Restaurant').
 2. Body: Exactly 2 to 3 sentences long, packed with factual details:
-   - Specific place or recognizable landmark (correlating visual cues with folder name and GPS coordinates).
+   - Specific place or recognizable landmark (correlating visual cues with folder name and the provided Location).
    - Main subject, people/activities, and key objects with their arrangement.
    - Any visible text verbatim (OCR), signs, logos, or license plates.
    - Lighting, time of day, and weather conditions.
-3. Constraints:
+3. Location handling (ANTI-HALLUCINATION, strictly enforced):
+   - When a "Location (reverse geocoded from GPS)" field is present, treat it as the definitive place: name that city/country and do not invent any other location.
+   - Raw GPS numbers alone do NOT name a place. If no readable "Location" field is provided, never name a city, country, or monument anywhere (no guesses from language, signage, or appearance).
+   - When the place is unknown, describe only the visible scene and say nothing about country/city.
+4. Constraints:
    - English language. Preserve original proper names.
    - Separate the '# Title' from the body with exactly one blank line.
    - No bullet points, no numbered lists, no conversational filler (never say "This photo shows" or "In the image").

@@ -1141,7 +1141,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             if not img_bytes:
                 return None
             folder_name = os.path.basename(os.path.dirname(full))
-            annotation = await core_service.recognize_image_readme(
+            annotation, geo_place = await core_service.recognize_image_readme(
                 ctx, img_bytes, title=fn, folder_name=folder_name
             )
             if not annotation:
@@ -1152,6 +1152,10 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 ai_tags = await core_service.extract_tags_from_text(ctx, annotation)
             except Exception as e:
                 logging.warning(f"[rag/index] recognise tags error {fn}: {e}")
+            if geo_place:
+                place_tokens = [t.strip("\"'.,() ") for t in re.split(r"[,/]", geo_place)]
+                place_tokens = [t for t in place_tokens if len(t) >= 3 and t.isalpha()]
+                ai_tags = sorted(set(ai_tags) | set(place_tokens))
             try:
                 readme_path = base_full + ".Readme.md"
                 with open(readme_path, "w", encoding="utf-8") as f:

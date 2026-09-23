@@ -4453,6 +4453,67 @@ async def recognize_image_annotation(ctx: UserContext, img: bytes, prompt: str =
 
     return response.strip()
 
+_ISO3166_CC = {
+    "UA": "Ukraine", "RU": "Russia", "BY": "Belarus", "PL": "Poland", "CZ": "Czech Republic",
+    "SK": "Slovakia", "HU": "Hungary", "RO": "Romania", "MD": "Moldova", "BG": "Bulgaria",
+    "GE": "Georgia", "AM": "Armenia", "AZ": "Azerbaijan", "KZ": "Kazakhstan", "UZ": "Uzbekistan",
+    "KG": "Kyrgyzstan", "EE": "Estonia", "LV": "Latvia", "LT": "Lithuania", "FI": "Finland",
+    "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "DE": "Germany", "AT": "Austria",
+    "CH": "Switzerland", "LI": "Liechtenstein", "IT": "Italy", "ES": "Spain", "PT": "Portugal",
+    "FR": "France", "BE": "Belgium", "NL": "Netherlands", "LU": "Luxembourg", "GB": "United Kingdom",
+    "IE": "Ireland", "GR": "Greece", "TR": "Turkey", "IL": "Israel", "AE": "United Arab Emirates",
+    "QA": "Qatar", "SA": "Saudi Arabia", "IN": "India", "TH": "Thailand", "VN": "Vietnam",
+    "ID": "Indonesia", "MY": "Malaysia", "SG": "Singapore", "JP": "Japan", "KR": "South Korea",
+    "CN": "China", "TW": "Taiwan", "HK": "Hong Kong", "PH": "Philippines", "AU": "Australia",
+    "NZ": "New Zealand", "CA": "Canada", "US": "United States", "MX": "Mexico", "BR": "Brazil",
+    "AR": "Argentina", "CL": "Chile", "PE": "Peru", "CO": "Colombia", "ZA": "South Africa",
+    "EG": "Egypt", "MA": "Morocco", "TN": "Tunisia", "RS": "Serbia", "HR": "Croatia",
+    "SI": "Slovenia", "ME": "Montenegro", "BA": "Bosnia and Herzegovina", "MK": "North Macedonia",
+    "AL": "Albania", "IS": "Iceland",
+}
+
+_GEO_REVERSE_CACHE: dict = {}
+
+
+def reverse_geocode_coords(lat: float, lon: float) -> str:
+    """Offline реверс-геокодинг координат → 'City, Region, Country'.
+
+    Использует reverse_geocoder (вшитый датасет городов GeoNames, без сети).
+    Возвращает пустую строку, если место не резолвится.
+    """
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return ""
+    key = (round(lat, 4), round(lon, 4))
+    if key in _GEO_REVERSE_CACHE:
+        return _GEO_REVERSE_CACHE[key]
+    try:
+        import reverse_geocoder as _rg
+        r = _rg.search(key)[0] or {}
+        city = (r.get("name") or "").strip()
+        region = (r.get("admin1") or "").strip()
+        cc = (r.get("cc") or "").strip()
+        country = _ISO3166_CC.get(cc, cc)
+        place = ", ".join(p for p in (city, region, country) if p)
+    except Exception as e:
+        logging.warning(f"[geocode] reverse lookup error ({lat}, {lon}): {e}")
+        place = ""
+    _GEO_REVERSE_CACHE[key] = place
+    return place
+
+
+def gps_to_location(gps_coords: str) -> str:
+    """'48.62299, 22.29563' → 'Uzhhorod, Zakarpattia, Ukraine' (или пусто)."""
+    if not gps_coords:
+        return ""
+    try:
+        lat_s, lon_s = gps_coords.split(",")
+        lat = float(lat_s.strip())
+        lon = float(lon_s.strip())
+    except Exception:
+        return ""
+    return reverse_geocode_coords(lat, lon)
+
+
 def extract_image_exif_metadata(img_bytes: bytes) -> dict:
     """Извлекает дату/время, GPS координаты и модель камеры из EXIF метаданных изображения."""
     meta = {}
@@ -4573,11 +4634,12 @@ async def recognize_image_readme(
     """
     Vision-аннотация для авто-индексации фотографий:
     - Извлекает EXIF (дата, GPS, устройство) и скейлит изображение через prepare_image_for_vision
+    - Резолвит GPS-координаты в читаемое место (offline reverse geocoding)
     - Передает в модель контекст (название альбома/папки, время, местоположение)
-    - Возвращает структурированное описание: # Заголовок\n\n2-3 емких фактологических предложения
+    - Возвращает (README-строка, geo_place): описание + распознанное место ('City, Region, Country')
     """
     if not img:
-        return ""
+        return "", ""
     try:
         import base64 as _b64
 
@@ -4585,13 +4647,15 @@ async def recognize_image_readme(
         img_b64 = _b64.b64encode(scaled_bytes).decode("utf-8")
     except Exception as e:
         logging.error(f"[recognize_image_readme] prepare error: {e}")
-        return ""
+        return "", ""
 
     # Метаданные: объединяем переданные параметры с извлеченными из EXIF
     eff_folder = (folder_name or "").strip()
     eff_date = (date_time or meta.get("date_time", "")).strip()
     eff_gps = (gps_coords or meta.get("gps_coords", "")).strip()
     device_info = f"{meta.get('make', '')} {meta.get('model', '')}".strip()
+
+    geo_place = gps_to_location(eff_gps) if eff_gps else ""
 
     context_lines = []
     if eff_folder:
@@ -4601,7 +4665,9 @@ async def recognize_image_readme(
     if eff_date:
         context_lines.append(f"Date & Time: {eff_date}")
     if eff_gps:
-        context_lines.append(f"Location coordinates (GPS): {eff_gps}")
+        context_lines.append(f"GPS coordinates: {eff_gps}")
+    if geo_place:
+        context_lines.append(f"Location (reverse geocoded from GPS): {geo_place}")
     if device_info:
         context_lines.append(f"Camera: {device_info}")
 
@@ -4638,10 +4704,10 @@ async def recognize_image_readme(
             response = str(data)
     except Exception as e:
         logging.error(f"[recognize_image_readme] LLM error: {e}")
-        return ""
+        return "", geo_place
 
     fallback_title = os.path.splitext(title)[0] if title else (eff_folder or "Photo")
-    return format_readme_description(response, fallback_title=fallback_title)
+    return format_readme_description(response, fallback_title=fallback_title), geo_place
 
 # Суммаризация документа
 
