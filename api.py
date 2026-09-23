@@ -260,6 +260,8 @@ def _norm_doc_path(path: str) -> str:
 
 
 RAG_INDEX_STATUS = {}   # path → {"indexed": n, "pending": n, "failed": n, "lastError": ..., "done": bool}
+_RAG_SINGLE_LOCKS: dict = {}   # phys path → asyncio.Lock: не даём запускать две индексации одного файла одновременно
+_RAG_SETTLE_SECONDS = 1.5      # пауза перед индексацией одиночного файла: ждём, пока перестанет меняться (нода шлёт /rag/index на каждый чанк записи)
 
 # Расширения изображений. На OnMyDisk картинка может иметь ассоциированный файл
 # описания <файл>.Readme.md — тогда в индекс вносится ОРИГИНАЛЬНЫЙ файл, а не описание.
@@ -1209,7 +1211,34 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         local_root = source_path
         if os.path.isfile(local_root):
-            result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
+            if not force:
+                # C++ нода шлёт /rag/index на КАЖДЫЙ чанк HomeWrite при активной
+                # выгрузке фото с телефона. Индексировать начатый файл нельзя —
+                # будет "image truncated". Ждём "успокоения": пока размер/mtime
+                # файла меняются (ещё идёт запись) — пропускаем запрос. Пауза
+                # одиночного цикла задаётся в _RAG_SETTLE_SECONDS.
+                try:
+                    st1 = os.stat(local_root)
+                    await asyncio.sleep(_RAG_SETTLE_SECONDS)
+                    st2 = os.stat(local_root)
+                except OSError:
+                    st1 = st2 = None
+                if st1 and st2 and (st1.st_size != st2.st_size or st1.st_mtime_ns != st2.st_mtime_ns):
+                    status["done"] = True
+                    logging.info(f"[rag/index] {doc_root} skipped: file still being written, waiting for upload to settle")
+                    return
+                lock = _RAG_SINGLE_LOCKS.setdefault(local_root, asyncio.Lock())
+                if lock.locked():
+                    status["done"] = True
+                    logging.info(f"[rag/index] {doc_root} skipped: index already in progress")
+                    return
+                try:
+                    async with lock:
+                        result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
+                finally:
+                    _RAG_SINGLE_LOCKS.pop(local_root, None)
+            else:
+                result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
             if result:
                 if result["action"] == "indexed":
                     status["indexed"] += 1
