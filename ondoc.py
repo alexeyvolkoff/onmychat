@@ -809,3 +809,142 @@ def mount(app: FastAPI):
             raise HTTPException(status_code=422, detail="device-local path is required")
         snapshot = convert_path(body.path)
         return {"ok": True, "path": body.path, "snapshot": snapshot}
+
+
+import openpyxl  # noqa: E402
+import json as _json  # noqa: E402
+from datetime import datetime, date, time  # noqa: E402
+
+
+# ---------------------------------------------------------------- XLSX
+
+
+def xlsx_to_snapshot(path, max_rows=500, max_cols=60):
+    """XLSX -> Univer sheets snapshot v1: cell values (datetimes as ISO),
+    bold/italic/underline/strike + alignment styling, merged ranges."""
+    import datetime as _dt
+    import json as _json
+    wb = openpyxl.load_workbook(path, data_only=True)
+    styles = {}
+    sheets = {}
+
+    def ensure_style(ts):
+        key = _json.dumps(ts, sort_keys=True)
+        if key in _BY_KEY:
+            return _STYLES_KEY.get(key)
+        pass
+
+    # small helpers via local structures
+    style_map = {}
+    style_ids = {}
+
+    def _ensure_style_key(ts):
+        key = _json.dumps(ts, sort_keys=True)
+        if key not in style_ids:
+            sid = 'st' + str(len(style_map) + 1)
+            style_ids[key] = sid
+            style_map[sid] = ts
+        return style_ids[key]
+
+    sheets_out = {}
+    order = []
+    for ws_idx, ws in enumerate(wb.worksheets):
+        if ws_idx >= 8:
+            break
+        sid = 'sheet-' + str(ws_idx + 1)
+        row_data = {}
+        n_rows = 0
+        n_cols = 0
+        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=min(ws.max_row or 0, max_rows), max_col=min(ws.max_column or 0, max_cols))):
+            cell_data = {}
+            for c_idx, cell in enumerate(row):
+                v = cell.value
+                if v is None or v == "":
+                    continue
+                if isinstance(v, (datetime, date, time)):
+                    v = v.isoformat(' ', 'seconds') if isinstance(v, datetime) else v.isoformat()
+                ts = {}
+                font = getattr(cell, 'font', None)
+                if font is not None:
+                    if font.bold:
+                        ts['bl'] = 1
+                    if font.italic:
+                        ts['it'] = 1
+                    if font.underline and getattr(font.underline, 'underline', None):
+                        ts['ul'] = {'s': 1}
+                    if font.strike is True:
+                        ts['st'] = {'s': 1}
+                align = getattr(cell, 'alignment', None)
+                if align is not None and getattr(align, 'horizontal', None):
+                    ha_val = str(align.horizontal).lower()
+                    if ha_val in ('left', 'center', 'right', 'justify'):
+                        ts['ha'] = {'left': 1, 'center': 2, 'right': 3, 'justify': 4}[ha_val]
+                sid_style = None
+                if ts:
+                    sid_style = _ensure_style_key(ts)
+                cell_data[str(c_idx)] = {'v': v}
+                if sid_style:
+                    cell_data[str(c_idx)]['s'] = sid_style
+                n_cols = max(n_cols, c_idx + 1)
+                n_rows = r_idx + 1
+            if cell_data:
+                row_data[str(r_idx)] = cell_data
+
+        merged = []
+        for rng in (ws.merged_cells.ranges or []):
+            merged.append([rng.min_row - 1, rng.min_col - 1, rng.max_row - 1, rng.max_col - 1])
+        sheets_out[str(sid)] = {
+            'id': sid,
+            'name': ws.title or ('Sheet' + str(ws_idx + 1)),
+            'columnCount': (n_cols or 12) + 6,
+            'rowCount': (n_rows or 30) + 8,
+            'defaultRowHeight': 19.2,
+            'defaultColumnWidth': 72,
+            'cellData': row_data,
+            'rowData': {},
+            'columnData': {},
+            'status': 0,
+            'zoomRatio': 1,
+            'merges': merged,
+            'overflow': False,
+            'rightToLeft': 0,
+            'rowHeader': {'width': 46},
+            'rowCount_i': n_rows,
+            'columnIndexCount': n_cols
+        }
+        order.append(sid)
+
+    return {
+        'id': 'omd-sheet-' + (Path(path).stem or 'wb')[:16],
+        'title': Path(path).stem or 'Workbook',
+        'kind': 'sheet',
+        'sheetOrder': order,
+        'sheetCount': len(sheets_out),
+        'styles': style_map,
+        'sheets': sheets_out,
+        'locale': 'en-US'
+    }
+
+
+def convert_xlsx_snapshot(path):
+    return xlsx_to_snapshot(path)
+
+
+def convert_path(path: str) -> dict:
+    real = _resolve_local(path)
+    if not real:
+        raise HTTPException(status_code=404, detail=f"file not found on node: {path}")
+    filename = os.path.basename(real)
+    ext = Path(real).suffix.lower()
+    if ext == ".xlsx":
+        snap = xlsx_to_snapshot(real)
+        snap['settings'] = {'omdKind': 'sheet'}
+        return snap
+    b = Builder(filename)
+    if ext == ".odt":
+        parse_odt(real, b)
+    elif ext == ".docx":
+        parse_docx(real, b)
+    else:
+        raise HTTPException(status_code=415, detail=f"unsupported format: {ext} (odt, docx, xlsx)")
+    return b.snapshot()
