@@ -811,7 +811,6 @@ def mount(app: FastAPI):
         return {"ok": True, "path": body.path, "snapshot": snapshot}
 
 
-import openpyxl  # noqa: E402
 import json as _json  # noqa: E402
 from datetime import datetime, date, time  # noqa: E402
 
@@ -822,7 +821,7 @@ from datetime import datetime, date, time  # noqa: E402
 def xlsx_to_snapshot(path, max_rows=500, max_cols=60):
     """XLSX -> Univer sheets snapshot v1: cell values (datetimes as ISO),
     bold/italic/underline/strike + alignment styling, merged ranges."""
-    import datetime as _dt
+    import openpyxl  # lazy: a missing dependency does not crash the service
     import json as _json
     wb = openpyxl.load_workbook(path, data_only=True)
     styles = {}
