@@ -801,7 +801,13 @@ def convert_path(path: str) -> dict:
 def mount(app: FastAPI):
     @app.get("/ondoc/health")
     async def ondoc_health():
-        return {"ok": True, "formats": ["odt", "docx"]}
+        formats = ["odt", "docx"]
+        try:
+            import openpyxl  # noqa: F401
+            formats.append("xlsx")
+        except Exception:
+            pass
+        return {"ok": True, "formats": formats}
 
     @app.post("/ondoc/convert")
     async def ondoc_convert(body: ConvertBody, request: Request):
