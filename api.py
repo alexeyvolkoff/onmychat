@@ -1017,21 +1017,35 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 if not force and unified_memory.has_document(orig_doc_id, source_stamp=last_modified):
                     return {"action": "skip", "doc_id": orig_doc_id}
                 image_preview = ""
+                geo_tokens = []
                 ext = os.path.splitext(target)[1].lower().lstrip(".")
                 if ext in IMAGE_EXTS:
                     try:
                         with open(orig_full, "rb") as f:
-                            image_preview = _image_preview_data_url(f.read())
+                            img_bytes = f.read()
+                        image_preview = _image_preview_data_url(img_bytes)
+                        try:
+                            exif = core_service.extract_image_exif_metadata(img_bytes)
+                            gps = (exif.get("gps_coords") or "").strip()
+                            if gps:
+                                geo_place = core_service.gps_to_location(gps)
+                                if geo_place:
+                                    geo_tokens = [t.strip() for t in re.split(r"[,/]", geo_place)]
+                                    geo_tokens = [t for t in geo_tokens if len(t) >= 3 and t.replace(" ", "").isalpha()]
+                                    geo_tokens += core_service.geo_place_localized(geo_place)
+                        except Exception as e_geo:
+                            logging.warning(f"[rag/index] geo tags error {orig_full}: {e_geo}")
                     except Exception as e:
                         logging.warning(f"[rag/index] preview error {orig_full}: {e}")
+                merged_tags = sorted(set(tags) | set(geo_tokens))
                 try:
                     n = unified_memory.chunk_and_index_document(
-                        raw, document_id=orig_doc_id, owner=owner, tags=tags,
+                        raw, document_id=orig_doc_id, owner=owner, tags=merged_tags,
                         title=target, source_stamp=last_modified, image_preview=image_preview,
                     )
                     try:
                         unified_memory.upsert_memory_card(
-                            raw, document_id=orig_doc_id, owner=owner, tags=tags,
+                            raw, document_id=orig_doc_id, owner=owner, tags=merged_tags,
                             title=target, relevance="permanent", image_preview=image_preview,
                         )
                     except Exception as e_mem:
