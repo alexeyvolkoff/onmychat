@@ -581,10 +581,12 @@ def delete_memory_card(mem_id=None, document_id=None):
 
 _INDEXED_DOCS_CACHE_TTL = 30.0
 _indexed_docs_cache: dict = {"valid": False, "ts": 0.0, "data": None}
+_cards_cache: dict = {"valid": False, "ts": 0.0, "data": None}
 
 
 def _invalidate_indexed_docs_cache():
     _indexed_docs_cache["valid"] = False
+    _cards_cache["valid"] = False
 
 
 def _indexed_docs_cache_fresh() -> bool:
@@ -595,9 +597,15 @@ def _indexed_docs_cache_fresh() -> bool:
 
 
 def get_all_memory_cards(owner=None) -> list:
-    """Возвращает все карточки памяти (для листинга в UI)."""
+    """Возвращает все карточки памяти (для листинга в UI).
+
+    owner=None (UI-листинг) — результат кэшируется с TTL 30s + инвалидация
+    при записи, обходить можно опциональным owner (см. get_indexed_documents).
+    """
     coll = get_collection()
     try:
+        if owner is None and _cards_cache["valid"] and (_cards_cache["ts"] + _INDEXED_DOCS_CACHE_TTL) > time.time():
+            return [dict(c) for c in _cards_cache["data"]]
         where = {"type": {"$eq": "memory_card"}}
         if owner:
             where = {"$and": [where, {"owner": {"$eq": owner}}]}
@@ -616,6 +624,10 @@ def get_all_memory_cards(owner=None) -> list:
                 **meta,
                 "tags": [k[2:] for k in meta if k.startswith("t_")],
             })
+        if owner is None:
+            _cards_cache["valid"] = True
+            _cards_cache["ts"] = time.time()
+            _cards_cache["data"] = out
         return out
     except Exception as e:
         logger.error(f"[unified] get_all_memory_cards error: {e}")

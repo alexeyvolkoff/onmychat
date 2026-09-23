@@ -2182,32 +2182,62 @@ async def get_memory(collection: str, mem_id: str, omd_key: str | None = Depends
 
 # ─── On-device memory cards (unified ChromaDB, только владелец AI-ноды) ─────
 
+DEVICE_CARD_TEXT_LIMIT = 300
+
+# resolve_companion_readme / _folder_cover_exists делают filesystem-проверки на
+# каждую карточку каждого запроса /api/device_memory; короткий TTL-кэш (30с,
+# согласован с TTL кэша списков в unified_memory) снимает эту нагрузку.
+_RESPONSE_SIDE_CACHE_TTL = 30.0
+_readme_cache: dict = {}
+_folder_cover_cache: dict = {}
+
+
+def _readme_cache_get(doc_id: str):
+    entry = _readme_cache.get(doc_id)
+    if entry and (time.time() - entry["ts"]) < _RESPONSE_SIDE_CACHE_TTL:
+        return entry["value"]
+    try:
+        value = unified_memory.resolve_companion_readme(doc_id)
+    except Exception:
+        value = (None, None)
+    _readme_cache[doc_id] = {"ts": time.time(), "value": value}
+    return value
+
+
 def _folder_cover_exists(doc_id: str) -> bool:
     """Есть ли файл-обложка (folder.jpg/cover.jpg и т.п.) у папки на диске."""
     if not doc_id:
         return False
+    entry = _folder_cover_cache.get(doc_id)
+    if entry and (time.time() - entry["ts"]) < _RESPONSE_SIDE_CACHE_TTL:
+        return entry["value"]
+    found = False
     try:
-        readme_path, _ = unified_memory.resolve_companion_readme(doc_id)
+        readme_path, _ = _readme_cache_get(doc_id)
     except Exception:
         readme_path = None
-    if not readme_path:
-        return False
-    folder_dir = os.path.dirname(readme_path)
-    for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
-        if os.path.isfile(os.path.join(folder_dir, cname)):
-            return True
-    return False
+    if readme_path:
+        folder_dir = os.path.dirname(readme_path)
+        for cname in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "folder.jpeg", "cover.jpeg"):
+            if os.path.isfile(os.path.join(folder_dir, cname)):
+                found = True
+                break
+    _folder_cover_cache[doc_id] = {"ts": time.time(), "value": found}
+    return found
 
 
 DEVICE_CARD_TEXT_LIMIT = 300
 
 
-def _device_cards_response():
+def _device_cards_response(offset: int = 0, limit: int = None):
     """Карточки on-device: memory_card + проиндексированные документы (группы file_chunk).
 
     Внимание: base64-превью НЕ отдаём в списке (4611+ фото = сотни МБ JSON и
     зависание клиента). Вместо них — флаг hasPreview, а сами картинки клиент
     подгружает лениво через /api/device_memory_thumb?path=...
+
+    offset/limit: постраничная выдача (устойчивее в медленной P2P-сети, чем
+    один мегабайтный ответ). Без limit — прежний полный ответ (совместимость).
     """
     cards = unified_memory.get_all_memory_cards() + unified_memory.get_indexed_documents()
     out = []
@@ -2225,7 +2255,7 @@ def _device_cards_response():
             cur_text = (c.get("text") or "").strip()
             cur_title = (c.get("title") or "").strip()
             if not cur_text or cur_text in (cur_title, f"# {cur_title}"):
-                readme_path, readme_content = unified_memory.resolve_companion_readme(doc_id)
+                readme_path, readme_content = _readme_cache_get(doc_id)
                 if readme_content:
                     c["text"] = readme_content
                     c["annotation"] = readme_content
@@ -2264,19 +2294,35 @@ def _device_cards_response():
     non_folders = [c for c in out if not c.get("is_folder")]
     folders.sort(key=lambda c: c.get("created") or c.get("timestamp") or "", reverse=True)
     non_folders.sort(key=lambda c: c.get("created") or c.get("timestamp") or "", reverse=True)
-    return folders + non_folders
+    ordered = folders + non_folders
+    total = len(ordered)
+    if limit is None:
+        return {"memories": ordered, "total": total, "offset": 0, "hasMore": False}
+    offset = max(0, int(offset or 0))
+    limit = max(1, int(limit or 0))
+    page = ordered[offset:offset + limit]
+    return {"memories": page, "total": total, "offset": offset, "hasMore": offset + limit < total}
 
 
 @app.get("/api/device_memory")
-async def device_memory_endpoint(request: Request, omd_key: str | None = Depends(get_omd_key)):
+async def device_memory_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(0, ge=0),  # 0 = весь список (совместимость со старым клиентом)
+):
     ctx = get_ctx(omd_key)
     if not is_private_mode(request, ctx):
-        return {"memories": []}
+        return {"memories": [], "total": 0, "offset": 0, "hasMore": False}
     try:
-        return {"memories": _device_cards_response()}
+        page = _device_cards_response(offset=offset, limit=limit or None)
     except Exception as e:
         logging.error(f"[device_memory] list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    if offset > 0 and not page["memories"]:
+        # Список съёжился (удаление/перезапуск) — мои страницы кончились
+        page["hasMore"] = False
+    return page
 
 
 @app.get("/api/device_memory_thumb")
