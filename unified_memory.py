@@ -58,6 +58,9 @@ RECENCY_WEIGHT         = float(SETTINGS.get("RECENCY_WEIGHT", "0.35"))
 RECENCY_HALF_LIFE_DAYS = float(SETTINGS.get("RECENCY_HALF_LIFE_DAYS", "30"))
 
 # ─── Embedding model ──────────────────────────────────────────────────────────
+# Мультиязычная модель: связывает запросы/теги на разных языках (напр. «Ужгород»
+# ↔ "Uzhhorod"). Смените через `EMBEDDING_MODEL` в config.ini.
+EMBEDDING_MODEL = SETTINGS.get("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
 
 _model: Optional[SentenceTransformer] = None
 
@@ -71,8 +74,8 @@ def get_model() -> SentenceTransformer:
             or os.environ.get("OMD_FORCE_CPU") == "true"
         ):
             device = "cpu"
-        logger.info(f"[unified] Loading SentenceTransformer on {device}...")
-        _model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+        logger.info(f"[unified] Loading SentenceTransformer {EMBEDDING_MODEL} on {device}...")
+        _model = SentenceTransformer(EMBEDDING_MODEL, device=device)
     return _model
 
 

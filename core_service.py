@@ -4474,6 +4474,153 @@ _ISO3166_CC = {
 
 _GEO_REVERSE_CACHE: dict = {}
 
+# Национально-языковые имена стран (ISO → [официальное, украинское и т.п.]).
+# Используются, чтобы в теги попадали кириллические названия мест.
+_ISO3166_NATIVE = {
+    "UA": ["Ukraine", "Україна"],
+    "RU": ["Россия", "Росія"],
+    "BY": ["Беларусь", "Білорусь"],
+    "PL": ["Polska", "Польща"],
+    "CZ": ["Česko", "Чехія"],
+    "SK": ["Slovensko", "Словаччина"],
+    "HU": ["Magyarország", "Угорщина"],
+    "RO": ["România", "Румунія"],
+    "MD": ["Moldova", "Молдова"],
+    "BG": ["България", "Болгарія"],
+    "GE": ["საქართველო", "Грузія"],
+    "AM": ["Հայաստան", "Вірменія"],
+    "AZ": ["Azərbaycan", "Азербайджан"],
+    "KZ": ["Қазақстан", "Казахстан"],
+    "UZ": ["Oʻzbekiston", "Узбекистан"],
+    "KG": ["Кыргызстан", "Киргизстан"],
+    "EE": ["Eesti", "Естонія"],
+    "LV": ["Latvija", "Латвія"],
+    "LT": ["Lietuva", "Литва"],
+    "FI": ["Suomi", "Фінляндія"],
+    "SE": ["Sverige", "Швеція"],
+    "NO": ["Norge", "Норвегія"],
+    "DK": ["Danmark", "Данія"],
+    "DE": ["Deutschland", "Німеччина"],
+    "AT": ["Österreich", "Австрія"],
+    "CH": ["Schweiz/Suisse/Svizzera", "Швейцарія"],
+    "LI": ["Liechtenstein", "Ліхтенштейн"],
+    "IT": ["Italia", "Італія"],
+    "ES": ["España", "Іспанія"],
+    "PT": ["Portugal", "Португалія"],
+    "FR": ["France", "Франція"],
+    "BE": ["België/Belgique", "Бельгія"],
+    "NL": ["Nederland", "Нідерланди"],
+    "LU": ["Luxembourg", "Люксембург"],
+    "GB": ["United Kingdom", "Велика Британія"],
+    "IE": ["Ireland", "Ірландія"],
+    "GR": ["Ελλάδα", "Греція"],
+    "TR": ["Türkiye", "Туреччина"],
+    "IL": ["ישראל", "Ізраїль"],
+    "AE": ["United Arab Emirates", "ОАЕ"],
+    "QA": ["Qatar", "Катар"],
+    "SA": ["السعودية", "Саудівська Аравія"],
+    "IN": ["India", "Індія"],
+    "TH": ["Thailand", "Таїланд"],
+    "VN": ["Việt Nam", "В'єтнам"],
+    "ID": ["Indonesia", "Індонезія"],
+    "MY": ["Malaysia", "Малайзія"],
+    "SG": ["Singapore", "Сінгапур"],
+    "JP": ["日本", "Японія"],
+    "KR": ["대한민국", "Південна Корея"],
+    "CN": ["中国", "Китай"],
+    "TW": ["臺灣", "Тайвань"],
+    "HK": ["香港", "Гонконг"],
+    "PH": ["Pilipinas", "Філіппіни"],
+    "AU": ["Australia", "Австралія"],
+    "NZ": ["New Zealand", "Нова Зеландія"],
+    "CA": ["Canada", "Канада"],
+    "US": ["United States", "США"],
+    "MX": ["México", "Мексика"],
+    "BR": ["Brasil", "Бразилія"],
+    "AR": ["Argentina", "Аргентина"],
+    "CL": ["Chile", "Чилі"],
+    "PE": ["Perú", "Перу"],
+    "CO": ["Colombia", "Колумбія"],
+    "ZA": ["South Africa", "ПАР"],
+    "EG": ["مصر", "Єгипет"],
+    "MA": ["المغرب", "Марокко"],
+    "TN": ["تونس", "Туніс"],
+    "RS": ["Србија", "Сербія"],
+    "HR": ["Hrvatska", "Хорватія"],
+    "SI": ["Slovenija", "Словенія"],
+    "ME": ["Црна Гора", "Чорногорія"],
+    "BA": ["Bosna i Hercegovina", "Боснія і Герцеговина"],
+    "MK": ["Северна Македонија", "Північна Македонія"],
+    "AL": ["Shqipëria", "Албанія"],
+    "IS": ["Ísland", "Ісландія"],
+}
+
+# Локализованные названия городов/регионов (ключ — латинское имя в нижнем
+# регистре из reverse_geocoder). Пополняется по мере появления новых мест.
+_GEO_CITY_NATIVE = {
+    "uzhhorod": ["Ужгород"],
+    "zakarpattia": ["Закарпаття", "Закарпатська область"],
+    "lviv": ["Львів"],
+    "lviv oblast": ["Львівська область"],
+    "kyiv": ["Київ"],
+    "odesa": ["Одеса"],
+    "kharkiv": ["Харків"],
+    "ternopil": ["Тернопіль"],
+    "ivano-frankivsk": ["Івано-Франківськ"],
+    "khmelnytskyi": ["Хмельницький"],
+    "vinnytsia": ["Вінниця"],
+    "mukachevo": ["Мукачево"],
+    "mukacheve": ["Мукачево"],
+    "berehove": ["Берегове"],
+    "khust": ["Хуст"],
+    "chop": ["Чоп"],
+    "budapest": ["Будапешт"],
+    "szada": ["Шада"],
+    "nyiregyhaza": ["Ньїредьгаза"],
+    "debrecen": ["Дебрецен"],
+    "kranj": ["Крань"],
+    "ljubljana": ["Любляна"],
+    "maribor": ["Марибор"],
+    "celje": ["Целє"],
+    "koper": ["Копер"],
+    "osijek": ["Осієк"],
+    "zagreb": ["Загреб"],
+    "split": ["Спліт"],
+    "dubrovnik": ["Дубровник"],
+    "kosice": ["Кошіце", "Кошиці"],
+    "presov": ["Пряшів", "Прешов"],
+    "vienna": ["Відень"],
+    "graz": ["Грац"],
+    "salzburg": ["Зальцбург"],
+    "bratislava": ["Братислава"],
+    "prague": ["Прага"],
+    "warsaw": ["Варшава"],
+    "krakow": ["Краків"],
+}
+
+
+def geo_place_localized(place: str) -> list:
+    """Для 'Uzhhorod, Zakarpattia, Ukraine' → ['Ужгород', 'Закарпаття', 'Україна', ...].
+
+    Добавляет национально-языковые имена частей места (для кириллического поиска).
+    """
+    if not place:
+        return []
+    parts = [p.strip() for p in place.split(",") if p.strip()]
+    if not parts:
+        return []
+    out = []
+    for part in parts[:-1]:
+        aliases = _GEO_CITY_NATIVE.get(part.lower())
+        if aliases:
+            out.extend(a for a in aliases if a.lower() != part.lower())
+    country = parts[-1].strip()
+    for _, names in _ISO3166_NATIVE.items():
+        if country.lower() == names[0].lower():
+            out.extend(n for n in names[1:] if n)
+            break
+    return sorted(set(out))
+
 
 def reverse_geocode_coords(lat: float, lon: float) -> str:
     """Offline реверс-геокодинг координат → 'City, Region, Country'.

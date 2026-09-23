@@ -1153,8 +1153,9 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             except Exception as e:
                 logging.warning(f"[rag/index] recognise tags error {fn}: {e}")
             if geo_place:
-                place_tokens = [t.strip("\"'.,() ") for t in re.split(r"[,/]", geo_place)]
-                place_tokens = [t for t in place_tokens if len(t) >= 3 and t.isalpha()]
+                place_tokens = [t.strip() for t in re.split(r"[,/]", geo_place)]
+                place_tokens = [t for t in place_tokens if len(t) >= 3 and t.replace(" ", "").isalpha()]
+                place_tokens += core_service.geo_place_localized(geo_place)
                 ai_tags = sorted(set(ai_tags) | set(place_tokens))
             try:
                 readme_path = base_full + ".Readme.md"
