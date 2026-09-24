@@ -3071,8 +3071,17 @@ async def _perform_prompt_gen(ctx: UserContext,
         user_fun_prompt = (ctx.settings.get("fun_system_prompt") or "").strip()
         if user_fun_prompt:
             system_prompt += f"\n\n*Fun Guidelines:*\n{user_fun_prompt}"
+            personality_src = "fun_system_prompt"
         elif ctx.settings.get("system_prompt"):
             system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
+            personality_src = "system_prompt(fallback)"
+        else:
+            personality_src = "none"
+        logging.info(
+            f"[prompt] fun_mode: fun_system_prompt={'SET' if user_fun_prompt else 'EMPTY'} | "
+            f"personality_source={personality_src} | "
+            f"client_keys={sorted(ctx.settings.keys())}"
+        )
     else:
         if ctx.settings.get("system_prompt"):
             system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
