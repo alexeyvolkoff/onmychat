@@ -2485,7 +2485,6 @@ async def chat_endpoint(data: ChatInput):
     ctx = get_ctx(data.omd_key)
     if data.settings:
         ctx.settings.update(data.settings)
-        user_context.save_profile_snapshot(ctx.user_id, data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
         instruction=(
@@ -2596,7 +2595,6 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
         provided_settings.pop("assistant_avatar", None)
         logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         ctx.settings.update(provided_settings)
-        user_context.save_profile_snapshot(ctx.user_id, provided_settings)
         if provided_settings.get("defaultStorage"):
             ctx.storage = provided_settings["defaultStorage"]
     else:

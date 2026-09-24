@@ -57,64 +57,6 @@ def load_user_settings(**kwargs):
         "kb_id": DEFAULT_KB_ID
     }
 
-# === Профильный снэпшот настроек персонажа (резерв от клиентского GunDB) ===
-# Клиент шлёт настройки нестабильно: GunDB-релей может отваливаться, а localStorage
-# (mirror в chat-store.js) привязан к конкретному браузеру. Чтобы fun_system_prompt
-# и персона работали с любого устройства, бэкенд кэширует присланные настройки
-# по пользователю и подмешивает их, когда клиент присылает минимальный набор.
-
-import os as _os
-import json as _json
-
-PROFILE_SNAPSHOT_DIR = _os.path.join(USER_DATA_DIR, "profiles")
-
-_PROFILE_SNAPSHOT_KEYS = (
-    "fun_system_prompt", "system_prompt", "assistant_appearance",
-    "assistant_name", "assistant_title", "assistant_model", "style",
-    "name", "language", "defaultStorage", "content_mode",
-)
-
-def _profile_snapshot_path(user_id: str) -> str:
-    safe = "".join(c for c in (user_id or "anonymous") if c.isalnum() or c in "._-@") or "anonymous"
-    return _os.path.join(PROFILE_SNAPSHOT_DIR, f"{safe}.json")
-
-def save_profile_snapshot(user_id: str, settings: dict):
-    """Кэшируем только whitelist-поля персоны; крупные поля (avatar и пр.) не пишем."""
-    if not settings:
-        return
-    try:
-        snapshot = {k: settings[k] for k in _PROFILE_SNAPSHOT_KEYS if k in settings}
-        if not snapshot:
-            return
-        path = _profile_snapshot_path(user_id)
-        _os.makedirs(_os.path.dirname(path), exist_ok=True)
-        existing = {}
-        if _os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    existing = _json.load(f) or {}
-            except Exception:
-                existing = {}
-        existing.update(snapshot)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(existing, f, ensure_ascii=False)
-        _os.replace(tmp, path)
-    except Exception as e:
-        logging.warning(f"[profile] save snapshot {user_id}: {e}")
-
-def load_profile_snapshot(user_id: str) -> dict:
-    try:
-        path = _profile_snapshot_path(user_id)
-        if not _os.path.exists(path):
-            return {}
-        with open(path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception as e:
-        logging.warning(f"[profile] load snapshot {user_id}: {e}")
-        return {}
-
 def save_user_settings(ctx: UserContext):
     """No-op. Настройки теперь живут на клиенте."""
     pass
@@ -132,24 +74,19 @@ def get_context_by_account(account_id: str, storage: str = "", force_reload: boo
         # Могут быть и другие группы или список групп в будущем
         groups = [group] if group else []
         user_storage = storage or user_info.get("defaultStorage", "") or ""
-        settings = load_user_settings()
-        settings.update(load_profile_snapshot(username))
         return UserContext(
             type="omd", 
             user_id=username, 
             group=group,
             groups=groups,
-            settings=settings, 
+            settings=load_user_settings(), 
             history=[], 
             omd_key=account_id, 
             storage=user_storage,
             is_unlimited=(user_info.get("status") == "Unlimited")
         )
 
-    user_id = f"web_{account_id[:8]}"
-    settings = load_user_settings()
-    settings.update(load_profile_snapshot(user_id))
-    return UserContext(type="temp", user_id=user_id, settings=settings, history=[], omd_key=account_id, storage=storage)
+    return UserContext(type="temp", user_id=f"web_{account_id[:8]}", settings=load_user_settings(), history=[], omd_key=account_id, storage=storage)
 
 def get_user_info_from_token(account_id: str) -> dict | None:
     """Fetches the real user info from OMD gateway using the session/token."""
