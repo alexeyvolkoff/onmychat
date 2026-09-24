@@ -3072,10 +3072,9 @@ async def _perform_prompt_gen(ctx: UserContext,
         if user_fun_prompt:
             system_prompt += f"\n\n*Fun Guidelines:*\n{user_fun_prompt}"
             personality_src = "fun_system_prompt"
-        elif ctx.settings.get("system_prompt"):
-            system_prompt += "\n\n*Personality:*\n" + ctx.settings.get("system_prompt", "")
-            personality_src = "system_prompt(fallback)"
         else:
+            # В fun-режиме НЕ подставляем work-персонажа (дефолт "sales assistant") —
+            # он конфликтует с FUN_PREPHASE и тянет модель в саппортовый тон.
             personality_src = "none"
         logging.info(
             f"[prompt] fun_mode: fun_system_prompt={'SET' if user_fun_prompt else 'EMPTY'} | "
