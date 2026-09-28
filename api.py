@@ -1212,12 +1212,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         local_root = source_path
         if os.path.isfile(local_root):
+            fn = os.path.basename(local_root)
             if not force:
-                # C++ нода шлёт /rag/index на КАЖДЫЙ чанк HomeWrite при активной
-                # выгрузке фото с телефона. Индексировать начатый файл нельзя —
-                # будет "image truncated". Ждём "успокоения": пока размер/mtime
-                # файла меняются (ещё идёт запись) — пропускаем запрос. Пауза
-                # одиночного цикла задаётся в _RAG_SETTLE_SECONDS.
                 try:
                     st1 = os.stat(local_root)
                     await asyncio.sleep(_RAG_SETTLE_SECONDS)
@@ -1235,17 +1231,25 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     return
                 try:
                     async with lock:
-                        result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
+                        rec = await _maybe_recognize_image(local_root, fn, "")
+                        if rec is not None:
+                            result = rec
+                        else:
+                            result = await asyncio.to_thread(_index_one_sync, local_root, fn, "")
                 finally:
                     _RAG_SINGLE_LOCKS.pop(local_root, None)
             else:
-                result = await asyncio.to_thread(_index_one_sync, local_root, os.path.basename(local_root), "")
+                rec = await _maybe_recognize_image(local_root, fn, "")
+                if rec is not None:
+                    result = rec
+                else:
+                    result = await asyncio.to_thread(_index_one_sync, local_root, fn, "")
             if result:
-                if result["action"] == "indexed":
+                if result.get("action") == "indexed":
                     status["indexed"] += 1
-                elif result["action"] == "error":
+                elif result.get("action") == "error":
                     status["failed"] += 1
-                    status["lastError"] = result["error"]
+                    status["lastError"] = result.get("error")
             status["done"] = True
             logging.info(f"[rag/index] {doc_root} done: {status['indexed']} indexed, {status['failed']} failed")
             return
