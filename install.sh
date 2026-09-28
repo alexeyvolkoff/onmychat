@@ -182,6 +182,7 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=/opt/onmychat
 Environment="PATH=/opt/onmychat/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="TOKENIZERS_PARALLELISM=false"
 ExecStart=/opt/onmychat/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
