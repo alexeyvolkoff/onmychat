@@ -11,6 +11,8 @@ import os
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="multiprocessing.popen_fork")
 import logging
 
 # Suppress logging of DuplicateIDError and telemetry warnings from chromadb
