@@ -10,7 +10,10 @@ RESPONSE FORMAT:
 Line 1: <intent> or <intent>:<path_or_url>
 NO EXTRA CHARACTERS IN INTENT LINE. NO QUOTES. NO ASTERISKS.
 Line 2: Query: <search expression or 'none'>
-- When the intent is 'search' or 'explain' (or whenever factual information retrieval from knowledge base or internet is needed): formulate a concise, high-relevance search query. Extract core keywords, technical concepts, entities, timeframes, and conditions from the user's conversational input. Strip all conversational filler ("tell me about", "can you explain", "пожалуйста расскажи как", "мне интересно узнать"), greetings, and politeness markers. Keep terms in the same language as the user's request.
+- When the intent is 'search' or 'explain' (or whenever factual information retrieval from knowledge base or internet is needed): formulate a concise, high-relevance search query focusing strictly on semantic subjects, concepts, objects, entities, places, and timeframes.
+- STRIP ALL container and storage meta-words: "фотографии", "фото", "фотки", "photos", "файлы", "files", "документ", "документы", "documents", "хранилище", "storage", "диск", "папка", "folder", "мои", "my".
+- Strip all conversational filler ("tell me about", "can you explain", "пожалуйста расскажи как", "мне интересно узнать", "найди мне", "покажи"), greetings, and politeness markers.
+- For visual/object queries (photos, scenes), include key synonyms in both Russian and English (e.g. for "фотки котов" -> "коты кот кошка cat feline") to bridge multilingual embeddings and vision descriptions.
 - When the intent is 'chat', 'show', 'view', 'recognize', 'import', 'tools', or does not need search, output: 'Query: none'
 Line 3: Reason: <brief explanation>
 
@@ -217,37 +220,42 @@ Reason: Explicit template processing tool instruction
 
 - "Find my photos from the trip to Rome" ->
 search
-Query: my photos trip Rome
+Query: trip Rome поездка Рим
 Reason: Retrieval of user's own photos from storage
 
 - "Найди мои фотографии из поездки в Рим" ->
 search
-Query: мои фотографии поездка Рим
+Query: поездка Рим trip Rome
+Reason: Retrieval of user's own photos from storage
+
+- "Покажи фотки котиков в хранилище" ->
+search
+Query: коты кот кошка cat feline
 Reason: Retrieval of user's own photos from storage
 
 - "Покажи мои фотографии за июнь" ->
 search
-Query: фотографии июнь
+Query: июнь June
 Reason: User photo retrieval from own disk, not image generation
 
 - "Where is the file I created about the tax report?" ->
 search
-Query: tax report file
+Query: tax report налоги отчёт
 Reason: Retrieval of user's own file from knowledge base
 
 - "Найди документ, в котором я записывал идеи про проект" ->
 search
-Query: идеи проект документ
+Query: идеи проект project ideas
 Reason: Retrieval of user's own document from knowledge base
 
 - "Когда я последний раз редактировал файл отчёта?" ->
 search
-Query: файл отчёта последнее изменение
+Query: отчёт report
 Reason: Locating/recalling user's file and its modification time
 
 - "Найди мою папку с отпуском на море" ->
 search
-Query: папка отпуск море
+Query: отпуск море sea vacation
 Reason: Retrieval of user's own folder from storage
 
 - "Draw a photo of a sunset" ->

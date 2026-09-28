@@ -330,11 +330,33 @@ def search(
         logger.warning(f"[unified] metadata boost error: {e}")
 
     out.sort(key=lambda x: x["distance"])
+
+    # Relative score cutoff: filter out results that are much weaker than the top hit
+    if out:
+        best_score = max(r.get("relevance", 0.0) for r in out)
+        relative_ratio = float(SETTINGS.get("RAG_RELATIVE_RATIO", "0.65"))
+        min_rel_cutoff = best_score * relative_ratio
+        out = [r for r in out if r.get("relevance", 0.0) >= min_rel_cutoff]
+
     seen = set()
+    seen_doc_chunks = set()
     deduped = []
     for r in out:
         if r["id"] in seen:
             continue
+        doc_id = r.get("document_id")
+        rec_type = r.get("type")
+        chunk_id = r.get("chunk_id")
+        if doc_id:
+            # If doc_id already has a chunk:0, skip duplicate memory_card for that doc_id
+            if rec_type == "memory_card" and (doc_id, "0") in seen_doc_chunks:
+                continue
+            if rec_type == "file_chunk" and (doc_id, "card") in seen_doc_chunks and (chunk_id == "0" or chunk_id == 0):
+                continue
+            key = (doc_id, str(chunk_id) if chunk_id is not None else "card")
+            if key in seen_doc_chunks:
+                continue
+            seen_doc_chunks.add(key)
         seen.add(r["id"])
         deduped.append(r)
     if recent_first:
