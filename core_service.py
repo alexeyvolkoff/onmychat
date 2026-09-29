@@ -3004,7 +3004,11 @@ async def _perform_prompt_gen(ctx: UserContext,
         await asyncio.sleep(0.02)
         prep_prompt = (
             "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
-            "Do not guess. If nothing is found, reply with 'No information'."
+            "Do not guess. If nothing is found, reply with 'No information'.\n\n"
+            "FORMATTING RULES:\n"
+            "- For each relevant file or photo, ALWAYS explicitly include its full path (e.g. `/Data/Phone/IMG_20260926_175706.jpg`).\n"
+            "- Format as a clean list using standard Markdown: `• **/Data/Phone/IMG_20260926_175706.jpg**: Description`.\n"
+            "- NEVER nest Markdown header tags (`#`, `##`, `###`) inside list items or bullets."
         )
 
         rag_system_prompt = prep_prompt
