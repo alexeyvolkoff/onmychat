@@ -2885,8 +2885,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "The user asked a question. Use the *Known facts* / *Strict facts* injected into the system prompt "
                     "to answer. Base your answer ONLY on that material where it is relevant.\n\n"
                     "CITATION AND FORMATTING RULES:\n"
-                    "1. FILE CITATIONS: When listing or mentioning files, photos, or documents from the facts, ALWAYS include their FULL PATHS (e.g. `/Data/Phone/IMG_20260926_175706.jpg`) in the text. This allows the UI to render clickable image/file badges with previews.\n"
-                    "2. MARKDOWN INTEGRITY: Keep formatting clean and readable. NEVER place Markdown header tags (`#`, `##`, `###`) inside list bullet items (do NOT write `• # Title:` or `- ## Title:`). Use section headers on their own line above lists (e.g. `### Section Name`), and use standard bold text for item names within lists (e.g. `• **/Data/Phone/IMG_...jpg** — description`).\n"
+                    "1. FILE CITATIONS: When listing or mentioning files, photos, or documents from the facts, ALWAYS include their EXACT FILENAME (e.g. `IMG_20260926_175706.jpg`), NOT the folder path. The UI will automatically turn filenames into interactive photo cards with previews.\n"
+                    "2. MARKDOWN INTEGRITY: Keep formatting clean and readable. NEVER place Markdown header tags (`#`, `##`, `###`) inside list bullet items (do NOT write `• # Title:` or `- ## Title:`). Use section headers on their own line above lists (e.g. `### Section Name`), and use standard bold text for item names within lists (e.g. `• **IMG_...jpg** — description`).\n"
                     "3. ACCURACY: If the material does not actually answer the question, say so plainly. Do not invent links or ungrounded facts."
                 )
                 llm_message = search_query if (prompt.startswith("/") and search_query) else prompt

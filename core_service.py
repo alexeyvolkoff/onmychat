@@ -2682,22 +2682,26 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         for m in filtered_knowledge:
             text = m.get("text", "") if isinstance(m, dict) else str(m)
             if text:
-                # Ограничиваем длину аннотации — длинные тексты съедают контекст
-                if len(text) > 300:
-                    text = text[:297] + "..."
-                facts.append(f"• {text}")
                 doc_id = m.get("document_id") if isinstance(m, dict) else None
+                clean_text = re.sub(r'^\s*#+\s*', '', text).strip()
+                if len(clean_text) > 300:
+                    clean_text = clean_text[:297] + "..."
+                fn = doc_id.split("/")[-1] if doc_id else (m.get("title") if isinstance(m, dict) else "")
+                fn = re.sub(r'^\s*#+\s*', '', fn).strip() if fn else ""
+                if fn:
+                    facts.append(f"• [File: {fn}] {clean_text}")
+                else:
+                    facts.append(f"• {clean_text}")
+
                 if doc_id:
                     key = f"provided:{doc_id}"
                     if key not in sources_map:
-                        # Настоящий путь/URL открываем, личное имя файла — некликабельный источник
                         clickable = doc_id.startswith("/") or doc_id.startswith("http")
-                        # Для заметок (user:note:* без пути) показываем название карточки,
-                        # а не сырой nonce-ид (user:note:1789058719272)
                         card_title = ((m.get("title") or "").strip() if isinstance(m, dict) else "")
+                        card_title = re.sub(r'^\s*#+\s*', '', card_title).strip()
                         if not card_title and isinstance(m, dict):
-                            card_title = (m.get("text") or "").strip()[:48]
-                        src_title = card_title if card_title else doc_id.split("/")[-1]
+                            card_title = clean_text[:48]
+                        src_title = fn if (fn and "." in fn) else (card_title or fn or doc_id.split("/")[-1])
                         sources_map[key] = {
                             "title":       src_title,
                             "owner":       ctx.user_id or user_context.node_owner(),
@@ -2758,29 +2762,34 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             for r in db_results:
                 rec_type  = r.get("type", "")
                 doc_id    = r.get("document_id", "")
-                title     = r.get("title", doc_id.split("/")[-1] if doc_id else "")
+                raw_title = r.get("title", doc_id.split("/")[-1] if doc_id else "")
+                title     = re.sub(r'^\s*#+\s*', '', raw_title).strip()
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
+                fn        = doc_id.split("/")[-1] if doc_id else title
+                fn        = re.sub(r'^\s*#+\s*', '', fn).strip()
+
+                raw_text   = (r.get("text") or "").strip()
+                clean_text = re.sub(r'^\s*#+\s*', '', raw_text).strip()
 
                 if rec_type == "file_chunk":
-                    # путь сохраняем в факте — по нему открывается источник в чате,
-                    # текст чанка даёт модели реальный материал для ответа
-                    chunk_text = (r.get("text") or "").strip()
-                    line = f"• [From file {title}]: {doc_id}" if doc_id else f"• [From file {title}]"
-                    if chunk_text:
-                        line += f"\n  {chunk_text[:400]}"
+                    line = f"• [File: {fn}]" if fn else "• [File]"
+                    if clean_text:
+                        line += f"\n  {clean_text[:400]}"
                     facts.append(line)
                 else:
-                    facts.append(f"• {r['text']}")
+                    if fn:
+                        facts.append(f"• [File: {fn}] {clean_text[:400]}")
+                    else:
+                        facts.append(f"• {clean_text[:400]}")
 
                 if doc_id:
                     key = f"{owner_val}:{doc_id}"
                     if key not in sources_map:
-                        # Личные импорты без реального пути некликабельны:
-                        # настоящий путь/URL открываем, иначе — 500 при попытке открыть.
                         clickable = doc_id.startswith("/") or doc_id.startswith("http")
                         full_path = doc_id if doc_id.startswith("/") else ""
+                        src_title = fn if (fn and "." in fn) else (title or fn)
                         sources_map[key] = {
-                            "title":       title,
+                            "title":       src_title,
                             "owner":       owner_val,
                             "clickable":   clickable,
                             "document_id": doc_id,
@@ -3006,8 +3015,8 @@ async def _perform_prompt_gen(ctx: UserContext,
             "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
             "Do not guess. If nothing is found, reply with 'No information'.\n\n"
             "FORMATTING RULES:\n"
-            "- For each relevant file or photo, ALWAYS explicitly include its full path (e.g. `/Data/Phone/IMG_20260926_175706.jpg`).\n"
-            "- Format as a clean list using standard Markdown: `• **/Data/Phone/IMG_20260926_175706.jpg**: Description`.\n"
+            "- For each relevant file or photo, ALWAYS explicitly include its exact filename (e.g. `IMG_20260926_175706.jpg`), NOT the folder path.\n"
+            "- Format as a clean list using standard Markdown: `• **filename.jpg**: Description`.\n"
             "- NEVER nest Markdown header tags (`#`, `##`, `###`) inside list items or bullets."
         )
 
@@ -3050,6 +3059,8 @@ async def _perform_prompt_gen(ctx: UserContext,
 
         # Инжект фактов и источников в system prompt
         if strict_fact:
+            # Strip any accidental heading marks inside bullet points (e.g. '• # Title' -> '• Title')
+            strict_fact = re.sub(r'([•\-\*]\s*)#+\s*', r'\1', strict_fact)
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
 
         yield {"status": "typing"}
