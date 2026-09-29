@@ -2663,7 +2663,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "/recognize": "recognize", "/detect": "recognize",
                 "/think": "think",
                 "/explain": "explain",
-                "/search": "search", "/research": "search",
+                "/search": "search",
+                "/explore": "explore", "/exlore": "explore", "/research": "explore",
                 "/tools": "tools",
                 "/docs": "tools",
                 "/doc": "tools",
@@ -2679,7 +2680,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     intent = mapped_intent
                     raw_intent = f"Explicit command: {intent}"
                     cmd_arg = prompt[len(prefix):].strip()
-                    if mapped_intent in ("search", "explain", "think"):
+                    if mapped_intent in ("search", "explore", "explain", "think"):
                         search_query = cmd_arg if cmd_arg else prompt
                     break
             
@@ -2710,6 +2711,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 "explain": "thinking",
                 "think": "thinking",
                 "search": "searching",
+                "explore": "searching",
                 "recognize": "thinking",
                 "import": "learning",
                 "tools": "executing",
@@ -2765,7 +2767,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 intent = "think"
             elif prompt.startswith("/explain"):
                 intent = "explain"
-            elif prompt.startswith(("/search", "/research")):
+            elif prompt.startswith(("/explore", "/exlore", "/research")):
+                intent = "explore"
+            elif prompt.startswith("/search"):
                 intent = "search"
         
             restricted_intents = ["tools", "doc"]
@@ -2786,7 +2790,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 #          return
 
             logging.info(f"Check intent: {check_intent}")
-            if check_intent in ["tools", "search", "explain", "think"]:
+            if check_intent in ["tools", "search", "explore", "explain", "think"]:
                  # Пока ищем в unified_memory — статус thinking
                  status_msg = "executing" if check_intent == "tools" else "thinking"
                  logging.info(f"Yielding {status_msg} status")
@@ -2869,12 +2873,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 llm_message = prompt
                 # [LEGACY HISTORY] save_user_message removed
 
-            elif intent == "explain" or intent == "think" or intent == "search":
+            elif intent in ("explain", "think", "search", "explore"):
                 # Единый RAG-пайплайн: внутренний поиск + web-fallback выполняются
                 # внутри _perform_prompt_gen через inject_facts (факты попадают в system prompt).
                 if not search_query:
                     search_query = prompt
-                    for pfx in ("/research", "/search", "/explain", "/think"):
+                    for pfx in ("/explore", "/exlore", "/research", "/search", "/explain", "/think"):
                         if prompt.lower().startswith(pfx):
                             search_query = prompt[len(pfx):].strip()
                             break

@@ -1208,9 +1208,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     
     # List of known slash commands to exclude from path detection
     slash_commands = {
-        "/doc", "/mcp", "/generate", "/generate", "/sign", "/help", "/forget", "/forget_all", 
+        "/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", 
         "/chat", "/code", "/import", "/show", "/view", "/imagine", "/learn", 
-        "/recognize", "/detect", "/think", "/explain", "/search", "/research",  "/tools"
+        "/recognize", "/detect", "/think", "/explain", "/search", "/explore", "/exlore", "/research",  "/tools"
     }
     
     for p in raw_paths:
@@ -2951,7 +2951,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     b64_image = None
     
     # Internal flags
-    is_rag = intent in ["explain", "think", "search"]
+    is_rag = intent in ["explain", "think", "search", "explore"]
 
     # History is derived from provided_history or managed via frontend OrbitDB sync.
     if chat == "default":
@@ -3722,7 +3722,7 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
         return "chat", default_prompt
 
     first_line = lines[0].strip().lower()
-    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "think", "tools", "doc", "generate"]
+    allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "explore", "think", "tools", "doc", "generate"]
     
     base_intent = "chat"
     raw_arg = ""
@@ -3766,7 +3766,7 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
             break
 
     # If no Query: line matched and intent is a search/RAG intent, fallback to default_prompt
-    if not query and intent in ("explain", "search", "think"):
+    if not query and intent in ("explain", "search", "explore", "think"):
         query = default_prompt
 
     return intent, query
@@ -5001,7 +5001,10 @@ async def search_web(ctx: UserContext, query: str) -> str:
 
     # 1. DDGS library (primp, lightweight, no Chromium)
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
 
         def _ddg_text():
             with DDGS() as d:
@@ -5022,22 +5025,28 @@ async def search_web(ctx: UserContext, query: str) -> str:
     except Exception as e:
         logging.warning(f"[search] DDGS failed: {e}")
 
-    # 2. Fallback: lite.duckduckgo HTML via aiohttp
+    # 2. Fallback: lite.duckduckgo HTML via POST
     try:
         import aiohttp
-        url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote_plus(query)}"
-        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+        url = "https://lite.duckduckgo.com/lite/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        post_data = {"q": query}
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            async with session.post(url, data=post_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status != 200:
                     logging.warning(f"[search] lite failed: HTTP {resp.status}")
                     return "No results found."
                 html = await resp.text()
         # Parse result links + snippets from the lite table layout
         import re
-        links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*class="result-link"[^>]*>(.*?)</a>', html)
+        links = re.findall(r'<a[^>]+href=[\'"](https?://[^\'"]+)[\'"][^>]*class=[\'"]result-link[\'"][^>]*>(.*?)</a>', html)
         if not links:
-            links = re.findall(r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', html)
+            links = re.findall(r'<a[^>]+class=[\'"]result-link[\'"][^>]*href=[\'"](https?://[^\'"]+)[\'"][^>]*>(.*?)</a>', html)
+        if not links:
+            links = re.findall(r'<a[^>]+href=[\'"](https?://[^\'"]+)[\'"][^>]*>(.*?)</a>', html)
         snippets = [re.sub(r"<[^>]+>", "", s).strip() for s in re.findall(r"<td[^>]*>(.*?)</td>", html)]
         lines = []
         for href, title in links[:12]:
