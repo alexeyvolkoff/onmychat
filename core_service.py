@@ -3714,12 +3714,18 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
     Parses intent classification output from LLM.
     Returns (intent, search_query).
     """
-    if not raw_response:
+    def _storage_keyword_fallback():
+        p_lower = default_prompt.lower()
+        if any(k in p_lower for k in ("хранилищ", "файл", "документ", "фотк", "фотограф", "диск", "папк")) and any(a in p_lower for a in ("найди", "поищи", "покажи", "где", "есть ли", "find", "search", "where")):
+            return "explore", default_prompt
         return "chat", default_prompt
+
+    if not raw_response or not raw_response.strip():
+        return _storage_keyword_fallback()
 
     lines = [line.strip() for line in raw_response.strip().split("\n") if line.strip()]
     if not lines:
-        return "chat", default_prompt
+        return _storage_keyword_fallback()
 
     first_line = lines[0].strip().lower()
     allowed_intents = ["show", "view", "explain", "recognize", "import", "chat", "search", "explore", "think", "tools", "doc", "generate"]
@@ -3727,12 +3733,29 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
     base_intent = "chat"
     raw_arg = ""
     for allowed in allowed_intents:
-        if first_line.startswith(allowed):
+        if first_line.startswith(allowed) or f"intent: {allowed}" in first_line or f"intent is {allowed}" in first_line:
             base_intent = allowed
-            if ":" in lines[0]:
+            if ":" in lines[0] and not first_line.startswith("intent:"):
                 parts = lines[0].split(":", 1)
                 raw_arg = parts[1].strip()
             break
+
+    # If first line didn't match, check other lines for intent
+    if base_intent == "chat":
+        for l in lines:
+            ll = l.strip().lower()
+            for allowed in allowed_intents:
+                if ll.startswith(allowed) or f"intent: {allowed}" in ll or f"intent is {allowed}" in ll:
+                    base_intent = allowed
+                    break
+            if base_intent != "chat":
+                break
+
+    # If still chat, check for strong storage/file keywords
+    if base_intent == "chat":
+        kw_intent, _ = _storage_keyword_fallback()
+        if kw_intent != "chat":
+            base_intent = kw_intent
 
     # Backward compatibility: map legacy 'doc' to 'tools'
     if base_intent == "doc":
@@ -3748,8 +3771,6 @@ def parse_intent_and_query(raw_response: str, default_prompt: str = "") -> tuple
         if not is_in_prompt:
             logging.info(f"[parse_intent] Stripping hallucinated path '{raw_arg}' from intent '{base_intent}'")
             raw_arg = ""
-
-
 
     if raw_arg and base_intent in ("recognize", "import", "tools"):
         intent = f"{base_intent}:{raw_arg}"
@@ -3776,12 +3797,12 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     chat = chat or "default"
     active_intent_prompt = get_prompt("intent.txt") or INTENT_PROMPT
     system_prompt = (
-        f"{active_intent_prompt}\n\n"
+        f"<|nothink|>\n{active_intent_prompt}\n\n"
         "CRITICAL: Follow the exact 3-line format: <intent> on line 1, Query: <search terms or 'none'> on line 2, Reason: <brief explanation> on line 3. "
         "Do NOT repeat the instructions or the system prompt itself."
     )
     
-    # Get last 4 messages from history
+    # Get last 2 messages from history
     try:
         if provided_history is not None:
              history = provided_history
@@ -3810,6 +3831,7 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
         "messages": messages,
         "model": get_llm_model(ctx),
         "stream": False,
+        "think": False,
         "options": {
             "temperature": 0.0, 
         }
@@ -3817,10 +3839,17 @@ async def classify_user_intent(ctx: UserContext, prompt: str, chat: str = "defau
     
     data = await llm_request(request_payload)
     
-    if data and "message" in data and "content" in data["message"]:
-        return data["message"]["content"]
+    if data and "message" in data:
+        content = (data["message"].get("content") or "").strip()
+        if not content and data["message"].get("thinking"):
+            content = data["message"]["thinking"].strip()
+        if content:
+            return content
     
     logging.warning(f"Classification failed, response: {data}")
+    p_lower = prompt.lower()
+    if any(k in p_lower for k in ("хранилищ", "файл", "документ", "фотк", "фотограф", "диск", "папк")) and any(a in p_lower for a in ("найди", "поищи", "покажи", "где", "есть ли", "find", "search", "where")):
+        return f"explore\nQuery: {prompt}\nReason: Storage keywords fallback"
     return "chat\nFallback" 
 
 
