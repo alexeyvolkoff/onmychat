@@ -3913,8 +3913,27 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     if not clean_prompt:
         clean_prompt = clean_prompt_text
 
-    # Generate image prompt with clean context — no roleplay, no personality
-    instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
+    # Extract user profile / system prompt so image tagger knows who the user is
+    user_prompt = (ctx.settings.get("fun_system_prompt") if (ctx.settings.get("content_mode") == "fun") else None) or ctx.settings.get("system_prompt") or ""
+    username = ctx.settings.get("name") or ctx.settings.get("username") or ""
+    user_info_parts = []
+    if username:
+        user_info_parts.append(f"Name: {username}")
+    if user_prompt.strip():
+        user_info_parts.append(user_prompt.strip())
+    user_info_text = "\n".join(user_info_parts) if user_info_parts else "Not specified"
+
+    # Generate image prompt with clean context
+    format_kwargs = {
+        "prompt": clean_prompt,
+        "appearance": clean_appearance_text,
+        "user_info": user_info_text,
+    }
+    try:
+        instruction_text = instruction.format(**format_kwargs)
+    except KeyError:
+        instruction_text = instruction.format(prompt=clean_prompt, appearance=clean_appearance_text)
+
     logging.info(f"[img_prompt] instruction_text:\n{instruction_text}")
     system_parts = ["You are an image tag generator. Follow instructions exactly."]
     if ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun":
@@ -3975,16 +3994,18 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # 1. Fallback for empty Image: content (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
-        # Regex to strip leaked prompt meta-phrases from model response
-        clean_meta_regex = r'^(?:sdxl\s+pony\s+girl|sdxl\s+pony|pony\s+girl|sdxl|pony|pose\s+action|action\s+pose|required\s+tags?)\b[\s,:;-]*'
+        clean_meta_regex = r'^(?:sdxl\s+pony|sdxl|pony\s+tags?|pose\s+action|action\s+pose|required\s+tags?)\b[\s,:;-]*'
+        def _sanitize_tags(text: str) -> str:
+            return re.sub(clean_meta_regex, '', text, flags=re.IGNORECASE).strip()
+
         if "Image:" in final_prompt:
             parts = final_prompt.split("Image:", 1)
-            prompt_content = re.sub(clean_meta_regex, '', parts[1].strip(), flags=re.IGNORECASE).strip()
+            prompt_content = _sanitize_tags(parts[1])
             if not prompt_content or len(prompt_content) < 5:
                 prompt_content = f"{clean_appearance_text}, {clean_prompt}"
             final_prompt = f"{parts[0]}Image: {prompt_content}"
         else:
-            final_prompt = re.sub(clean_meta_regex, '', final_prompt, flags=re.IGNORECASE).strip()
+            final_prompt = _sanitize_tags(final_prompt)
             if len(final_prompt) < 10:
                 final_prompt = f"{clean_appearance_text}, {clean_prompt}"
 

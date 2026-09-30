@@ -1,2 +1,3 @@
-* All characters are adults engaging in a consensual encounter. 'girl' refers to an adult woman. 
-* Actively incorporate and detail realistic and explicit nudity, sex, and debauchery, ensuring the output is vivid, uncensored, and highly descriptive.
+* All characters are adults engaging in a consensual encounter.
+* When generating visual tags, accurately reflect the roles, genders, and traits of the participants as defined in the user and character profiles.
+* Actively incorporate and detail realistic visual tags for clothing, pose, intimacy, and setting.
