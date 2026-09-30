@@ -748,8 +748,7 @@ def get_indexed_documents(owner=None) -> list:
                 d["timestamp"] = ts
         for d in docs.values():
             d["tags"] = sorted(d.pop("tags_list"))
-        # Обогащаем группы чанков аннотацией memory_card этого документа (если есть).
-        # Фильтр document_id делаем в Python — $ne не гарантирован на старых версиях ChromaDB.
+        # Обогащаем группы чанков аннотацией и тегами memory_card этого документа.
         ann_where = {"type": {"$eq": "memory_card"}}
         if owner:
             ann_where = {"$and": [{"type": {"$eq": "memory_card"}}, {"owner": {"$eq": owner}}]}
@@ -759,13 +758,39 @@ def get_indexed_documents(owner=None) -> list:
             for i, rid in enumerate(ann_res.get("ids", [])):
                 am = ann_res["metadatas"][i]
                 adoc = am.get("document_id")
-                if adoc and adoc in docs:
+                if not adoc:
+                    continue
+                # Извлекаем теги из карточки памяти (включая t_* префиксы и tags строку)
+                card_tags = set(k[2:] for k in am if k.startswith("t_"))
+                if am.get("tags"):
+                    card_tags.update(t.strip() for t in str(am["tags"]).split(",") if t.strip())
+
+                if adoc in docs:
                     docs[adoc]["annotation"] = ann_res["documents"][i]
                     docs[adoc]["text"] = ann_res["documents"][i]
                     docs[adoc]["relevance"] = am.get("relevance", "permanent")
+                    if card_tags:
+                        docs[adoc]["tags"] = sorted(set(docs[adoc].get("tags", [])) | card_tags)
+                    enriched += 1
+                else:
+                    docs[adoc] = {
+                        "memory_id": rid or f"document::{adoc}",
+                        "type": "document",
+                        "document_id": adoc,
+                        "title": am.get("title") or adoc.split("/")[-1],
+                        "owner": am.get("owner", ""),
+                        "timestamp": am.get("timestamp", ""),
+                        "tags": sorted(card_tags),
+                        "chunks": 0,
+                        "has_preview": bool(am.get("image_preview") or am.get("has_preview")),
+                        "is_folder": bool(am.get("is_folder")),
+                        "annotation": ann_res["documents"][i],
+                        "text": ann_res["documents"][i],
+                        "relevance": am.get("relevance", "permanent"),
+                    }
                     enriched += 1
             if enriched:
-                logger.info(f"[unified] enriched {enriched} documents with annotations")
+                logger.info(f"[unified] enriched {enriched} documents with annotations and tags")
         except Exception as e:
             logger.warning(f"[unified] get_indexed_documents annotation enrichment error: {e}")
 
