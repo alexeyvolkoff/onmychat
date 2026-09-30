@@ -42,6 +42,7 @@ DEFAULT_MODEL = SETTINGS["DEFAULT_MODEL"]
 WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
 FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
+IMAGE_TAG_MODEL = SETTINGS.get("IMAGE_TAG_MODEL", WORK_MODEL)
 MCP_MODEL = DEFAULT_MODEL
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
 # Protection: max output tokens (prevents runaway generation that hangs the system)
@@ -3962,10 +3963,10 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     request_payload = {
         "messages": messages,
-        "model": get_llm_model(ctx),
+        "model": IMAGE_TAG_MODEL,
         "stream": False,
         "options": {
-            "temperature": 0.3,
+            "temperature": 0.2,
             "top_p": 0.9,
             "frequency_penalty": 0.5,
             "presence_penalty": 0.5,
@@ -3996,7 +3997,20 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
         clean_meta_regex = r'^(?:sdxl\s+pony|sdxl|pony\s+tags?|pose\s+action|action\s+pose|required\s+tags?)\b[\s,:;-]*'
         def _sanitize_tags(text: str) -> str:
-            return re.sub(clean_meta_regex, '', text, flags=re.IGNORECASE).strip()
+            text = re.sub(clean_meta_regex, '', text, flags=re.IGNORECASE).strip()
+            # Strip parenthetical narratives e.g. "kissing (June kisses Alexey's neck...)"
+            # while keeping SD weights like "(red dress:1.2)" or simple single-word emphasis
+            def _filter_paren(m):
+                content = m.group(1).strip()
+                if re.search(r':\d+(?:\.\d+)?$', content):
+                    return f"({content})"
+                if " " not in content and len(content) < 15:
+                    return f"({content})"
+                return ""
+            text = re.sub(r'\(([^)]+)\)', _filter_paren, text)
+            text = re.sub(r'\s*,\s*', ', ', text)
+            text = re.sub(r'(?:,\s*)+', ', ', text).strip(', ')
+            return text.strip()
 
         if "Image:" in final_prompt:
             parts = final_prompt.split("Image:", 1)
