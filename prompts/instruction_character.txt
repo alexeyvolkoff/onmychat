@@ -1,16 +1,19 @@
-Generate SDXL/Pony image tags for the character described below.
+Generate descriptive visual tags for the character in the current scene.
 
-Use the RECENT CONVERSATION HISTORY to extract the current scene context: location, what is happening, what the character is doing, their outfit/pose, the mood/atmosphere.
+Use the RECENT CONVERSATION HISTORY to extract the current scene context: location, current activity, clothing/outfit, pose, mood/lighting.
 
-Character appearance (MUST include):
+Character visual appearance:
 {appearance}
 
 User request: "{prompt}"
 
-Required tags: Pose/Action, Outfit/Clothing, Location, Atmosphere, Expression, Scene details from the story
+Tag Guidelines (Danbooru style):
+- Output ONLY comma-separated visual tags in English, lowercase.
+- NO sentences, NO narrative phrases, NO exclamation marks, NO dialogues.
+- DO NOT include meta words like "sdxl", "pony", "prompt", "pose", "action", "tags".
+- Describe what is visually seen: subject, clothing, physical activity, location, atmosphere.
 
-CRITICAL: The image MUST reflect the specific scene from the roleplay RIGHT NOW. Do NOT generate a generic portrait. Extract scene details (location, objects, lighting, mood) from the conversation history.
-
-If no specific scene context is available in history, use the user request as guidance.
+Example:
+Image: 1girl, solo, long auburn hair, emerald eyes, freckles, red dress, sitting at wooden table, tea cup, warm indoor lighting, cozy cafe, calm expression
 
 Format: Image: comma-separated tags

@@ -118,6 +118,27 @@ def get_collection():
     return _collection
 
 
+_faces_collection = None
+
+
+def get_faces_collection():
+    """Возвращает коллекцию omd_faces, пересоздаёт при ошибке."""
+    global _faces_collection, _client
+    try:
+        if _faces_collection is not None:
+            _faces_collection.count()
+            return _faces_collection
+    except Exception:
+        logger.warning("[unified] Faces collection stale, re-initializing")
+        _faces_collection = None
+
+    _faces_collection = _get_client().get_or_create_collection(
+        name="omd_faces",
+        metadata={"hnsw:space": "cosine"},
+    )
+    return _faces_collection
+
+
 # ─── Вспомогательные ─────────────────────────────────────────────────────────
 
 def _normalize_tag(t: str) -> str:
@@ -581,6 +602,28 @@ def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=No
     except Exception as e:
         logger.error(f"[unified] update_memory_card error: {e}")
         return None
+
+
+def add_tag_to_document(document_id: str, tag: str) -> bool:
+    """Добавляет тег к карточке документа (или виртуальному документу)."""
+    clean_tag = _normalize_tag(tag)
+    if not clean_tag or not document_id:
+        return False
+    try:
+        mem_id = find_memory_card_id(document_id)
+        if mem_id:
+            res = get_collection().get(ids=[mem_id], include=["metadatas"])
+            if res.get("ids"):
+                old_tags = [t for t in (res["metadatas"][0].get("tags") or "").split(",") if t]
+                if clean_tag not in [_normalize_tag(t) for t in old_tags]:
+                    update_memory_card(mem_id, tags=old_tags + [tag.strip()])
+                    return True
+                return False
+        update_memory_card(f"document::{document_id}", tags=[tag.strip()])
+        return True
+    except Exception as e:
+        logger.error(f"[unified] add_tag_to_document error: {e}")
+        return False
 
 
 def delete_memory_card(mem_id=None, document_id=None):

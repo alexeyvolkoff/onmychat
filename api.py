@@ -1160,7 +1160,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
             if not img_bytes:
                 return None
             folder_name = os.path.basename(os.path.dirname(full))
-            annotation, geo_place = await core_service.recognize_image_readme(
+            annotation, geo_place, recognized_people = await core_service.recognize_image_readme(
                 ctx, img_bytes, title=fn, folder_name=folder_name
             )
             if not annotation:
@@ -1171,6 +1171,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 ai_tags = await core_service.extract_tags_from_text(ctx, annotation)
             except Exception as e:
                 logging.warning(f"[rag/index] recognise tags error {fn}: {e}")
+            if recognized_people:
+                ai_tags = sorted(set(ai_tags) | set(recognized_people))
             if geo_place:
                 place_tokens = [t.strip() for t in re.split(r"[,/]", geo_place)]
                 place_tokens = [t for t in place_tokens if len(t) >= 3 and t.replace(" ", "").isalpha()]
@@ -1884,11 +1886,21 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
     # Если нужен ресайз
     if size and mime_type.startswith("image/"):
         with Image.open(filepath) as img:
-            img.thumbnail((size, size))  # уменьшение до квадратного thumbnail
+            try:
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+            img.thumbnail((size, size), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
-            # сохраняем в том же формате, что и оригинал
-            format = img.format if img.format else "PNG"
-            img.save(buf, format=format)
+            fmt = img.format if img.format else "JPEG"
+            if fmt.upper() in ("JPEG", "JPG"):
+                if img.mode in ("RGBA", "LA", "P"):
+                    img = img.convert("RGB")
+                img.save(buf, format="JPEG", quality=90, optimize=True)
+                mime_type = "image/jpeg"
+            else:
+                img.save(buf, format=fmt)
             buf.seek(0)
             return StreamingResponse(buf, media_type=mime_type, headers=headers)
 
@@ -2393,11 +2405,13 @@ async def device_memory_endpoint(
 async def device_memory_thumb_endpoint(
     request: Request,
     path: str = "",
+    size: int = Query(480, ge=64, le=2048),
     omd_key: str | None = Depends(get_omd_key),
 ):
     """Ленивая миниатюра карточки on-device (/api/device_memory не тащит base64).
 
     path = document_id карточки (виртуальный путь, напр. /Pictures/photo.png).
+    size = желаемый размер (по умолчанию 480).
     Для папок ищем обложку (folder.jpg/cover.jpg/...) внутри папки.
     """
     ctx = get_ctx(omd_key)
@@ -2425,7 +2439,7 @@ async def device_memory_thumb_endpoint(
         raise HTTPException(status_code=404, detail="Not an image")
 
     try:
-        return serve_file(real, request, size=256)
+        return serve_file(real, request, size=size)
     except HTTPException:
         raise
     except Exception as e:
@@ -2482,6 +2496,353 @@ async def delete_device_memory(mem_id: str, request: Request, omd_key: str | Non
     except Exception as e:
         logging.error(f"[device_memory] delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── FACE RECOGNITION ENDPOINTS ──────────────────────────────────────────────
+
+@app.post("/api/faces/detect")
+async def faces_detect_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Обнаружение лиц на фото, извлечение BBox и сопоставление с известными персонами."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    path = body.get("path") or body.get("document_id") or request.query_params.get("path") or ""
+    img_b64 = body.get("image_b64") or ""
+    img_bytes = None
+
+    if path:
+        real = unified_memory.resolve_doc_path(path)
+        if not real and os.path.isfile(path):
+            real = path
+        if real and os.path.isfile(real):
+            try:
+                with open(real, "rb") as f:
+                    img_bytes = f.read()
+            except Exception as fe:
+                logging.warning(f"[faces/detect] failed to read file {real}: {fe}")
+
+    if not img_bytes and img_b64:
+        import base64
+        clean_b64 = re.sub(r"^data:image/[^;]+;base64,", "", img_b64)
+        img_bytes = base64.b64decode(clean_b64)
+
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Path to image or image_b64 required")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        faces = face_engine.detect_faces(img_bytes, owner=owner)
+        if not any(f.get("name") for f in faces) and owner != "owner":
+            fallback_faces = face_engine.detect_faces(img_bytes, owner=None)
+            for f, fb in zip(faces, fallback_faces):
+                if fb.get("name"):
+                    f["name"] = fb["name"]
+                    f["person_id"] = fb["person_id"]
+                    f["similarity"] = fb["similarity"]
+        return {"faces": faces}
+    except Exception as e:
+        logging.error(f"[faces/detect] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/faces/register")
+async def faces_register_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Регистрация лица (привязка имени к BBox на фотографии) в omd_faces."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    path = body.get("path") or body.get("document_id") or ""
+    bbox = body.get("bbox")
+    person_id = body.get("person_id")
+    img_b64 = body.get("image_b64") or ""
+    img_bytes = None
+
+    if path:
+        real = unified_memory.resolve_doc_path(path)
+        if not real and os.path.isfile(path):
+            real = path
+        if real and os.path.isfile(real):
+            try:
+                with open(real, "rb") as f:
+                    img_bytes = f.read()
+            except Exception as fe:
+                logging.warning(f"[faces/register] failed to read file {real}: {fe}")
+
+    if not img_bytes and img_b64:
+        import base64
+        clean_b64 = re.sub(r"^data:image/[^;]+;base64,", "", img_b64)
+        img_bytes = base64.b64decode(clean_b64)
+
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Path to image or image_b64 required")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        res = face_engine.register_face(
+            owner=owner,
+            name=name,
+            img_bytes=img_bytes,
+            bbox=bbox,
+            person_id=person_id,
+            document_id=path,
+        )
+
+        # Автоматически добавляем имя человека в теги документа
+        if path:
+            try:
+                unified_memory.add_tag_to_document(path, name)
+            except Exception as te:
+                logging.warning(f"[faces/register] tag update failed for {path}: {te}")
+
+        return {"status": "ok", "person": res}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.error(f"[faces/register] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/faces/people")
+async def faces_people_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Список известных персон для текущего владельца устройства."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        people = face_engine.get_known_people(owner=owner)
+        if not people and owner != "owner":
+            people = face_engine.get_known_people(owner=None)
+        return {"people": people}
+    except Exception as e:
+        logging.error(f"[faces/people] list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/faces/people/{person_id}")
+async def faces_rename_person_endpoint(
+    person_id: str,
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Переименование известной персоны."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    body = await request.json()
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        count = face_engine.rename_person(person_id, new_name, owner=owner)
+        if count == 0 and owner != "owner":
+            count = face_engine.rename_person(person_id, new_name, owner=None)
+        return {"status": "ok", "person_id": person_id, "name": new_name, "updated": count}
+    except Exception as e:
+        logging.error(f"[faces/rename] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/faces/people/{person_id}")
+async def faces_delete_person_endpoint(
+    person_id: str,
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Удаление персоны из базы лиц."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        count = face_engine.delete_person(person_id, owner=owner)
+        if count == 0 and owner != "owner":
+            count = face_engine.delete_person(person_id, owner=None)
+        return {"status": "ok", "person_id": person_id, "deleted_faces": count}
+    except Exception as e:
+        logging.error(f"[faces/delete] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_face_scan_state = {
+    "running": False,
+    "person_id": "",
+    "person_name": "",
+    "total": 0,
+    "processed": 0,
+    "matched": 0,
+    "current_file": "",
+    "matched_photos": [],
+    "error": None,
+}
+
+
+async def _run_face_scan_archive(owner: str, person_id: str, person_name: str, image_doc_ids: list):
+    global _face_scan_state
+    import face_engine
+    _face_scan_state["running"] = True
+    _face_scan_state["person_id"] = person_id
+    _face_scan_state["person_name"] = person_name
+    _face_scan_state["total"] = len(image_doc_ids)
+    _face_scan_state["processed"] = 0
+    _face_scan_state["matched"] = 0
+    _face_scan_state["matched_photos"] = []
+    _face_scan_state["error"] = None
+
+    try:
+        for doc_id in image_doc_ids:
+            _face_scan_state["current_file"] = doc_id
+            real = unified_memory.resolve_doc_path(doc_id)
+            if not real or not os.path.isfile(real):
+                _face_scan_state["processed"] += 1
+                continue
+            try:
+                def _process_one(r_path, d_id):
+                    with open(r_path, "rb") as f:
+                        img_b = f.read()
+                    detected = face_engine.detect_faces(img_b, owner=owner)
+                    for f_info in detected:
+                        if f_info.get("person_id") == person_id:
+                            try:
+                                face_engine.register_face(
+                                    owner=owner,
+                                    name=person_name,
+                                    img_bytes=img_b,
+                                    bbox=f_info.get("bbox"),
+                                    person_id=person_id,
+                                    document_id=d_id,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                unified_memory.add_tag_to_document(d_id, person_name)
+                            except Exception:
+                                pass
+                            return True
+                    return False
+
+                matched = await asyncio.to_thread(_process_one, real, doc_id)
+                if matched:
+                    _face_scan_state["matched"] += 1
+                    _face_scan_state["matched_photos"].append(doc_id)
+            except Exception as ie:
+                logging.warning(f"[faces/scan_archive] error processing {doc_id}: {ie}")
+
+            _face_scan_state["processed"] += 1
+            await asyncio.sleep(0.005)
+    except Exception as e:
+        _face_scan_state["error"] = str(e)
+        logging.error(f"[faces/scan_archive] background error: {e}")
+    finally:
+        _face_scan_state["running"] = False
+        _face_scan_state["current_file"] = ""
+
+
+@app.post("/api/faces/scan_archive")
+async def faces_scan_archive_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """
+    Фоновый поиск персоны на других фотографиях архива (авто-разметка).
+    """
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    global _face_scan_state
+    if _face_scan_state.get("running"):
+        return {"status": "already_running", "scan": _face_scan_state}
+
+    body = await request.json()
+    person_id = body.get("person_id")
+    if not person_id:
+        raise HTTPException(status_code=400, detail="person_id is required")
+
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        people = face_engine.get_known_people(owner=owner)
+        target = next((p for p in people if p["person_id"] == person_id), None)
+        if not target and owner != "owner":
+            people = face_engine.get_known_people(owner=None)
+            target = next((p for p in people if p["person_id"] == person_id), None)
+
+        if not target:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        person_name = target["name"]
+        already_tagged_photos = set(target.get("photos", []))
+
+        device_page = _device_cards_response(offset=0, limit=None)
+        all_cards = device_page.get("memories", [])
+        image_doc_ids = []
+        for c in all_cards:
+            doc_id = c.get("document_id")
+            if not doc_id:
+                continue
+            ext = os.path.splitext(doc_id)[1].lower().lstrip(".")
+            if ext in IMAGE_EXTS and doc_id not in already_tagged_photos:
+                image_doc_ids.append(doc_id)
+
+        asyncio.create_task(_run_face_scan_archive(owner, person_id, person_name, image_doc_ids))
+
+        return {
+            "status": "started",
+            "person_id": person_id,
+            "person_name": person_name,
+            "total_to_scan": len(image_doc_ids),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[faces/scan_archive] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/faces/scan_status")
+async def faces_scan_status_endpoint(
+    request: Request,
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Текущий статус фонового сканирования архива лиц."""
+    ctx = get_ctx(omd_key)
+    if not is_private_mode(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    global _face_scan_state
+    return {"scan": _face_scan_state}
 
 
 

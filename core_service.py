@@ -3946,7 +3946,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
         "model": get_llm_model(ctx),
         "stream": False,
         "options": {
-            "temperature": 0.5,
+            "temperature": 0.3,
             "top_p": 0.9,
             "frequency_penalty": 0.5,
             "presence_penalty": 0.5,
@@ -3975,13 +3975,16 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
 
     # 1. Fallback for empty Image: content (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
+        # Regex to strip leaked prompt meta-phrases from model response
+        clean_meta_regex = r'^(?:sdxl\s+pony\s+girl|sdxl\s+pony|pony\s+girl|sdxl|pony|pose\s+action|action\s+pose|required\s+tags?)\b[\s,:;-]*'
         if "Image:" in final_prompt:
             parts = final_prompt.split("Image:", 1)
-            prompt_content = parts[1].strip()
+            prompt_content = re.sub(clean_meta_regex, '', parts[1].strip(), flags=re.IGNORECASE).strip()
             if not prompt_content or len(prompt_content) < 5:
                 prompt_content = f"{clean_appearance_text}, {clean_prompt}"
             final_prompt = f"{parts[0]}Image: {prompt_content}"
         else:
+            final_prompt = re.sub(clean_meta_regex, '', final_prompt, flags=re.IGNORECASE).strip()
             if len(final_prompt) < 10:
                 final_prompt = f"{clean_appearance_text}, {clean_prompt}"
 
@@ -4875,6 +4878,17 @@ async def recognize_image_readme(
 
     geo_place = gps_to_location(eff_gps) if eff_gps else ""
 
+    # Распознавание известных лиц
+    recognized_people = []
+    try:
+        import face_engine
+        owner = getattr(ctx, "user_id", None) or "owner"
+        recognized_people = face_engine.match_names_for_image(img, owner=owner)
+        if not recognized_people and owner != "owner":
+            recognized_people = face_engine.match_names_for_image(img, owner=None)
+    except Exception as e:
+        logging.warning(f"[recognize_image_readme] face recognition error: {e}")
+
     context_lines = []
     if eff_folder:
         context_lines.append(f"Folder/Album: {eff_folder}")
@@ -4888,6 +4902,8 @@ async def recognize_image_readme(
         context_lines.append(f"Location (reverse geocoded from GPS): {geo_place}")
     if device_info:
         context_lines.append(f"Camera: {device_info}")
+    if recognized_people:
+        context_lines.append(f"Recognized people: {', '.join(recognized_people)}")
 
     context_block = ""
     if context_lines:
@@ -4898,8 +4914,14 @@ async def recognize_image_readme(
         "Produce a concise factual README note in the format:\n"
         "# <Short Title>\n\n<2-3 dense factual sentences describing the scene, landmarks, OCR text, and key details.>"
     )
+    people_instruction = ""
+    if recognized_people:
+        people_instruction = (
+            f"\n\nImportant: The following known people are identified in this photo: {', '.join(recognized_people)}. "
+            f"Use their names in the description instead of generic phrases like 'a man', 'a woman', or 'a person'."
+        )
     user_content = (
-        f"{context_block}Examine this photograph and produce the factual README note (# Title and 2-3 sentences)."
+        f"{context_block}Examine this photograph and produce the factual README note (# Title and 2-3 sentences).{people_instruction}"
     )
 
     messages = [
@@ -4922,10 +4944,10 @@ async def recognize_image_readme(
             response = str(data)
     except Exception as e:
         logging.error(f"[recognize_image_readme] LLM error: {e}")
-        return "", geo_place
+        return "", geo_place, recognized_people
 
     fallback_title = os.path.splitext(title)[0] if title else (eff_folder or "Photo")
-    return format_readme_description(response, fallback_title=fallback_title), geo_place
+    return format_readme_description(response, fallback_title=fallback_title), geo_place, recognized_people
 
 # Суммаризация документа
 
