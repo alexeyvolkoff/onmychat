@@ -3692,8 +3692,41 @@ async def qa_match(data: dict):
     return memory_index.qa_match_query(question, min_score, top_k, include_score)
 
 
+# --- Text-to-Speech (Kokoro-82M) ---
+class TTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = None
+    speed: Optional[float] = None
+
+@app.get("/api/tts/voices")
+async def get_tts_voices():
+    from tts_service import tts_service
+    return {"voices": tts_service.get_voices(), "default": tts_service.default_voice}
+
+@app.post("/api/tts")
+async def synthesize_speech(data: TTSRequest):
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    try:
+        from tts_service import tts_service
+        wav_bytes = tts_service.synthesize(data.text, voice=data.voice, speed=data.speed)
+        if not wav_bytes:
+            raise HTTPException(status_code=500, detail="Failed to synthesize speech")
+        return Response(
+            content=wav_bytes,
+            media_type="audio/wav",
+            headers={
+                "Content-Type": "audio/wav",
+                "Cache-Control": "public, max-age=86400",
+                "Content-Disposition": "inline; filename=\"speech.wav\""
+            }
+        )
+    except Exception as e:
+        logging.error(f"[api/tts] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- On My Document: native Univer docs converter (odt/docx -> univer.json) ---
 import ondoc as _ondoc_module
 _ondoc_module.mount(app)
+

@@ -11,3 +11,5 @@ agent_sessions.json
 .knowledge/
 
 index_exclusions.json
+data/
+asset/

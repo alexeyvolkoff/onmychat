@@ -3124,6 +3124,20 @@ async def _perform_prompt_gen(ctx: UserContext,
     if fun_mode:
         instruction_prompt += "\n\n*Hint:*\nYou are allowed and welcome to respond in more relaxed, fun mode"
 
+    # === Conversational Voice Mode (Spoken response optimization) ===
+    if ctx.settings.get("voice_mode") or ctx.settings.get("voice_stream"):
+        logging.info("[prompt] Injecting Conversational Voice Mode guidelines")
+        instruction_prompt += (
+            "\n\n*Voice & Conversational Guidelines (Spoken Mode)*:\n"
+            "- You are engaged in an interactive voice conversation with the user. Write as if you are speaking out loud directly to them, NOT composing a formal essay or written documentation.\n"
+            "- Keep responses natural, concise, and lively (typically 1 to 4 conversational sentences per turn unless deep detail is explicitly requested).\n"
+            "- Use natural spoken discourse markers, brief reflections, or subtle hesitation when appropriate (e.g. 'Hmm, let's see...', 'Oh, got it!', 'Well, the trick is...', 'Haha, that's interesting!').\n"
+            "- Use em-dashes ('—') or ellipses ('...') to create natural spoken pauses and rhythm in speech.\n"
+            "- Absolutely DO NOT use markdown headers, bullet lists, asterisks lists, or tables. Express points in fluent, spoken prose with verbal transitions ('First...', 'Also...', 'And best of all...').\n"
+            "- Do NOT paste code blocks or raw URLs. Explain ideas verbally in plain words and mention that details are visible in the chat."
+        )
+
+
     # === Gemma 4 Thinking Mode ===
     is_gemma4 = "gemma4" in model.lower() or "gemma-4" in model.lower()
     thinking_intents = ["explain", "think"]
