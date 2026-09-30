@@ -57,6 +57,11 @@ TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
 FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.0"))
 PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.0"))
 
+FUN_TEMPERATURE = float(SETTINGS.get("FUN_TEMPERATURE", "0.95"))
+FUN_TOP_P = float(SETTINGS.get("FUN_TOP_P", "0.9"))
+FUN_FREQUENCY_PENALTY = float(SETTINGS.get("FUN_FREQUENCY_PENALTY", "0.4"))
+FUN_PRESENCE_PENALTY = float(SETTINGS.get("FUN_PRESENCE_PENALTY", "0.3"))
+
 HUB_URL = SETTINGS.get("HUB_URL", "https://direct.onmydisk.net:8765")
 
 
@@ -3196,10 +3201,10 @@ async def _perform_prompt_gen(ctx: UserContext,
         "stream": stream,
         "keep_alive": LLM_KEEP_ALIVE,
         "options": {
-            "temperature": TEMPERATURE,
-            "top_p": TOP_P,
-            "frequency_penalty": FREQUENCY_PENALTY,
-            "presence_penalty": PRESENCE_PENALTY,
+            "temperature": FUN_TEMPERATURE if fun_mode else TEMPERATURE,
+            "top_p": FUN_TOP_P if fun_mode else TOP_P,
+            "frequency_penalty": FUN_FREQUENCY_PENALTY if fun_mode else FREQUENCY_PENALTY,
+            "presence_penalty": FUN_PRESENCE_PENALTY if fun_mode else PRESENCE_PENALTY,
             "num_ctx": LLM_NUM_CTX,
             "num_predict": LLM_NUM_PREDICT,  # hard cap on output tokens — prevents runaway generation
         }
