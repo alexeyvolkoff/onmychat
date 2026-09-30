@@ -313,7 +313,7 @@ def search(
     # которая не тянет перекрёстные языки (račun ↮ invoice).
     try:
         import re as _re
-        tokens = set(_re.findall(r"[a-z0-9]{4,}", query.lower()))
+        tokens = set(_re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}", query.lower()))
         if tokens:
             all_recs = coll.get(include=["metadatas"])
             kw_ids = [
@@ -321,7 +321,8 @@ def search(
                 if (
                     (not document_id or meta.get("document_id") == document_id)
                     and any(
-                        tok in f"{meta.get('document_id', '')} {meta.get('title', '')}".lower()
+                        tok in f"{meta.get('document_id', '')} {meta.get('title', '')} {meta.get('tags', '')}".lower()
+                        or f"t_{tok}" in meta
                         for tok in tokens
                     )
                 )
@@ -604,8 +605,102 @@ def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=No
         return None
 
 
-def add_tag_to_document(document_id: str, tag: str) -> bool:
+def add_person_to_document(document_id: str, person_name: str) -> bool:
+    """
+    Привязывает человека к документу:
+    1. Обновляет тег в tags metadata.
+    2. Вставляет/дополняет строку '**Люди на фото:** Имя' в тексте описания и в файле .Readme.md на диске.
+    3. Пересчитывает эмбеддинги карточки памяти (и file_chunk), делая фото искабельным в семантическом RAG.
+    """
+    clean_name = person_name.strip()
+    if not clean_name or not document_id:
+        return False
+    try:
+        coll = get_collection()
+        card_id = find_memory_card_id(document_id)
+        current_text = ""
+        existing_tags = set()
+        owner = "anonymous"
+        title = document_id.split("/")[-1]
+
+        if card_id:
+            res = coll.get(ids=[card_id], include=["documents", "metadatas"])
+            if res.get("ids"):
+                current_text = (res["documents"][0] if res.get("documents") else "") or ""
+                meta = res["metadatas"][0]
+                existing_tags = set(t.strip() for t in (meta.get("tags") or "").split(",") if t.strip())
+                existing_tags.update(k[2:] for k in meta if k.startswith("t_"))
+                owner = meta.get("owner") or owner
+                title = meta.get("title") or title
+
+        if not current_text:
+            _, readme_content = resolve_companion_readme(document_id)
+            if readme_content:
+                current_text = readme_content
+
+        if not current_text:
+            current_text = f"# {title}"
+
+        people_match = re.search(r"\*\*(?:Люди на фото|People):\*\*\s*(.+)", current_text)
+        current_people = set()
+        if people_match:
+            current_people = set(p.strip() for p in people_match.group(1).split(",") if p.strip())
+        current_people.add(clean_name)
+        people_line = f"**Люди на фото:** {', '.join(sorted(current_people))}"
+
+        if people_match:
+            new_text = re.sub(r"\*\*(?:Люди на фото|People):\*\*.*", people_line, current_text)
+        else:
+            new_text = current_text.rstrip() + f"\n\n{people_line}\n"
+
+        existing_tags.add(clean_name.lower())
+        tags_list = sorted(list(existing_tags))
+
+        save_companion_readme(document_id, new_text)
+
+        upsert_memory_card(
+            text=new_text,
+            mem_id=card_id,
+            owner=owner,
+            tags=tags_list,
+            title=title,
+            document_id=document_id,
+            relevance="permanent",
+        )
+
+        fc_res = coll.get(
+            where={"$and": [{"type": {"$eq": "file_chunk"}}, {"document_id": {"$eq": document_id}}]},
+            include=["metadatas", "documents"]
+        )
+        if fc_res.get("ids"):
+            for cid, cmeta, cdoc in zip(fc_res["ids"], fc_res["metadatas"], fc_res["documents"]):
+                cmeta[f"t_{_normalize_tag(clean_name)}"] = 1
+                ctags = set(t.strip() for t in (cmeta.get("tags") or "").split(",") if t.strip())
+                ctags.add(clean_name.lower())
+                cmeta["tags"] = ",".join(sorted(ctags))
+
+                chunk_text = cdoc or ""
+                if cid.endswith(":chunk:0") or len(fc_res["ids"]) == 1:
+                    if "**Люди на фото:**" in chunk_text:
+                        chunk_text = re.sub(r"\*\*Люди на фото:\*\*.*", people_line, chunk_text)
+                    elif "**People:**" in chunk_text:
+                        chunk_text = re.sub(r"\*\*People:\*\*.*", people_line, chunk_text)
+                    else:
+                        chunk_text = chunk_text.rstrip() + f"\n\n{people_line}\n"
+                chunk_emb = embed(chunk_text)
+                coll.update(ids=[cid], embeddings=[chunk_emb], documents=[chunk_text], metadatas=[cmeta])
+
+        _invalidate_indexed_docs_cache()
+        return True
+    except Exception as e:
+        logger.error(f"[unified] add_person_to_document error: {e}")
+        return False
+
+
+def add_tag_to_document(document_id: str, tag: str, is_person: bool = False) -> bool:
     """Добавляет тег к карточке документа (или виртуальному документу)."""
+    if is_person:
+        return add_person_to_document(document_id, tag)
     clean_tag = _normalize_tag(tag)
     if not clean_tag or not document_id:
         return False
@@ -617,9 +712,11 @@ def add_tag_to_document(document_id: str, tag: str) -> bool:
                 old_tags = [t for t in (res["metadatas"][0].get("tags") or "").split(",") if t]
                 if clean_tag not in [_normalize_tag(t) for t in old_tags]:
                     update_memory_card(mem_id, tags=old_tags + [tag.strip()])
+                    _invalidate_indexed_docs_cache()
                     return True
                 return False
         update_memory_card(f"document::{document_id}", tags=[tag.strip()])
+        _invalidate_indexed_docs_cache()
         return True
     except Exception as e:
         logger.error(f"[unified] add_tag_to_document error: {e}")

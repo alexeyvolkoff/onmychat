@@ -2607,12 +2607,12 @@ async def faces_register_endpoint(
             document_id=path,
         )
 
-        # Автоматически добавляем имя человека в теги документа
+        # Автоматически добавляем человека в теги, описание и эмбеддинги документа
         if path:
             try:
-                unified_memory.add_tag_to_document(path, name)
+                unified_memory.add_person_to_document(path, name)
             except Exception as te:
-                logging.warning(f"[faces/register] tag update failed for {path}: {te}")
+                logging.warning(f"[faces/register] person memory update failed for {path}: {te}")
 
         return {"status": "ok", "person": res}
     except ValueError as ve:
@@ -2746,7 +2746,7 @@ async def _run_face_scan_archive(owner: str, person_id: str, person_name: str, i
                             except Exception:
                                 pass
                             try:
-                                unified_memory.add_tag_to_document(d_id, person_name)
+                                unified_memory.add_person_to_document(d_id, person_name)
                             except Exception:
                                 pass
                             return True
