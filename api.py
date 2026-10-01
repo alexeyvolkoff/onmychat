@@ -1885,24 +1885,28 @@ def serve_file(filepath: str, request: Request, size: int = None) -> Response:
 
     # Если нужен ресайз
     if size and mime_type.startswith("image/"):
-        with Image.open(filepath) as img:
-            try:
-                from PIL import ImageOps
-                img = ImageOps.exif_transpose(img)
-            except Exception:
-                pass
-            img.thumbnail((size, size), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            fmt = img.format if img.format else "JPEG"
-            if fmt.upper() in ("JPEG", "JPG"):
-                if img.mode in ("RGBA", "LA", "P"):
-                    img = img.convert("RGB")
-                img.save(buf, format="JPEG", quality=90, optimize=True)
-                mime_type = "image/jpeg"
-            else:
-                img.save(buf, format=fmt)
-            buf.seek(0)
-            return StreamingResponse(buf, media_type=mime_type, headers=headers)
+        try:
+            with Image.open(filepath) as img:
+                try:
+                    from PIL import ImageOps
+                    img = ImageOps.exif_transpose(img)
+                except Exception:
+                    pass
+                img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                fmt = img.format if img.format else "JPEG"
+                if fmt.upper() in ("JPEG", "JPG"):
+                    if img.mode in ("RGBA", "LA", "P"):
+                        img = img.convert("RGB")
+                    img.save(buf, format="JPEG", quality=90, optimize=True)
+                    mime_type = "image/jpeg"
+                else:
+                    img.save(buf, format=fmt)
+                buf.seek(0)
+                return StreamingResponse(buf, media_type=mime_type, headers=headers)
+        except Exception as e:
+            logging.warning(f"[serve_file] Error generating thumbnail for {filepath}: {e}")
+            raise HTTPException(status_code=423, detail="File is being written or unreadable")
 
     # Если без ресайза — обычный FileResponse
     return FileResponse(
@@ -2444,7 +2448,7 @@ async def device_memory_thumb_endpoint(
         raise
     except Exception as e:
         logging.warning(f"[device_memory_thumb] serve error {real}: {e}")
-        raise HTTPException(status_code=404, detail="Unreadable image")
+        raise HTTPException(status_code=423, detail="Unreadable image or file is being written")
 
 
 @app.put("/api/device_memory/{mem_id:path}")
