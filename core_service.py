@@ -2168,28 +2168,21 @@ def get_available_loras(ctx: UserContext = None, mode: str | None = None) -> lis
                     for input_key, input_val in inputs.items():
                         if input_key.startswith("lora_") and isinstance(input_val, dict):
                             if "name" in input_val:
-                                # Prioritize explicit mode flag, then fallback to ctx
-                                if mode is not None:
-                                    user_mode = mode
-                                elif ctx:
-                                    user_mode = ctx.settings.get("content_mode", "work")
-                                else:
-                                    user_mode = "work"
-                                    
-                                # Filter based on mode setting
                                 lora_mode = input_val.get("mode", input_val.get("nsfw", False))
                                 if isinstance(lora_mode, str):
                                     lora_mode_str = lora_mode.lower()
                                 else:
                                     lora_mode_str = "fun" if lora_mode else "work"
-                                effective_fun = (ctx.private_mode if ctx else False) and user_mode == "fun"
-                                # Skip fun loras if not in effective fun mode
-                                if lora_mode_str == "fun" and not effective_fun:
-                                    continue
-                                
+
+                                # Filter out fun loras only when work mode is explicitly requested
+                                if mode is not None and mode.lower() == "work":
+                                    if lora_mode_str == "fun":
+                                        continue
+
                                 loras.append({
                                     "name": input_val["name"],
-                                    "type": input_val.get("type", "character")
+                                    "type": input_val.get("type", "character"),
+                                    "mode": lora_mode_str
                                 })
             
             # Sort by name
