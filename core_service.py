@@ -57,11 +57,15 @@ TEMPERATURE = float(SETTINGS.get("TEMPERATURE", "0.85"))
 TOP_P = float(SETTINGS.get("TOP_P", "0.9"))
 FREQUENCY_PENALTY = float(SETTINGS.get("FREQUENCY_PENALTY", "0.0"))
 PRESENCE_PENALTY = float(SETTINGS.get("PRESENCE_PENALTY", "0.0"))
+REPEAT_PENALTY = float(SETTINGS.get("REPEAT_PENALTY", "1.1"))
+REPEAT_LAST_N = int(SETTINGS.get("REPEAT_LAST_N", "64"))
 
 FUN_TEMPERATURE = float(SETTINGS.get("FUN_TEMPERATURE", "0.95"))
 FUN_TOP_P = float(SETTINGS.get("FUN_TOP_P", "0.9"))
-FUN_FREQUENCY_PENALTY = float(SETTINGS.get("FUN_FREQUENCY_PENALTY", "0.4"))
-FUN_PRESENCE_PENALTY = float(SETTINGS.get("FUN_PRESENCE_PENALTY", "0.3"))
+FUN_FREQUENCY_PENALTY = float(SETTINGS.get("FUN_FREQUENCY_PENALTY", "0.65"))
+FUN_PRESENCE_PENALTY = float(SETTINGS.get("FUN_PRESENCE_PENALTY", "0.5"))
+FUN_REPEAT_PENALTY = float(SETTINGS.get("FUN_REPEAT_PENALTY", "1.15"))
+FUN_REPEAT_LAST_N = int(SETTINGS.get("FUN_REPEAT_LAST_N", "128"))
 
 HUB_URL = SETTINGS.get("HUB_URL", "https://direct.onmydisk.net:8765")
 
@@ -3199,6 +3203,8 @@ async def _perform_prompt_gen(ctx: UserContext,
             "top_p": FUN_TOP_P if fun_mode else TOP_P,
             "frequency_penalty": FUN_FREQUENCY_PENALTY if fun_mode else FREQUENCY_PENALTY,
             "presence_penalty": FUN_PRESENCE_PENALTY if fun_mode else PRESENCE_PENALTY,
+            "repeat_penalty": FUN_REPEAT_PENALTY if fun_mode else REPEAT_PENALTY,
+            "repeat_last_n": FUN_REPEAT_LAST_N if fun_mode else REPEAT_LAST_N,
             "num_ctx": LLM_NUM_CTX,
             "num_predict": LLM_NUM_PREDICT,  # hard cap on output tokens — prevents runaway generation
         }
