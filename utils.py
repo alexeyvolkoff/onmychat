@@ -105,9 +105,17 @@ def format_response_for_markdown_v2(text: str) -> str:
 
     return text
 
+_STOP_TOKENS_PATTERN = re.compile(
+    r'(<\|im_end\|>|<\|im_start\|>|<\|end_of_text\|>|<\|endoftext\|>|<\|eot_id\|>|<\|eom_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|<\/s>|<s>|<end_of_turn>|<start_of_turn>|\[DONE\])',
+    re.IGNORECASE
+)
+
 def clean_response(text: str) -> str:
     # Удаляем <think>...</think> если внутри только пробелы или ничего
-    return re.sub(r'<think>\s*</think>', '', text, flags=re.DOTALL).strip()
+    text = re.sub(r'<think>\s*</think>', '', text, flags=re.DOTALL)
+    # Удаляем служебные стоп-токены шаблонов промпта (ChatML, Llama-3, Gemma и т.д.)
+    text = _STOP_TOKENS_PATTERN.sub('', text)
+    return text.strip()
 
 def resize_and_base64encode(image_path: str) -> str:
     """

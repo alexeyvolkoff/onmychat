@@ -6,11 +6,17 @@ Provides streaming emulation and queue status updates for OnMyChat.
 import aiohttp
 import asyncio
 import logging
+import re
 from typing import AsyncGenerator, Optional, List, Dict, Any
 
 HORDE_BASE_URL = "https://aihorde.net/api/v2"
 DEFAULT_CLIENT_AGENT = "OnMyChat:1.0:alexey"
 ANONYMOUS_API_KEY = "0000000000"
+
+STOP_TOKENS_RE = re.compile(
+    r'(<\|im_end\|>|<\|im_start\|>|<\|end_of_text\|>|<\|endoftext\|>|<\|eot_id\|>|<\|eom_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|<\/s>|<s>|<end_of_turn>|<start_of_turn>|\[DONE\])',
+    re.IGNORECASE
+)
 
 # Default models known for high quality RP / Creative chat
 DEFAULT_HORDE_MODELS = [
@@ -110,7 +116,11 @@ async def horde_generate_stream(
         "temperature": options.get("temperature", 0.85),
         "top_p": options.get("top_p", 0.9),
         "rep_pen": options.get("repeat_penalty", 1.1),
-        "singleline": False
+        "singleline": False,
+        "stop_sequence": [
+            "<|im_end|>", "<|im_start|>", "<|end_of_text|>", "<|endoftext|>",
+            "<|eot_id|>", "<|eom_id|>", "</s>", "<end_of_turn>"
+        ]
     }
 
     # Selected models list
@@ -183,6 +193,7 @@ async def horde_generate_stream(
                 if st.get("done") and st.get("generations"):
                     gen = st["generations"][0]
                     full_text = gen.get("text", "")
+                    full_text = STOP_TOKENS_RE.sub("", full_text).strip()
                     worker_name = gen.get("worker_name", "unknown")
                     actual_model = gen.get("model", models[0] if models else "unknown")
                     logging.info(f"[Horde] Generation completed by '{worker_name}' [{actual_model}], length: {len(full_text)}")
