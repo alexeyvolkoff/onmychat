@@ -2303,6 +2303,97 @@ async def update_avatar_endpoint(data: AvatarUpdateInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/assistant/import_character")
+async def import_character_endpoint(
+    file: UploadFile = File(None),
+    path: str = Form(None),
+    omd_key: str | None = Form(None)
+):
+    """
+    Imports a SillyTavern / TavernAI Character Card PNG.
+    Extracts the 'chara' tEXt chunk, parses character personality,
+    description, system prompt and example dialogue, saves the avatar,
+    and updates the assistant context.
+    """
+    ctx = get_ctx(omd_key)
+    try:
+        contents = None
+        if file is not None and hasattr(file, "read"):
+            contents = await file.read()
+        elif path and os.path.isfile(path):
+            with open(path, "rb") as f:
+                contents = f.read()
+        else:
+            raise HTTPException(status_code=400, detail="Either file upload or valid path is required")
+
+        img = Image.open(io.BytesIO(contents))
+        card_json_str = None
+        if "chara" in img.info:
+            raw_b64 = img.info["chara"]
+            card_json_str = base64.b64decode(raw_b64).decode("utf-8")
+
+        if not card_json_str:
+            raise HTTPException(status_code=400, detail="Image does not contain a SillyTavern character card ('chara' metadata chunk).")
+
+        card_data = json.loads(card_json_str)
+        chara = card_data.get("data", card_data)
+        name = chara.get("name", "Character")
+        description = chara.get("description", "")
+        personality = chara.get("personality", "")
+        scenario = chara.get("scenario", "")
+        first_mes = chara.get("first_mes", "")
+        mes_example = chara.get("mes_example", "")
+        system_prompt = chara.get("system_prompt", "")
+        tags = chara.get("tags", [])
+
+        # Compose unified system prompt
+        sections = []
+        if system_prompt:
+            sections.append(system_prompt.strip())
+        if description:
+            sections.append(f"### Character Description:\n{description.strip()}")
+        if personality:
+            sections.append(f"### Personality:\n{personality.strip()}")
+        if scenario:
+            sections.append(f"### Scenario / Setting:\n{scenario.strip()}")
+        if mes_example:
+            sections.append(f"### Dialogue Examples:\n{mes_example.strip()}")
+
+        full_prompt = "\n\n".join(sections)
+
+        # Save avatar image to onmychat avatars directory
+        safe_name = re.sub(r'[^\w\-]', '_', name).strip('_') or "character"
+        avatar_dir = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR)
+        os.makedirs(avatar_dir, exist_ok=True)
+        avatar_dest = os.path.join(avatar_dir, f"{safe_name}.png")
+        img.convert("RGBA").save(avatar_dest, "PNG")
+
+        # Update ctx settings
+        ctx.settings["assistant_name"] = name
+        ctx.settings["assistant_model"] = safe_name
+        ctx.settings["system_prompt"] = full_prompt
+        ctx.settings["first_message"] = first_mes
+        user_context.save_user_settings(ctx)
+
+        logging.info(f"[import_character] Successfully imported '{name}' ({safe_name}), avatar saved to {avatar_dest}")
+
+        return {
+            "ok": True,
+            "name": name,
+            "title": "Companion",
+            "assistant_model": safe_name,
+            "avatar_url": f"/assistant/model/{safe_name}/avatar",
+            "first_message": first_mes,
+            "system_prompt": full_prompt,
+            "tags": tags
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Failed to import character: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/assistant/loras")
 async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)

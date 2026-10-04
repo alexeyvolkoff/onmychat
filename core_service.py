@@ -35,6 +35,7 @@ from memory_index import (
 )
 
 import unified_memory
+import horde_client
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
@@ -44,6 +45,11 @@ FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
 IMAGE_TAG_MODEL = SETTINGS.get("IMAGE_TAG_MODEL", WORK_MODEL)
 MCP_MODEL = DEFAULT_MODEL
+
+# AI Provider: 'local' (Ollama only), 'hybrid' (Ollama for Work/RAG, Horde for Fun/RP), 'horde' (always Horde)
+AI_PROVIDER = SETTINGS.get("AI_PROVIDER", "local").lower()
+HORDE_API_KEY = SETTINGS.get("HORDE_API_KEY", horde_client.ANONYMOUS_API_KEY)
+HORDE_MODEL = SETTINGS.get("HORDE_MODEL", "aphrodite/TheDrummer/Behemoth-X-123B-v2.1")
 LLM_NUM_CTX = int(SETTINGS.get("LLM_NUM_CTX", "32768"))
 # Protection: max output tokens (prevents runaway generation that hangs the system)
 LLM_NUM_PREDICT = int(SETTINGS.get("LLM_NUM_PREDICT", "2048"))
@@ -3362,8 +3368,32 @@ async def _perform_prompt_gen(ctx: UserContext,
                     return events
 
             parser = StreamParser()
-            logging.info(f"Requesting LLM {model}")
-            async for data in llm_request_stream(main_payload):
+
+            # AI Inference Provider routing
+            is_horde_request = (AI_PROVIDER == "horde") or (AI_PROVIDER == "hybrid" and fun_mode)
+            client_provider = ctx.settings.get("ai_provider")
+            if client_provider == "horde":
+                is_horde_request = True
+            elif client_provider == "local":
+                is_horde_request = False
+
+            if is_horde_request:
+                h_model = ctx.settings.get("horde_model", HORDE_MODEL)
+                h_key = ctx.settings.get("horde_api_key", HORDE_API_KEY)
+                logging.info(f"Requesting AI Horde stream: model={h_model}")
+                stream_source = horde_client.horde_generate_stream(
+                    main_payload,
+                    api_key=h_key,
+                    preferred_model=h_model
+                )
+            else:
+                logging.info(f"Requesting LLM {model}")
+                stream_source = llm_request_stream(main_payload)
+
+            async for data in stream_source:
+                if data.get("status"):
+                    yield {"status": data["status"]}
+                    continue
                 if data.get("done"):  
                     done_reason = data.get("done_reason", "unknown")
                     eval_count = data.get("eval_count", "?")
@@ -3445,13 +3475,34 @@ async def _perform_prompt_gen(ctx: UserContext,
             yield item
         return    
     else:
-        logging.info(f"Requesting LLM {model}")
-        data = await llm_request(main_payload)
+        is_horde_request = (AI_PROVIDER == "horde") or (AI_PROVIDER == "hybrid" and fun_mode)
+        client_provider = ctx.settings.get("ai_provider")
+        if client_provider == "horde":
+            is_horde_request = True
+        elif client_provider == "local":
+            is_horde_request = False
+
+        if is_horde_request:
+            h_model = ctx.settings.get("horde_model", HORDE_MODEL)
+            h_key = ctx.settings.get("horde_api_key", HORDE_API_KEY)
+            logging.info(f"Requesting AI Horde (blocking): model={h_model}")
+            full_content = ""
+            async for chunk in horde_client.horde_generate_stream(
+                main_payload,
+                api_key=h_key,
+                preferred_model=h_model
+            ):
+                if chunk.get("message", {}).get("content"):
+                    full_content += chunk["message"]["content"]
+            data = {"message": {"role": "assistant", "content": full_content}}
+        else:
+            logging.info(f"Requesting LLM {model}")
+            data = await llm_request(main_payload)
+
         if not data:
             yield {"error": "⚠️ Request to LLM failed.", "done": True}
             return
         response = await process_response(data)
-        yield response
         yield response
         return
 
