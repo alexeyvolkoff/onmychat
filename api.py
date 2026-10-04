@@ -55,6 +55,7 @@ from typing import List, Optional
 
 import core_service
 import user_context
+import horde_client
 
 # Create a global session for proxying to avoid socket exhaustion
 _proxy_session = None
@@ -2392,6 +2393,17 @@ async def import_character_endpoint(
     except Exception as e:
         logging.error(f"Failed to import character: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/assistant/horde_models")
+async def get_horde_models():
+    """Returns active text models on AI Horde sorted by worker count."""
+    try:
+        models = await horde_client.get_online_text_models(limit=40)
+        return {"models": models}
+    except Exception as e:
+        logging.error(f"Error fetching horde models: {e}")
+        return {"models": []}
 
 
 @app.get("/assistant/loras")
