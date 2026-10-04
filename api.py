@@ -1317,6 +1317,177 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
     return {"status": "indexing_started", "path": doc_root}
 
 
+# ---------------------------------------------------------------------------
+# RAG 3.0 §4: ручной Reindex из «Знаний» по прямому P2P к устройству.
+#
+# Нода (публичный AI backend) сама поднимает WebRTC-туннель к выбранному
+# PWA/native-устройству через шлюз (/api/signaling), читает файлы напрямую по
+# data-plane (байты идут device -> node, шлюз только маршрутизирует SDP),
+# конвертирует их локально, индексирует в свою ChromaDB и возвращает карточку
+# тем же туннелем командой KnowledgePut. В личный GunDB пишет ТОЛЬКО устройство
+# (оно шифрует своим omd_key и соблюдает dedup-правила chat-store).
+#
+# Доступ требует consent-гранта, который выдаёт устройство в момент выбора
+# документа/папки в UI (см. svar/src/lib/client-device-server.js: issueConsent).
+# ---------------------------------------------------------------------------
+
+RAG_REMOTE_INDEX_STATUS: dict = {}
+
+
+@app.post("/rag/reindex-remote")
+async def rag_reindex_remote_endpoint(request: Request, background_tasks: BackgroundTasks):
+    """Индексация документа/папки, выбранной на устройстве (P2P → устройство).
+
+    Body: {linkId, consentToken, path, didPub?, force?, tags?, writable?}
+    Заголовок X-OMD-RAG-Scope — scope тегов, как у /rag/index.
+    """
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    link_id = (body.get("linkId") or "").strip()
+    consent_token = (body.get("consentToken") or "").strip()
+    remote_path = (body.get("path") or "").strip()
+    did_pub = (body.get("didPub") or "").strip()
+    force = bool(body.get("force", False))
+    tags_in = body.get("tags") or []
+    scope = request.headers.get("X-OMD-RAG-Scope", body.get("scope", "private"))
+
+    if not link_id:
+        raise HTTPException(status_code=422, detail="linkId is required")
+    if not consent_token:
+        raise HTTPException(status_code=422, detail="consentToken is required")
+    if not remote_path or remote_path.startswith("http"):
+        raise HTTPException(status_code=422, detail="remote path is required")
+
+    ctx = await _build_ctx_from_request(request)
+    owner = ctx.user_id or user_context.node_owner()
+    tags = _rag_scope_tags(tags_in, scope)
+    job_key = f"{link_id}:{remote_path}"
+
+    if RAG_REMOTE_INDEX_STATUS.get(job_key, {}).get("running"):
+        return {"status": "already_running", "path": remote_path}
+
+    RAG_REMOTE_INDEX_STATUS[job_key] = {
+        "running": True, "done": False, "indexed": 0, "skipped": 0, "failed": 0,
+        "pending": 0, "lastError": None, "path": remote_path, "linkId": link_id,
+    }
+
+    async def _pull_and_index():
+        status = RAG_REMOTE_INDEX_STATUS[job_key]
+        client = None
+        try:
+            import p2p_client
+
+            settings = p2p_client.P2PSettings.from_settings(SETTINGS)
+            # Токена ноды глобального нет: берём omd_key конкретного юзера из его
+            # же запроса (HttpDrive). Без него шлюз не примет signaling.
+            settings.token = ctx.omd_key or ""
+            if not settings.token:
+                raise RuntimeError("omd_key is required for P2P signaling")
+            status["pending"] = 1
+            client = p2p_client.P2PClient(settings)
+            # writable=True: reindex возвращает карточку командой KnowledgePut.
+            device = await client.device(
+                link_id, consent_token, did_pub, remote_path, writable=True,
+            )
+
+            def _accept(path: str, entry: dict) -> bool:
+                """Те же фильтры, что у /rag/index: exclusions + обложки папок."""
+                if _is_path_excluded(path):
+                    return False
+                if is_folder_cover_image(entry.get("name") or ""):
+                    return False
+                if not entry.get("size"):
+                    return False
+                return True
+
+            files = await device.walk(remote_path, should_visit=_accept)
+            status["pending"] = len(files)
+            logging.info(
+                f"[rag/reindex-remote] {link_id} {remote_path}: {len(files)} files"
+            )
+
+            for entry in files:
+                doc_id = entry["path"]
+                name = doc_id.rsplit("/", 1)[-1]
+                title = doc_id.rstrip("/").split("/")[-1] or name
+                stamp = entry.get("lastModified") or ""
+                try:
+                    if not force and unified_memory.has_document(doc_id, source_stamp=stamp):
+                        status["skipped"] += 1
+                        logging.info(f"[rag/reindex-remote] skip unchanged {doc_id}")
+                        continue
+                    raw_bytes = await device.read_file(doc_id)
+                    text = unified_memory.convert_bytes_to_text(raw_bytes, name)
+                    if not text or not text.strip():
+                        status["failed"] += 1
+                        status["lastError"] = f"{name}: empty after conversion"
+                        continue
+
+                    payload = await _rag_stateless_payload(ctx, text, doc_id, title, tags, owner)
+                    # Локальный RAG-индекс ноды (ChromaDB) — тот же путь, что /rag/index.
+                    n = unified_memory.chunk_and_index_document(
+                        text, document_id=doc_id, owner=owner, tags=payload.get("tags") or tags,
+                        title=title, source_stamp=stamp,
+                    )
+                    # Личный GunDB пишет устройство: возвращаем карточку тем же туннелем.
+                    await device.put_knowledge({
+                        "title": payload.get("title") or title,
+                        "text": payload.get("annotation") or "",
+                        "document_id": doc_id,
+                        "tags": payload.get("tags") or tags,
+                        "collection": "user",
+                        "relevance": "contextual",
+                        "docId": doc_id,
+                        "imagePreview": "",
+                        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "annotation_embedding": payload.get("annotation_embedding"),
+                        "chunks": payload.get("chunks") or [],
+                    })
+                    status["indexed"] += 1
+                    logging.info(f"[rag/reindex-remote] {doc_id}: {n} chunks, card stored on device")
+                except Exception as e:
+                    status["failed"] += 1
+                    status["lastError"] = str(e)
+                    logging.warning(f"[rag/reindex-remote] {doc_id} failed: {e}")
+                finally:
+                    status["pending"] = max(0, status["pending"] - 1)
+                await asyncio.sleep(0)
+        except Exception as e:
+            status["failed"] += 1
+            status["lastError"] = str(e)
+            logging.error(f"[rag/reindex-remote] {link_id} {remote_path} failed: {e}")
+        finally:
+            status["running"] = False
+            status["done"] = True
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            logging.info(
+                f"[rag/reindex-remote] {job_key} done: {status['indexed']} indexed, "
+                f"{status['skipped']} skipped, {status['failed']} failed"
+            )
+
+    background_tasks.add_task(_pull_and_index)
+    return {"status": "indexing_started", "path": remote_path, "linkId": link_id}
+
+
+@app.get("/rag/reindex-remote/status")
+async def rag_reindex_remote_status_endpoint(request: Request, linkId: str = "", path: str = ""):
+    """Прогресс P2P-индексации: /rag/reindex-remote/status?linkId=..&path=.."""
+    if not_authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    job_key = f"{(linkId or '').strip()}:{(path or '').strip()}"
+    entry = RAG_REMOTE_INDEX_STATUS.get(job_key)
+    if not entry:
+        return {"running": False, "done": True, "indexed": 0, "skipped": 0,
+                "failed": 0, "pending": 0, "lastError": None, "path": path}
+    return entry
+
+
 @app.get("/rag/status")
 async def rag_status_endpoint(request: Request, path: str = "", docId: str = ""):
     """Прогресс индексации пути (RAG 3.0 §2)."""

@@ -20,3 +20,4 @@ websockets
 httpx~=0.25.2
 insightface
 opencv-python-headless
+aiortc>=1.15
