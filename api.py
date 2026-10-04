@@ -603,6 +603,8 @@ async def rag_import_local_endpoint(request: Request):
     tags_in = body.get("tags") or []
     tags = _rag_scope_tags(tags_in, scope)
     ctx = await _build_ctx_from_request(request)
+    if not trusted_private_access(request, ctx):
+        raise HTTPException(status_code=403, detail="Only the node owner can index local files")
     owner = ctx.user_id or user_context.node_owner()
 
     # Реальный путь на диске: realPath /home/<u>/<share>/... или itemPath /<share>/...
@@ -894,6 +896,8 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
         return {"done": True, "indexed": 0, "failed": 0, "note": f"excluded:{skipped_rule}"}
 
     ctx = await _build_ctx_from_request(request)
+    if not (trusted_private_access(request, ctx) or request.headers.get("X-OMD-Node-Local") == "1"):
+        raise HTTPException(status_code=403, detail="Only the node owner can index local folders")
     owner = ctx.user_id or user_context.node_owner()
     tags = _rag_scope_tags(body.get("tags") or [], scope)
 
@@ -1515,6 +1519,9 @@ async def rag_delete_endpoint(request: Request):
     if not_authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     body = await request.json()
+    ctx = await _build_ctx_from_request(request)
+    if not (trusted_private_access(request, ctx) or request.headers.get("X-OMD-Node-Local") == "1"):
+        raise HTTPException(status_code=403, detail="Only the node owner can delete index entries")
     source = (body.get("source") or body.get("docId") or "").strip()
     if not source:
         raise HTTPException(status_code=422, detail="source or docId is required")
@@ -1583,7 +1590,7 @@ async def _build_ctx_from_request(request: Request):
         history  = [],
         omd_key  = omd_key,
     )
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     # Владелец ноды — только явный X-OMD-User или NODE_OWNER из конфига.
     # Локальный/приватный запрос без них НЕ назначается владельцем (никакого
     # ос-юзера): user_id остаётся "anonymous", имя берётся из настроек или "User".
@@ -1672,6 +1679,61 @@ def is_private_mode(request: Request, ctx: user_context.UserContext | None = Non
 
     return False
 
+
+def validated_node_owner(ctx: user_context.UserContext | None) -> bool:
+    """Строгий гейт приватных данных ноды: знания Chroma, фото-индекс, люди.
+
+    is_private_mode() недостаточна, потому что (а) заголовок X-OMD-Private-Mode
+    может прислать сам клиент (HttpDrive:712 — подделывается), и (б) правило
+    «localhost = приват» опасно для публичной AI-ноды: ВСЕ гостевые запросы
+    приходят на onmychat как localhost (проксируются C++-нодой), а ctx без
+    валидного omd_key — anonymous → приватный доступ чужаку. Поэтому доступ к
+    локальным приватным данным разрешаем только identity, реально
+    валидированной gateway'ем (getProfileData по omd_key запроса) и
+    совпадающей с NODE_OWNER (или юзером ОС для встроенного клиента).
+    Невалидные ключи (web_*), anonymous и приглашённые (X-OMD-Private-Mode) —
+    НЕ владельцы: их данные живут в их личном GunDB на устройстве.
+    """
+    if not ctx or not ctx.user_id or ctx.user_id in ("anonymous", "system", ""):
+        return False
+    if ctx.user_id.startswith("web_"):
+        return False
+    import getpass
+    node_owner = SETTINGS.get("NODE_OWNER") or getpass.getuser()
+    return ctx.user_id == node_owner
+
+
+def trusted_caller_role(request: Request) -> str:
+    """Роль вызывающего из ДОВЕРЕННЫХ заголовков C++-туннеля.
+
+    C++-нода перед пересадкой байт в локальный onmychat выдирает из HTTP-запроса
+    клиентские X-OMD-Caller-* и подставляет gateway-валидированные
+    X-OMD-Caller-User / X-OMD-Caller-Role (owner|shared|guest) +
+    X-OMD-Target-Owner (см. OnMyDiskLinkClient::writeInjectedRequestData).
+    Спуфить их нельзя: путь наружу на 0.0.0.0 в uvicorn богадствует локальную
+    сеть — не идентичность, dlatego роль считается ДОСТОВЕРНОЙ только если
+    прислана самим нодным прокси; прямые внешние запросы без туннеля к ним не
+    имеют доступа (uvicorn слушает на loopback).
+    """
+    role = (request.headers.get("X-OMD-Caller-Role") or "").strip().lower()
+    return role if role in ("owner", "shared", "guest") else ""
+
+
+def trusted_private_access(request: Request, ctx: user_context.UserContext | None) -> bool:
+    """Приватные знания/фото/люди ноды — только владелец.
+
+    Доверенная роль известна в точке вызова onmychat из C++-туннеля
+    (TunnelOpen: initiatorUser == targetOwner — gateway проверил). Если туннельных
+    заголовков нет (встроенный локальный клиент/легаси), остаётся строгий
+    fallback validated_node_owner(ctx) — валидированный gateway'ем юзер.
+    """
+    role = trusted_caller_role(request)
+    if role:
+        if role == "owner":
+            return True   # gateway доказал: initiatorUser == владелец ноды
+        return False      # shared/guest — приватные данные закрыты
+    return validated_node_owner(ctx)
+
 def get_omd_key(
     request: Request,
     omd_key: str | None = Query(None),
@@ -1739,7 +1801,7 @@ async def search(
         lang = request.headers.get("lang") or "en"
 
     ctx = get_ctx(omd_key)
-    private_mode = is_private_mode(request, ctx)
+    private_mode = trusted_private_access(request, ctx)
 
     out_dict = {}
     grouped_documents = {}
@@ -2409,7 +2471,7 @@ async def get_horde_models():
 @app.get("/assistant/loras")
 async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
@@ -2666,7 +2728,7 @@ async def device_memory_endpoint(
     limit: int = Query(0, ge=0),  # 0 = весь список (совместимость со старым клиентом)
 ):
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         return {"memories": [], "total": 0, "offset": 0, "hasMore": False}
     try:
         page = _device_cards_response(offset=offset, limit=limit or None)
@@ -2693,7 +2755,7 @@ async def device_memory_thumb_endpoint(
     Для папок ищем обложку (folder.jpg/cover.jpg/...) внутри папки.
     """
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
@@ -2729,7 +2791,7 @@ async def device_memory_thumb_endpoint(
 async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
     """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB и Readme.md на диске."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
     body = await request.json()
     try:
@@ -2762,7 +2824,7 @@ async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None 
 @app.delete("/api/device_memory/{mem_id:path}")
 async def delete_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         # document::<document_id> — сгруппированный индексируемый документ
@@ -2785,7 +2847,7 @@ async def faces_detect_endpoint(
 ):
     """Обнаружение лиц на фото, извлечение BBox и сопоставление с известными персонами."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
@@ -2840,7 +2902,7 @@ async def faces_register_endpoint(
 ):
     """Регистрация лица (привязка имени к BBox на фотографии) в omd_faces."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     body = await request.json()
@@ -2907,7 +2969,7 @@ async def faces_people_endpoint(
 ):
     """Список известных персон для текущего владельца устройства."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
@@ -2930,7 +2992,7 @@ async def faces_rename_person_endpoint(
 ):
     """Переименование известной персоны."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     body = await request.json()
@@ -2958,7 +3020,7 @@ async def faces_delete_person_endpoint(
 ):
     """Удаление персоны из базы лиц."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     try:
@@ -3056,7 +3118,7 @@ async def faces_scan_archive_endpoint(
     Фоновый поиск персоны на других фотографиях архива (авто-разметка).
     """
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     global _face_scan_state
@@ -3116,7 +3178,7 @@ async def faces_scan_status_endpoint(
 ):
     """Текущий статус фонового сканирования архива лиц."""
     ctx = get_ctx(omd_key)
-    if not is_private_mode(request, ctx):
+    if not trusted_private_access(request, ctx):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     global _face_scan_state
@@ -3207,7 +3269,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     # Владелец ноды — только явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request).
     # Локальный запрос без них владельцем не становится: user_id тянется из get_ctx
     # ("anonymous" при отсутствии валидного omd_key/токена). Системного юзера не используем.
@@ -3704,7 +3766,7 @@ async def recognize_endpoint(
 ):
     chat = chat or "default"
     ctx = get_ctx(omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     if settings:
         try:
             provided_settings = json.loads(settings)
@@ -3732,7 +3794,7 @@ async def recognize_endpoint(
 async def generate_character_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -3768,7 +3830,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
 async def generate_general_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -3797,7 +3859,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
 async def generate_character_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -3814,7 +3876,7 @@ async def generate_character_image_prompt(request: Request, data: GenerateInput)
 async def generate_general_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
-    ctx.private_mode = is_private_mode(request, ctx)
+    ctx.private_mode = trusted_private_access(request, ctx)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
