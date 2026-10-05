@@ -1367,6 +1367,12 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
 
     ctx = await _build_ctx_from_request(request)
     owner = ctx.user_id or user_context.node_owner()
+    # Писать в ChromaDB ноды имеет смысл только владельцу ноды. Внешний
+    # пользователь (guest публичной ноды) индексирует документы СВОЕГО
+    # устройства: карточка с чанками уезжает тем же P2P-туннелем в его личную
+    # GunDB, а нода читает их оттуда (hub /api/chunks). В её собственный
+    # Chroma чужие документы не попадают.
+    write_node_index = trusted_private_access(request, ctx)
     tags = _rag_scope_tags(tags_in, scope)
     job_key = f"{link_id}:{remote_path}"
 
@@ -1419,7 +1425,7 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                 title = doc_id.rstrip("/").split("/")[-1] or name
                 stamp = entry.get("lastModified") or ""
                 try:
-                    if not force and unified_memory.has_document(doc_id, source_stamp=stamp):
+                    if not force and write_node_index and unified_memory.has_document(doc_id, source_stamp=stamp):
                         status["skipped"] += 1
                         logging.info(f"[rag/reindex-remote] skip unchanged {doc_id}")
                         continue
@@ -1431,11 +1437,13 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                         continue
 
                     payload = await _rag_stateless_payload(ctx, text, doc_id, title, tags, owner)
-                    # Локальный RAG-индекс ноды (ChromaDB) — тот же путь, что /rag/index.
-                    n = unified_memory.chunk_and_index_document(
-                        text, document_id=doc_id, owner=owner, tags=payload.get("tags") or tags,
-                        title=title, source_stamp=stamp,
-                    )
+                    # Локальный RAG-индекс ноды (ChromaDB) — только владельцу.
+                    n = 0
+                    if write_node_index:
+                        n = unified_memory.chunk_and_index_document(
+                            text, document_id=doc_id, owner=owner, tags=payload.get("tags") or tags,
+                            title=title, source_stamp=stamp,
+                        )
                     # Личный GunDB пишет устройство: возвращаем карточку тем же туннелем.
                     await device.put_knowledge({
                         "title": payload.get("title") or title,
@@ -1451,7 +1459,13 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                         "chunks": payload.get("chunks") or [],
                     })
                     status["indexed"] += 1
-                    logging.info(f"[rag/reindex-remote] {doc_id}: {n} chunks, card stored on device")
+                    if write_node_index:
+                        logging.info(f"[rag/reindex-remote] {doc_id}: {n} chunks, card stored on device")
+                    else:
+                        logging.info(
+                            f"[rag/reindex-remote] {doc_id}: {len(payload.get('chunks') or [])} chunks "
+                            f"в GunDB устройства (Chroma ноды не тронут)"
+                        )
                 except Exception as e:
                     status["failed"] += 1
                     status["lastError"] = str(e)
