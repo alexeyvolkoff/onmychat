@@ -226,7 +226,11 @@ def main() -> int:
             embs.append(e[j] if e is not None else None)
 
         col.upsert(ids=new_ids, documents=docs, metadatas=metas_out, embeddings=embs)
-        col.delete(ids=want_old)
+        # Удалять ТОЛЬКО переименованные id. У memory_card id — это UUID и он
+        # не меняется: такой же delete снёс бы только что записанную запись.
+        stale = [b[0] for b in batch if b[0] != b[1]]
+        if stale:
+            col.delete(ids=stale)
         done += len(batch)
         print("  %d/%d" % (done, len(plan)))
 
@@ -238,10 +242,16 @@ def main() -> int:
         if (m or {}).get("document_id")
         and not (m or {})["document_id"].startswith("/%s/" % NAMESPACE)
     ]
-    print("  записей: %d" % col.count())
+    final = col.count()
+    print("  записей: %d (было %d)" % (final, total))
     print("  document_id без /%s/: %d" % (NAMESPACE, len(bad)))
     for b in bad[:10]:
         print("    осталось: %s" % b)
+
+    # Потеря записей — всегда баг в скрипте (например delete по неизменённому id).
+    if final < total:
+        print("\nОШИБКА: потеряно %d записей. Откатись из бэкапа." % (total - final))
+        return 5
     return 0 if not bad else 4
 
 
