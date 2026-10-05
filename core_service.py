@@ -2575,6 +2575,49 @@ def _extract_hashtags(text: str, limit: int = 7) -> list:
     return tags
 
 
+async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_map: dict, tag: str, limit: int = 600) -> bool:
+    """Фолбэк для гостевых /learn и attach: карточка живёт в GunDB-хабе,
+    в ChromaDB её нет (raw импорт stateless). Ищем по document_id или имени
+    файла и инжектим аннотацию как факт + source-запись. Явно упомянутый
+    документ должен попадать в ответ независимо от семантической близости."""
+    if not doc_filter or not ctx.omd_key:
+        return False
+    try:
+        hub_cards = await _fetch_all_knowledge_from_hub(_simple_hash(ctx.omd_key))
+    except Exception as e:
+        logging.warning(f"[inject_facts] hub cards fetch error: {e}")
+        return False
+    want_fn = re.sub(r'^\s*#+\s*', '', (doc_filter or "").split("/")[-1]).strip()
+    for card in hub_cards:
+        if not isinstance(card, dict):
+            continue
+        card_doc = str(card.get("document_id") or card.get("docId") or "").strip()
+        card_fn = card_doc.split("/")[-1] if card_doc else ""
+        if card_doc != doc_filter and card_fn != want_fn:
+            continue
+        body = str(card.get("text") or card.get("annotation") or "").strip()
+        if not body:
+            body = " ".join(str(c.get("text", "")) for c in (card.get("chunks") or []) if isinstance(c, dict)).strip()
+        if not body:
+            continue
+        clean_body = re.sub(r'^\s*#+\s*', '', body).strip()
+        card_title = str(card.get("title") or "").strip() or want_fn
+        facts.append(f"• [File: {want_fn}] {clean_body[:limit]}")
+        key = f"{tag}:{doc_filter}"
+        if key not in sources_map:
+            sources_map[key] = {
+                "title":       card_title,
+                "owner":       ctx.user_id or user_context.node_owner(),
+                "clickable":   True,
+                "document_id": doc_filter,
+                "fullPath":    doc_filter,
+                "url":         doc_filter,
+            }
+        logging.info(f"[inject_facts] card from hub ({tag}): {doc_filter} ({len(clean_body)} chars)")
+        return True
+    return False
+
+
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False, focus: dict|None = None, attached_docs: list|None = None) -> tuple[list[str], list[dict]]:
     logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
@@ -2808,44 +2851,11 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")
 
-        # 2b. Focus-фолбэк по карточкам hub. Гостевой /learn идёт через
-        #     /rag/import/raw — импорт stateless, в ChromaDB он не пишется,
-        #     карточку пользователь видит через свой GunDB-нода (hub). Если
-        #     фокусный документ в базе не нашёлся, тянем его карточку из хаба
-        #     по document_id. Явный /learn выделяет документ пользователем —
-        #     порог РАГ-релевантности здесь искать ничего не должен.
-        if focus_doc and not db_results and ctx.omd_key:
-            try:
-                hub_cards = await _fetch_all_knowledge_from_hub(_simple_hash(ctx.omd_key))
-                focus_fn = re.sub(r'^\s*#+\s*', '', focus_doc.split("/")[-1]).strip()
-                for card in hub_cards:
-                    if not isinstance(card, dict):
-                        continue
-                    card_doc = str(card.get("document_id") or card.get("docId") or "").strip()
-                    card_fn = card_doc.split("/")[-1] if card_doc else ""
-                    if card_doc != focus_doc and card_fn != focus_fn:
-                        continue
-                    body = str(card.get("text") or card.get("annotation") or "").strip()
-                    if not body:
-                        body = " ".join(str(c.get("text", "")) for c in (card.get("chunks") or []) if isinstance(c, dict)).strip()
-                    if not body:
-                        continue
-                    clean_body = re.sub(r'^\s*#+\s*', '', body).strip()
-                    card_title = str(card.get("title") or "").strip() or focus_fn
-                    facts.append(f"• [File: {focus_fn}] {clean_body[:600]}")
-                    if f"hub:{focus_doc}" not in sources_map:
-                        sources_map[f"hub:{focus_doc}"] = {
-                            "title":       card_title,
-                            "owner":       ctx.user_id or user_context.node_owner(),
-                            "clickable":   True,
-                            "document_id": focus_doc,
-                            "fullPath":    focus_doc,
-                            "url":         focus_doc,
-                        }
-                    logging.info(f"[inject_facts] focus from hub card: {focus_doc} ({len(clean_body)} chars)")
-                    break
-            except Exception as e:
-                logging.warning(f"[inject_facts] hub focus fallback error: {e}")
+        # 2b. Focus-фолбэк по карточкам hub: гостевой /learn (raw импорт)
+        #     stateless — в ChromaDB его нет. Если по focus_doc из базы
+        #     извлечь нечего, тянем карточку из хаба по document_id.
+        if focus_doc and not db_results:
+            await _inject_hub_card_fallback(ctx, focus_doc, facts, sources_map, "hub")
 
     # 3. Attached docs: релевантные чанки приаттаченных к чату документов
     #    (ChromaDB, owner-пути). Инжектим БЕЗУСЛОВНО, независимо от skip_db:
@@ -2889,6 +2899,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                                 "url":         full_path if clickable else "",
                             }
                 logging.info(f"[inject_facts] attached chunks for {doc_filter}: {len(attach_results)}")
+                if not attach_results:
+                    await _inject_hub_card_fallback(ctx, doc_filter, facts, sources_map, "attached-hub")
         except Exception as e:
             logging.error(f"[inject_facts] attached docs chunk error: {e}")
 
