@@ -388,29 +388,57 @@ def search(
 
 # ─── Карточки памяти и сопроводительные Readme.md ──────────────────────────
 
+def _doc_path_candidates(path: str, user: str) -> list:
+    """Варианты реального пути на диске для виртуального пути."""
+    out = []
+    if os.path.exists(path):
+        out.append(path)
+    if path.startswith("/"):
+        out.append(f"/home/{user}{path}")
+    norm = "/" + path.strip("/")
+    if norm.startswith("/home/"):
+        parts = norm.split("/", 3)
+        if len(parts) == 4:
+            out.append(f"/home/{user}/{parts[3]}")
+    return out
+
+
+def _strip_device_namespace(path: str) -> str | None:
+    """`/<устройство>/<путь>` → `/<путь>`.
+
+    Полный логический путь начинается с префикса устройства (hostname, напр.
+    /beelink), которого нет на диске ноды — файлы лежат в /home/<user>/<путь>.
+    `home` пропускаем, это реальный сегмент пути, а не устройство.
+    """
+    parts = path.split("/")
+    if len(parts) > 2 and parts[1] and parts[1] != "home":
+        return "/" + "/".join(parts[2:])
+    return None
+
+
 def resolve_doc_path(document_id: str) -> str | None:
     """Виртуальный путь документа (document_id) → реальный путь на диске ноды,
-    если файл/папка существует, иначе None."""
+    если файл/папка существует, иначе None.
+
+    Принимает и старый вид без устройства (`/Pictures/photo.png`), и полный
+    логический путь (`/beelink/Pictures/photo.png`) — сначала пробуем как есть,
+    и только если не нашлось — отбрасываем сегмент устройства.
+    """
     if not document_id or document_id.startswith(("http", "user:")):
         return None
     import getpass
     user = getpass.getuser()
 
-    # Варианты путей на диске
-    candidates = []
-    if os.path.exists(document_id):
-        candidates.append(document_id)
-    if document_id.startswith("/"):
-        candidates.append(f"/home/{user}{document_id}")
-    norm = "/" + document_id.strip("/")
-    if norm.startswith("/home/"):
-        parts = norm.split("/", 3)
-        if len(parts) == 4:
-            candidates.append(f"/home/{user}/{parts[3]}")
-
-    for c in candidates:
+    for c in _doc_path_candidates(document_id, user):
         if os.path.exists(c):
             return c
+
+    # Полный логический путь: первый сегмент — префикс устройства, не часть пути.
+    rest = _strip_device_namespace(document_id)
+    if rest:
+        for c in _doc_path_candidates(rest, user):
+            if os.path.exists(c):
+                return c
     return None
 
 
