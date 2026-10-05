@@ -1180,11 +1180,17 @@ def search_for_rag(
         tag_filter = None
     else:
         tag_filter = None if private_mode else PUBLIC_TAGS
+
+    # Явный фокус (/learn <файл>, прикреплённый документ) — пользователь сам
+    # указал документ, его семантическая близость к вопросу не валидна:
+    # «посмотри, нормально ли получилось» по эмбеддингу далёк от текста
+    # презентации, и порог RAG_THRESHOLD отрезал бы все чанки. Пропускаем всё.
+    focus_threshold = 2.0 if document_id else RAG_THRESHOLD
     return search(
         query,
         tags_filter=tag_filter,
         top_k=top_k,
-        threshold=RAG_THRESHOLD,
+        threshold=focus_threshold,
         record_types=["file_chunk", "memory_card"],
         document_id=document_id,
         recent_first=True,

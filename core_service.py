@@ -2808,6 +2808,45 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")
 
+        # 2b. Focus-фолбэк по карточкам hub. Гостевой /learn идёт через
+        #     /rag/import/raw — импорт stateless, в ChromaDB он не пишется,
+        #     карточку пользователь видит через свой GunDB-нода (hub). Если
+        #     фокусный документ в базе не нашёлся, тянем его карточку из хаба
+        #     по document_id. Явный /learn выделяет документ пользователем —
+        #     порог РАГ-релевантности здесь искать ничего не должен.
+        if focus_doc and not db_results and ctx.omd_key:
+            try:
+                hub_cards = await _fetch_all_knowledge_from_hub(_simple_hash(ctx.omd_key))
+                focus_fn = re.sub(r'^\s*#+\s*', '', focus_doc.split("/")[-1]).strip()
+                for card in hub_cards:
+                    if not isinstance(card, dict):
+                        continue
+                    card_doc = str(card.get("document_id") or card.get("docId") or "").strip()
+                    card_fn = card_doc.split("/")[-1] if card_doc else ""
+                    if card_doc != focus_doc and card_fn != focus_fn:
+                        continue
+                    body = str(card.get("text") or card.get("annotation") or "").strip()
+                    if not body:
+                        body = " ".join(str(c.get("text", "")) for c in (card.get("chunks") or []) if isinstance(c, dict)).strip()
+                    if not body:
+                        continue
+                    clean_body = re.sub(r'^\s*#+\s*', '', body).strip()
+                    card_title = str(card.get("title") or "").strip() or focus_fn
+                    facts.append(f"• [File: {focus_fn}] {clean_body[:600]}")
+                    if f"hub:{focus_doc}" not in sources_map:
+                        sources_map[f"hub:{focus_doc}"] = {
+                            "title":       card_title,
+                            "owner":       ctx.user_id or user_context.node_owner(),
+                            "clickable":   True,
+                            "document_id": focus_doc,
+                            "fullPath":    focus_doc,
+                            "url":         focus_doc,
+                        }
+                    logging.info(f"[inject_facts] focus from hub card: {focus_doc} ({len(clean_body)} chars)")
+                    break
+            except Exception as e:
+                logging.warning(f"[inject_facts] hub focus fallback error: {e}")
+
     # 3. Attached docs: релевантные чанки приаттаченных к чату документов
     #    (ChromaDB, owner-пути). Инжектим БЕЗУСЛОВНО, независимо от skip_db:
     #    пока карточка активна, документ применяется ко всем последующим ответам.
