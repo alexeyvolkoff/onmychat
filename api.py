@@ -3548,10 +3548,21 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             
             if not raw_intent:
 
-                # Check for RAG intent independently 
-                # (so we don't accidentally class it as a tool if it isn't meant to be)
-                raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
-                intent, search_query = core_service.parse_intent_and_query(raw_intent, default_prompt=prompt)
+                # Follow-up /learn: документ уже выбран пользователем (rag_focus).
+                # Классифицировать интент LLM-ом излишне: это секунды латентности,
+                # а вывод всё равно не меняет ничего — facts ограничены фокусным
+                # документом. Ставим explain и берём запрос как есть.
+                focus_doc_id = ""
+                if rag_focus and isinstance(rag_focus, dict):
+                    focus_doc_id = str(rag_focus.get("docId") or rag_focus.get("document_id") or "").strip()
+                if focus_doc_id:
+                    intent = "explain"
+                    search_query = re.sub(r"^\s*/(learn|recognize)\s+\S+", "", prompt).strip() or prompt
+                    raw_intent = f"Focused /learn follow-up: {focus_doc_id}"
+                    logging.info(f"[chat] focused question: intent forced to explain, no classification ({focus_doc_id})")
+                else:
+                    raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
+                    intent, search_query = core_service.parse_intent_and_query(raw_intent, default_prompt=prompt)
             
             # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
             # This ensures chat is in the index and has a title
