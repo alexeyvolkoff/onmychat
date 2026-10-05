@@ -2599,6 +2599,9 @@ async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_m
         if not body:
             body = " ".join(str(c.get("text", "")) for c in (card.get("chunks") or []) if isinstance(c, dict)).strip()
         if not body:
+            # Хаб отдаёт карточки без текста (только title/tags/document_id) —
+            # контент может привезти только клиент через provided_knowledge.
+            logging.info(f"[inject_facts] hub card matched but body is empty: {doc_filter}")
             continue
         clean_body = re.sub(r'^\s*#+\s*', '', body).strip()
         card_title = str(card.get("title") or "").strip() or want_fn
@@ -2680,12 +2683,21 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     if mid and emb:
                         emb_map[mid] = emb
                 # Фильтруем по cosine similarity: абсолютный пол + относительный
-                # отсекатель (0.55×best) + максимум 3 карточки
+                # отсекатель (0.55×best) + максимум 3 карточки.
+                # Явная карточка focus (/learn) в scoringе не участвует — она
+                # уже выбрана пользователем и должна попасть в facts всегда.
                 sim_floor = float(SETTINGS.get("KNOWLEDGE_RELEVANCE_THRESHOLD", "0.25"))
                 relative_ratio = float(SETTINGS.get("KNOWLEDGE_RELATIVE_RATIO", "0.55"))
+                forced = focused if focus_doc else []
+                forced_keys = {
+                    (m.get("id") or m.get("memory_id") or m.get("document_id") or "")
+                    for m in forced if isinstance(m, dict)
+                }
                 scored = []
                 for m in provided_knowledge:
                     mid = m.get("id") or m.get("memory_id") if isinstance(m, dict) else ""
+                    if mid and mid in forced_keys:
+                        continue
                     emb = emb_map.get(mid) if mid else None
                     if emb and isinstance(emb, list):
                         score = sum(q * e for q, e in zip(query_emb, emb))
@@ -2696,7 +2708,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                             scored.append((m, sim))
                 scored.sort(key=lambda x: x[1], reverse=True)
                 rel_cutoff = (scored[0][1] * relative_ratio) if scored else 0
-                filtered_knowledge = [m for m, s in scored if s >= rel_cutoff][:3]
+                filtered_knowledge = forced + [m for m, s in scored if s >= rel_cutoff][:max(0, 3 - len(forced))]
+                if forced:
+                    logging.info(f"[inject_facts] focus forced {len(forced)} provided card(s) past the relevance filter")
                 logging.info(
                     f"[inject_facts] relevance filter: {len(provided_knowledge)} → {len(filtered_knowledge)} cards "
                     f"(floor={sim_floor}, relative_cutoff={rel_cutoff:.3f})"
