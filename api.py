@@ -263,6 +263,20 @@ def _norm_doc_path(path: str) -> str:
     return f"/{parts[2]}" if len(parts) == 3 else s.rstrip("/")
 
 
+def _norm_logical_path(path: str) -> str:
+    """Полный логический путь документа /<устройство>/<путь-к-файлу>.
+
+    В отличие от _norm_doc_path НЕ отбрасывает первый сегмент: он несёт
+    префикс устройства (hostname, напр. /beelink — не внутренний linkId) и
+    делает document_id уникальным, когда файлы с одинаковым именем лежат
+    на разных устройствах.
+    """
+    if not path:
+        return path
+    s = "/" + path.strip("/")
+    return s.rstrip("/") or "/"
+
+
 RAG_INDEX_STATUS = {}   # path → {"indexed": n, "pending": n, "failed": n, "lastError": ..., "done": bool}
 _RAG_SINGLE_LOCKS: dict = {}   # phys path → asyncio.Lock: не даём запускать две индексации одного файла одновременно
 _RAG_SETTLE_SECONDS = 1.5      # пауза перед индексацией одиночного файла: ждём, пока перестанет меняться (нода шлёт /rag/index на каждый чанк записи)
@@ -603,7 +617,14 @@ async def rag_import_raw_endpoint(request: Request):
 
     ctx = await _build_ctx_from_request(request)
     owner = owner or ctx.user_id or user_context.node_owner()
-    doc_id = _norm_doc_path(source) if source else f"upload:{filename}"
+    # X-OMD-Doc-Path: полный логический путь /<устройство>/<путь>. Нужен отдельно
+    # от X-OMD-Source, который остаётся путём относительно устройства-источника,
+    # поэтому старые вызовы без этого заголовка работают как раньше.
+    logical = (_decode_hdr(request, "X-OMD-Doc-Path") or "").strip()
+    if logical:
+        doc_id = _norm_logical_path(logical)
+    else:
+        doc_id = _norm_doc_path(source) if source else f"upload:{filename}"
     title = filename.split("/")[-1].split("?")[0].lstrip("/") or doc_id
     tags = _rag_scope_tags(tags_in, scope)
 
@@ -654,7 +675,12 @@ async def rag_import_local_endpoint(request: Request):
         raise HTTPException(status_code=404, detail=f"file not found on node: {source}")
 
     filename = os.path.basename(real_path)
-    doc_id = _norm_doc_path(real_path)
+    # Полный логический путь от клиента (/<устройство>/<путь>) становится
+    # document_id; source остаётся путём внутри этой ноды. Без него _norm_doc_path
+    # отбросил бы сегмент устройства, и документы с одинаковым именем на разных
+    # устройствах получили бы один document_id.
+    client_doc_path = (body.get("docPath") or "").strip()
+    doc_id = _norm_logical_path(client_doc_path) if client_doc_path else _norm_doc_path(real_path)
     try:
         mtime_val = datetime.datetime.fromtimestamp(os.stat(real_path).st_mtime).isoformat(timespec="seconds")
     except Exception:
@@ -778,7 +804,12 @@ async def rag_recognize_local_endpoint(request: Request):
         raise HTTPException(status_code=404, detail=f"image not found on node: {source}")
 
     filename = os.path.basename(real_path)
-    doc_id = _norm_doc_path(real_path)
+    # Полный логический путь от клиента (/<устройство>/<путь>) становится
+    # document_id; source остаётся путём внутри этой ноды. Без него _norm_doc_path
+    # отбросил бы сегмент устройства, и документы с одинаковым именем на разных
+    # устройствах получили бы один document_id.
+    client_doc_path = (body.get("docPath") or "").strip()
+    doc_id = _norm_logical_path(client_doc_path) if client_doc_path else _norm_doc_path(real_path)
     try:
         mtime_val = datetime.datetime.fromtimestamp(os.stat(real_path).st_mtime).isoformat(timespec="seconds")
     except Exception:
@@ -862,7 +893,14 @@ async def rag_recognize_raw_endpoint(request: Request):
 
     ctx = await _build_ctx_from_request(request)
     owner = owner or ctx.user_id or user_context.node_owner()
-    doc_id = _norm_doc_path(source) if source else f"image:{filename}"
+    # X-OMD-Doc-Path: полный логический путь /<устройство>/<путь>. Нужен отдельно
+    # от X-OMD-Source, который остаётся путём относительно устройства-источника,
+    # поэтому старые вызовы без этого заголовка работают как раньше.
+    logical = (_decode_hdr(request, "X-OMD-Doc-Path") or "").strip()
+    if logical:
+        doc_id = _norm_logical_path(logical)
+    else:
+        doc_id = _norm_doc_path(source) if source else f"image:{filename}"
     title = filename.split("/")[-1].split("?")[0].lstrip("/") or doc_id
     tags = _rag_scope_tags(tags_in, scope)
 
