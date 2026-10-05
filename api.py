@@ -383,6 +383,17 @@ def _rag_scope_tags(body_tags, scope: str) -> list:
     return tags
 
 
+def _err_text(exc: BaseException) -> str:
+    """Never lose the exception TYPE in a log line.
+
+    `str(TimeoutError())`, `str(EOFError())` and `str(ConnectionResetError())`
+    are all empty strings, so a bare `f"failed: {e}"` prints "failed: " and
+    tells us nothing about what actually broke.
+    """
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 HUB_URL = SETTINGS.get("HUB_URL", "https://direct.onmydisk.net:8765")
 
 async def fetch_chunks_from_hub(token_hash: str, memory_id: str) -> list:
@@ -1468,15 +1479,15 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                         )
                 except Exception as e:
                     status["failed"] += 1
-                    status["lastError"] = str(e)
-                    logging.warning(f"[rag/reindex-remote] {doc_id} failed: {e}")
+                    status["lastError"] = _err_text(e)
+                    logging.warning(f"[rag/reindex-remote] {doc_id} failed: {_err_text(e)}")
                 finally:
                     status["pending"] = max(0, status["pending"] - 1)
                 await asyncio.sleep(0)
         except Exception as e:
             status["failed"] += 1
-            status["lastError"] = str(e)
-            logging.error(f"[rag/reindex-remote] {link_id} {remote_path} failed: {e}")
+            status["lastError"] = _err_text(e)
+            logging.error(f"[rag/reindex-remote] {link_id} {remote_path} failed: {_err_text(e)}")
         finally:
             status["running"] = False
             status["done"] = True

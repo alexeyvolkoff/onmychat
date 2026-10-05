@@ -549,7 +549,11 @@ class P2PConnection:
 
     def _on_connection_state(self) -> None:
         state = getattr(self._pc, "connectionState", "")
-        if state in ("failed", "closed", "disconnected"):
+        # "disconnected" is transient (ICE candidate switch / short blip) and the
+        # peer recovers on its own; treating it as terminal tore down healthy
+        # tunnels mid-walk. Only "failed"/"closed" are terminal. The keepalive
+        # loop reaps a channel that really died.
+        if state in ("failed", "closed"):
             asyncio.create_task(self._on_closed(f"peer connection {state}"))
 
     async def _on_closed(self, reason: str) -> None:
@@ -690,27 +694,39 @@ class DeviceClient:
 
     async def read_file(self, path: str, max_bytes: Optional[int] = None) -> bytes:
         """Read a whole file through chunked `Open` + `Read` RPCs."""
-        opened = await self.conn.call("Open", path=path)
-        handle_id = opened.get("handleId")
-        size = int(opened.get("size") or 0)
+        # `Open` returns handleId at the ENVELOPE top level (like the C++ node and
+        # client-device-server.js do), not inside `result`. Using call() here lost
+        # it, so every Read fell back to re-resolving the path from the share root.
+        opened = await self.conn.rpc("Open", path=path)
+        result = opened.get("result") or {}
+        handle_id = opened.get("handleId") or result.get("handleId")
+        size = int(result.get("size") or 0)
         limit = size if max_bytes is None else min(size, max_bytes)
 
         data = bytearray()
         offset = 0
-        while offset < limit:
-            params: Dict[str, Any] = {"offset": offset,
-                                      "size": min(self._settings.chunk_size, limit - offset)}
+        try:
+            while offset < limit:
+                params: Dict[str, Any] = {"offset": offset,
+                                          "size": min(self._settings.chunk_size, limit - offset)}
+                if handle_id:
+                    params["handleId"] = handle_id
+                response = await self.conn.rpc("Read", path=path, **params)
+                chunk_b64 = response.get("data") or ""
+                if not chunk_b64:
+                    break
+                chunk = base64.b64decode(chunk_b64)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                offset += len(chunk)
+        finally:
+            # Release the device-side handle (and its file object) even on error.
             if handle_id:
-                params["handleId"] = handle_id
-            response = await self.conn.rpc("Read", path=path, **params)
-            chunk_b64 = response.get("data") or ""
-            if not chunk_b64:
-                break
-            chunk = base64.b64decode(chunk_b64)
-            if not chunk:
-                break
-            data.extend(chunk)
-            offset += len(chunk)
+                try:
+                    await self.conn.rpc("Close", path=path, handleId=handle_id)
+                except Exception as exc:  # pragma: no cover - best effort cleanup
+                    log.debug("P2P: Close %s on %s failed: %s", handle_id, path, exc)
         return bytes(data)
 
     async def put_knowledge(self, card: Dict[str, Any]) -> Dict[str, Any]:
