@@ -1421,31 +1421,10 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
         # resume from the first file that is still missing.
         # resume state: doc_ids already stored in the device's GunDB this job
         _done: set = set()
-        for attempt in (1, 2):
-            try:
-                await _run_once()
-                return
-            except Exception as e:
-                if attempt == 2:
-                    status["failed"] += 1
-                    status["lastError"] = _err_text(e)
-                    logging.error(
-                        f"[rag/reindex-remote] {link_id} {remote_path} "
-                        f"failed after retry: {_err_text(e)}"
-                    )
-                    return
-                logging.warning(
-                    f"[rag/reindex-remote] {link_id} {remote_path}: tunnel lost "
-                    f"({_err_text(e)}), retrying once with a new tunnel"
-                )
-                if client is not None:
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
-                client = None
-                status["failed"] = max(0, status["failed"] - 1)
 
+        # NOTE: _run_once must be defined BEFORE the retry loop below. A nested
+        # async def only binds its name when execution reaches the def, so
+        # calling it from a loop placed above raised UnboundLocalError.
         async def _run_once():
             nonlocal client
             try:
@@ -1557,6 +1536,53 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                     f"[rag/reindex-remote] {job_key} done: {status['indexed']} indexed, "
                     f"{status['skipped']} skipped, {status['failed']} failed"
                 )
+
+        # Retry driver. A walk over a real folder takes minutes and ICE can drop
+        # the channel mid-flight (candidate switch, NAT rebind, mobile handover).
+        # Losing the whole job on one blip is unacceptable, so we allow one fresh
+        # tunnel and resume from the first file that is still missing.
+        #
+        # The outer try/finally is deliberate: _run_once has its own finally, but
+        # a failure raised BEFORE its body starts (or during retry bookkeeping)
+        # would otherwise leave status["running"]=True forever, and the client
+        # polls /status in an endless loop on a job that no longer exists.
+        try:
+            for attempt in (1, 2):
+                try:
+                    await _run_once()
+                    return
+                except Exception as e:
+                    if attempt == 2:
+                        status["failed"] += 1
+                        status["lastError"] = _err_text(e)
+                        logging.error(
+                            f"[rag/reindex-remote] {link_id} {remote_path} "
+                            f"failed after retry: {_err_text(e)}"
+                        )
+                        return
+                    logging.warning(
+                        f"[rag/reindex-remote] {link_id} {remote_path}: tunnel lost "
+                        f"({_err_text(e)}), retrying once with a new tunnel"
+                    )
+                    if client is not None:
+                        try:
+                            await client.close()
+                        except Exception:
+                            pass
+                    client = None
+                    status["failed"] = max(0, status["failed"] - 1)
+        finally:
+            status["running"] = False
+            status["done"] = True
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            logging.info(
+                f"[rag/reindex-remote] {job_key} finished: {status['indexed']} indexed, "
+                f"{status['skipped']} skipped, {status['failed']} failed"
+            )
 
     background_tasks.add_task(_pull_and_index)
     return {"status": "indexing_started", "path": remote_path, "linkId": link_id}
