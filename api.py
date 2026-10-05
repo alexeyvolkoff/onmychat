@@ -392,8 +392,15 @@ def _llm_document_summary(ctx, raw: str, fn: str) -> str:
 
 def _rag_scope_tags(body_tags, scope: str) -> list:
     tags = [t for t in (body_tags or []) if t]
-    if scope == "public" and "public" not in tags:
-        tags.append("public")
+    if scope == "public":
+        if "public" not in tags:
+            tags.append("public")
+        # Публичные теги видимости (PUBLIC_TAGS, по умолчанию "omd") нужны для
+        # того, чтобы гостевые находки работали: общим поиском гость фильтрует
+        # знания именно по PUBLIC_TAGS, а не по "public".
+        for t in unified_memory.PUBLIC_TAGS:
+            if t and t not in tags:
+                tags.append(t)
     return tags
 
 
@@ -466,6 +473,14 @@ async def _rag_stateless_payload(ctx, raw_text: str, doc_id: str, title: str, ta
         logging.error(f"[rag/import] summarize error: {e}")
         annotation = raw_text[:500]
         ai_tags = []
+
+    if not ai_tags:
+        # Модель не выдала теги (детерминированно или fell over) — фолбэк:
+        # хештеги, которые она сама вставила в аннотацию (#NGI, #OnMyChat...).
+        try:
+            ai_tags = core_service._extract_hashtags(annotation)
+        except Exception:
+            ai_tags = []
 
     all_tags = sorted(set(tags) | set(ai_tags or []))
 
