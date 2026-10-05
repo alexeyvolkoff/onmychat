@@ -383,6 +383,23 @@ def _rag_scope_tags(body_tags, scope: str) -> list:
     return tags
 
 
+def _is_tunnel_error(exc: BaseException) -> bool:
+    """True when the failure is the transport, not the document.
+
+    Reindexing a folder is a long walk over one data channel; if that channel
+    dies we want a fresh tunnel and a resume, not N "failed" rows blaming the
+    files that happened to be in flight.
+    """
+    import p2p_client
+
+    if isinstance(exc, (p2p_client.P2PError, p2p_client.P2PTimeout,
+                        p2p_client.P2PAuthError)):
+        return True
+    # aiortc surfaces transport loss as bare TimeoutError/EOFError, whose str()
+    # is empty, so the type is the only usable signal.
+    return isinstance(exc, (TimeoutError, ConnectionError, EOFError))
+
+
 def _err_text(exc: BaseException) -> str:
     """Never lose the exception TYPE in a log line.
 
@@ -1398,108 +1415,148 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
     async def _pull_and_index():
         status = RAG_REMOTE_INDEX_STATUS[job_key]
         client = None
-        try:
-            import p2p_client
-
-            settings = p2p_client.P2PSettings.from_settings(SETTINGS)
-            # Токена ноды глобального нет: берём omd_key конкретного юзера из его
-            # же запроса (HttpDrive). Без него шлюз не примет signaling.
-            settings.token = ctx.omd_key or ""
-            if not settings.token:
-                raise RuntimeError("omd_key is required for P2P signaling")
-            status["pending"] = 1
-            client = p2p_client.P2PClient(settings)
-            # writable=True: reindex возвращает карточку командой KnowledgePut.
-            device = await client.device(
-                link_id, consent_token, did_pub, remote_path, writable=True,
-            )
-
-            def _accept(path: str, entry: dict) -> bool:
-                """Те же фильтры, что у /rag/index: exclusions + обложки папок."""
-                if _is_path_excluded(path):
-                    return False
-                if is_folder_cover_image(entry.get("name") or ""):
-                    return False
-                if not entry.get("size"):
-                    return False
-                return True
-
-            files = await device.walk(remote_path, should_visit=_accept)
-            status["pending"] = len(files)
-            logging.info(
-                f"[rag/reindex-remote] {link_id} {remote_path}: {len(files)} files"
-            )
-
-            for entry in files:
-                doc_id = entry["path"]
-                name = doc_id.rsplit("/", 1)[-1]
-                title = doc_id.rstrip("/").split("/")[-1] or name
-                stamp = entry.get("lastModified") or ""
-                try:
-                    if not force and write_node_index and unified_memory.has_document(doc_id, source_stamp=stamp):
-                        status["skipped"] += 1
-                        logging.info(f"[rag/reindex-remote] skip unchanged {doc_id}")
-                        continue
-                    raw_bytes = await device.read_file(doc_id)
-                    text = unified_memory.convert_bytes_to_text(raw_bytes, name)
-                    if not text or not text.strip():
-                        status["failed"] += 1
-                        status["lastError"] = f"{name}: empty after conversion"
-                        continue
-
-                    payload = await _rag_stateless_payload(ctx, text, doc_id, title, tags, owner)
-                    # Локальный RAG-индекс ноды (ChromaDB) — только владельцу.
-                    n = 0
-                    if write_node_index:
-                        n = unified_memory.chunk_and_index_document(
-                            text, document_id=doc_id, owner=owner, tags=payload.get("tags") or tags,
-                            title=title, source_stamp=stamp,
-                        )
-                    # Личный GunDB пишет устройство: возвращаем карточку тем же туннелем.
-                    await device.put_knowledge({
-                        "title": payload.get("title") or title,
-                        "text": payload.get("annotation") or "",
-                        "document_id": doc_id,
-                        "tags": payload.get("tags") or tags,
-                        "collection": "user",
-                        "relevance": "contextual",
-                        "docId": doc_id,
-                        "imagePreview": "",
-                        "created": datetime.datetime.now().isoformat(timespec="seconds"),
-                        "annotation_embedding": payload.get("annotation_embedding"),
-                        "chunks": payload.get("chunks") or [],
-                    })
-                    status["indexed"] += 1
-                    if write_node_index:
-                        logging.info(f"[rag/reindex-remote] {doc_id}: {n} chunks, card stored on device")
-                    else:
-                        logging.info(
-                            f"[rag/reindex-remote] {doc_id}: {len(payload.get('chunks') or [])} chunks "
-                            f"в GunDB устройства (Chroma ноды не тронут)"
-                        )
-                except Exception as e:
+        # A walk over a real folder takes minutes, and ICE can drop the channel
+        # mid-flight (candidate switch, NAT rebind, mobile handover). Losing the
+        # whole job on one blip is unacceptable, so we allow one fresh tunnel and
+        # resume from the first file that is still missing.
+        # resume state: doc_ids already stored in the device's GunDB this job
+        _done: set = set()
+        for attempt in (1, 2):
+            try:
+                await _run_once()
+                return
+            except Exception as e:
+                if attempt == 2:
                     status["failed"] += 1
                     status["lastError"] = _err_text(e)
-                    logging.warning(f"[rag/reindex-remote] {doc_id} failed: {_err_text(e)}")
-                finally:
-                    status["pending"] = max(0, status["pending"] - 1)
-                await asyncio.sleep(0)
-        except Exception as e:
-            status["failed"] += 1
-            status["lastError"] = _err_text(e)
-            logging.error(f"[rag/reindex-remote] {link_id} {remote_path} failed: {_err_text(e)}")
-        finally:
-            status["running"] = False
-            status["done"] = True
-            if client is not None:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
-            logging.info(
-                f"[rag/reindex-remote] {job_key} done: {status['indexed']} indexed, "
-                f"{status['skipped']} skipped, {status['failed']} failed"
-            )
+                    logging.error(
+                        f"[rag/reindex-remote] {link_id} {remote_path} "
+                        f"failed after retry: {_err_text(e)}"
+                    )
+                    return
+                logging.warning(
+                    f"[rag/reindex-remote] {link_id} {remote_path}: tunnel lost "
+                    f"({_err_text(e)}), retrying once with a new tunnel"
+                )
+                if client is not None:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                client = None
+                status["failed"] = max(0, status["failed"] - 1)
+
+        async def _run_once():
+            nonlocal client
+            try:
+                import p2p_client
+
+                settings = p2p_client.P2PSettings.from_settings(SETTINGS)
+                # Токена ноды глобального нет: берём omd_key конкретного юзера из его
+                # же запроса (HttpDrive). Без него шлюз не примет signaling.
+                settings.token = ctx.omd_key or ""
+                if not settings.token:
+                    raise RuntimeError("omd_key is required for P2P signaling")
+                status["pending"] = 1
+                client = p2p_client.P2PClient(settings)
+                # writable=True: reindex возвращает карточку командой KnowledgePut.
+                device = await client.device(
+                    link_id, consent_token, did_pub, remote_path, writable=True,
+                )
+
+                def _accept(path: str, entry: dict) -> bool:
+                    """Те же фильтры, что у /rag/index: exclusions + обложки папок."""
+                    if _is_path_excluded(path):
+                        return False
+                    if is_folder_cover_image(entry.get("name") or ""):
+                        return False
+                    if not entry.get("size"):
+                        return False
+                    return True
+
+                files = await device.walk(remote_path, should_visit=_accept)
+                status["pending"] = len(files)
+                logging.info(
+                    f"[rag/reindex-remote] {link_id} {remote_path}: {len(files)} files"
+                )
+
+                for entry in files:
+                    doc_id = entry["path"]
+                    name = doc_id.rsplit("/", 1)[-1]
+                    title = doc_id.rstrip("/").split("/")[-1] or name
+                    stamp = entry.get("lastModified") or ""
+                    # Retry pass: this document already went into the device's GunDB
+                    # before the tunnel dropped, so re-sending it would duplicate it.
+                    if doc_id in _done:
+                        status["skipped"] += 1
+                        continue
+                    try:
+                        if not force and write_node_index and unified_memory.has_document(doc_id, source_stamp=stamp):
+                            status["skipped"] += 1
+                            logging.info(f"[rag/reindex-remote] skip unchanged {doc_id}")
+                            continue
+                        raw_bytes = await device.read_file(doc_id)
+                        text = unified_memory.convert_bytes_to_text(raw_bytes, name)
+                        if not text or not text.strip():
+                            status["failed"] += 1
+                            status["lastError"] = f"{name}: empty after conversion"
+                            continue
+
+                        payload = await _rag_stateless_payload(ctx, text, doc_id, title, tags, owner)
+                        # Локальный RAG-индекс ноды (ChromaDB) — только владельцу.
+                        n = 0
+                        if write_node_index:
+                            n = unified_memory.chunk_and_index_document(
+                                text, document_id=doc_id, owner=owner, tags=payload.get("tags") or tags,
+                                title=title, source_stamp=stamp,
+                            )
+                        # Личный GunDB пишет устройство: возвращаем карточку тем же туннелем.
+                        await device.put_knowledge({
+                            "title": payload.get("title") or title,
+                            "text": payload.get("annotation") or "",
+                            "document_id": doc_id,
+                            "tags": payload.get("tags") or tags,
+                            "collection": "user",
+                            "relevance": "contextual",
+                            "docId": doc_id,
+                            "imagePreview": "",
+                            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "annotation_embedding": payload.get("annotation_embedding"),
+                            "chunks": payload.get("chunks") or [],
+                        })
+                        status["indexed"] += 1
+                        _done.add(doc_id)
+                        if write_node_index:
+                            logging.info(f"[rag/reindex-remote] {doc_id}: {n} chunks, card stored on device")
+                        else:
+                            logging.info(
+                                f"[rag/reindex-remote] {doc_id}: {len(payload.get('chunks') or [])} chunks "
+                                f"в GunDB устройства (Chroma ноды не тронут)"
+                            )
+                    except Exception as e:
+                        # A dead tunnel is not a bad document: re-raise so the
+                        # retry loop can rebuild the tunnel instead of marking
+                        # every remaining file as failed.
+                        if _is_tunnel_error(e):
+                            raise
+                        status["failed"] += 1
+                        status["lastError"] = _err_text(e)
+                        logging.warning(f"[rag/reindex-remote] {doc_id} failed: {_err_text(e)}")
+                    finally:
+                        status["pending"] = max(0, status["pending"] - 1)
+                    await asyncio.sleep(0)
+            finally:
+                status["running"] = False
+                status["done"] = True
+                if client is not None:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                logging.info(
+                    f"[rag/reindex-remote] {job_key} done: {status['indexed']} indexed, "
+                    f"{status['skipped']} skipped, {status['failed']} failed"
+                )
 
     background_tasks.add_task(_pull_and_index)
     return {"status": "indexing_started", "path": remote_path, "linkId": link_id}

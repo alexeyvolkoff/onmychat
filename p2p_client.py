@@ -294,9 +294,16 @@ class P2PConnection:
             self.state = "connecting"
             self._ready_waiter = asyncio.get_running_loop().create_future()
             await self._create_channel()
-            await asyncio.wait_for(
-                self._handshake_signaling(), timeout=self._settings.handshake_timeout
-            )
+            try:
+                await asyncio.wait_for(
+                    self._handshake_signaling(), timeout=self._settings.handshake_timeout
+                )
+            except asyncio.TimeoutError as exc:
+                # Bare TimeoutError loses the phase entirely ("failed: TimeoutError").
+                raise P2PTimeout(
+                    f"signaling handshake with {self.target_link_id} timed out "
+                    f"after {self._settings.handshake_timeout:.0f}s"
+                ) from exc
 
             self.state = "open"
             self.last_activity = time.time()
