@@ -2750,8 +2750,17 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             if text:
                 doc_id = m.get("document_id") if isinstance(m, dict) else None
                 clean_text = re.sub(r'^\s*#+\s*', '', text).strip()
-                if len(clean_text) > 300:
-                    clean_text = clean_text[:297] + "..."
+                # Явно выбранный /learn документ не режем до 300 символов:
+                # для гостевых импортов аннотация — единственный текст, и
+                # обрезание ломало ответ на полслове ("... AI Gateway/Node ...").
+                focus_max = max(0, 6000)
+                is_focus_record = bool(
+                    focus_doc and doc_id and
+                    (doc_id == focus_doc or doc_id.split("/")[-1] == focus_doc.split("/")[-1])
+                )
+                max_len = focus_max if is_focus_record else 300
+                if len(clean_text) > max_len:
+                    clean_text = clean_text[:max_len - 3] + "..."
                 fn = doc_id.split("/")[-1] if doc_id else (m.get("title") if isinstance(m, dict) else "")
                 fn = re.sub(r'^\s*#+\s*', '', fn).strip() if fn else ""
                 if fn:
@@ -2837,16 +2846,20 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 raw_text   = (r.get("text") or "").strip()
                 clean_text = re.sub(r'^\s*#+\s*', '', raw_text).strip()
 
+                # Чанки фокусного документа — основное содержание ответа на
+                # /learn-вопрос; 400 символов срезали яд, оставляя огрызок.
+                chunk_limit = 1500 if (focus_doc and doc_id == focus_doc) else 400
+
                 if rec_type == "file_chunk":
                     line = f"• [File: {fn}]" if fn else "• [File]"
                     if clean_text:
-                        line += f"\n  {clean_text[:400]}"
+                        line += f"\n  {clean_text[:chunk_limit]}"
                     facts.append(line)
                 else:
                     if fn:
-                        facts.append(f"• [File: {fn}] {clean_text[:400]}")
+                        facts.append(f"• [File: {fn}] {clean_text[:chunk_limit]}")
                     else:
-                        facts.append(f"• {clean_text[:400]}")
+                        facts.append(f"• {clean_text[:chunk_limit]}")
 
                 if doc_id:
                     key = f"{owner_val}:{doc_id}"
