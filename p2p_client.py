@@ -736,6 +736,62 @@ class DeviceClient:
                     log.debug("P2P: Close %s on %s failed: %s", handle_id, path, exc)
         return bytes(data)
 
+    async def ensure_dir(self, path: str) -> None:
+        """Create `path` (and its parents) on the device — MkDir is mkdir -p.
+
+        client-device-server maps MkDir onto `homeMkDir`, which creates every
+        segment with {create: true}, so an existing folder is a no-op. Failures
+        (unknown share, jail violation) raise: the caller wants to know that the
+        artifact never landed.
+        """
+        await self.conn.call("MkDir", path=path)
+
+    async def write_file(self, path: str, data: bytes) -> None:
+        """Write a whole file through chunked `Open` + `Write` + `Close` RPCs.
+
+        Mirrors `writeFileChunked` from webrtc-drive.js: 64 KiB raw chunks stay
+        far below the DataChannel message cap (the answerer resets its frame
+        buffer above 5 MB, a whole multi-megabyte PNG as one base64 frame would
+        trip it). `truncate` is set on the first chunk only; devices create the
+        file on demand (LocalDrive resolves the parent with {create: true}).
+
+        Known limitation: the NativeStorage (Android) answerer used to ignore
+        `offset` in Write — svar's client-device-server now forwards it, older
+        apps would keep only the last chunk.
+        """
+        if not data:
+            raise P2PError(f"refusing to write empty file: {path}")
+
+        opened = await self.conn.rpc("Open", path=path)
+        result = opened.get("result") or {}
+        handle_id = opened.get("handleId") or result.get("handleId")
+
+        chunk_size = max(self._settings.chunk_size, 65536)
+        offset = 0
+        first = True
+        try:
+            while offset < len(data):
+                chunk = data[offset:offset + chunk_size]
+                params: Dict[str, Any] = {
+                    "path": path,
+                    "offset": offset,
+                    "size": len(chunk),
+                    "data": base64.b64encode(chunk).decode("ascii"),
+                    "truncate": first,
+                    "eof": offset + len(chunk) >= len(data),
+                }
+                if handle_id:
+                    params["handleId"] = handle_id
+                await self.conn.rpc("Write", **params)
+                offset += len(chunk)
+                first = False
+        finally:
+            if handle_id:
+                try:
+                    await self.conn.rpc("Close", path=path, handleId=handle_id)
+                except Exception as exc:  # pragma: no cover - best effort cleanup
+                    log.debug("P2P: Close %s on %s failed: %s", handle_id, path, exc)
+
     async def put_knowledge(self, card: Dict[str, Any]) -> Dict[str, Any]:
         """Hand one knowledge card to the device — it encrypts and stores it."""
         return await self.conn.call("KnowledgePut", card=card, timeout=self._settings.rpc_timeout)

@@ -5514,7 +5514,7 @@ async def extract_and_save_memory(ctx: UserContext, message: str) -> str:
     return None
 
 
-async def generate_avatar(ctx: UserContext, style: str, character_lora: str, prompt: str):
+async def generate_avatar(ctx: UserContext, style: str, character_lora: str, prompt: str, device_push: dict | None = None):
     try:
         # 1. Load Workflow
         if not os.path.exists(WORKFLOW_PATH):
@@ -5603,24 +5603,46 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
         if image_data:
             # Upload to 'generated' folder in user storage
             filename = f"avatar_{uuid.uuid4()}.png"
-            
+
+            # Кандидат аватара живёт на УСТРОЙСТВЕ пользователя: p2p-пуш по
+            # consent-гранту из запроса (defaultStorage/generated/avatars).
+            # Планируется до обращения к шлюзу: сбой gateway-аплоада не должен
+            # лишать пользовательскую копию.
+            device_path = ""
+            if device_push and isinstance(device_push, dict):
+                try:
+                    import device_push as _device_push
+                    _device_push.schedule_avatar_push(ctx.omd_key, device_push, filename, image_data)
+                    _folder = str(device_push.get("folder") or "").strip("/")
+                    if _folder:
+                        device_path = f"/{_folder}/avatars/{filename}"
+                except Exception as _e:
+                    logging.warning(f"Avatar device push scheduling failed: {_e}")
+
             if ctx.storage and ctx.omd_key:
                 try:
                     dest_path = f"{ctx.storage}/generated/avatars"
                     # upload_data_to_storage(omd_key, dest, filename, data, mime)
                     upload_data_to_storage(ctx.omd_key, dest_path, filename, image_data, "image/png")
                     logging.info(f"Avatar uploaded to {dest_path}/{filename}")
-                    
+
                     # Report usage to console
 
 
                     # Construct public URL
                     clean_storage = ctx.storage.strip("/")
-                    full_url = f"/{clean_storage}/generated/{filename}"
-                    
-                    return {"image": filename, "url": full_url}
+                    full_url = f"/{clean_storage}/generated/avatars/{filename}"
+
+                    out = {"image": filename, "url": full_url}
+                    if device_path:
+                        out["device_path"] = device_path
+                    return out
                 except Exception as e:
                     logging.error(f"Failed to upload avatar to storage: {e}")
+                    # Шлюз-аплоад не удался, но копия на устройстве уже в пути:
+                    # возвращаем device_path, клиент покажет её через /p2p/.
+                    if device_path:
+                        return {"image": filename, "url": "", "device_path": device_path}
                     return None
             else:
                  # Fallback for local users (if any, though context implies OMD usage mostly)
@@ -5634,7 +5656,11 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
                  with open(filepath, "wb") as f:
                      f.write(image_data)
                  logging.warning(f"No storage context, saved locally to {filepath}")
-                 return {"image": filename}
+                 out = {"image": filename}
+                 if device_path:
+                     out["device_path"] = device_path
+                     out["url"] = ""
+                 return out
 
         else:
             logging.error("No image data received from workflow")

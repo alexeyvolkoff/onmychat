@@ -1813,6 +1813,26 @@ def cleanup_ephemeral_images():
     for k in expired:
         _ephemeral_image_cache.pop(k, None)
 
+
+def schedule_generated_image_push(omd_key: str, device_push, filename: str, image_data: bytes,
+                                  title: str = "", description: str = ""):
+    """Fire-and-forget p2p-пуш сгенерированного фото на устройство пользователя.
+
+    `device_push` клиент выдаёт заранее: `{linkId, consentToken, folder}` из
+    `issueConsent(defaultStorage + '/generated', {writable: true})`. Сбой
+    туннеля не должен валить генерацию — ephemeral-копия и `/chat/image/`
+    остаются, а клиент покажет placeholder «Image expired» после TTL.
+    """
+    if not device_push or not image_data:
+        return
+    try:
+        import device_push as _dp
+        _dp.schedule_generated_image_push(
+            omd_key, device_push, filename, image_data, title, description,
+        )
+    except Exception as exc:
+        logging.warning(f"device_push scheduling failed: {exc}")
+
 def is_private_mode(request: Request, ctx: user_context.UserContext | None = None) -> bool:
     # 0. ctx matches local node owner — always private (= full unified index access)
     import getpass
@@ -2085,6 +2105,7 @@ class ChatStreamInput(BaseModel):
     client: str | None = None
     rag_focus: dict | None = None
     attached_docs: list | None = None
+    device_push: dict | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -2124,6 +2145,7 @@ class GenerateInput(BaseModel):
     settings: dict | None = None
     history: list | None = None
     prompt_id: str | None = None
+    device_push: dict | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -2144,6 +2166,7 @@ class AvatarGenerateInput(BaseModel):
     prompt: str = ""
     settings: dict | None = None
     history: list | None = None
+    device_push: dict | None = None
 
 # ... (ommitted lines)
 
@@ -2450,9 +2473,12 @@ async def generate_avatar_endpoint(data: AvatarGenerateInput):
     try:
         # Use hardcoded prompt for avatar generation as requested
         prompt = "social profile photo, office style, headshot"
-        result = await core_service.generate_avatar(ctx, data.style, data.character_lora, prompt)
+        result = await core_service.generate_avatar(ctx, data.style, data.character_lora, prompt, device_push=data.device_push)
         if result and "image" in result:
-             return {"image": result["image"], "url": result.get("url")}
+             out = {"image": result["image"], "url": result.get("url")}
+             if result.get("device_path"):
+                 out["device_path"] = result["device_path"]
+             return out
         else:
              raise Exception("Failed to generate avatar")
     except Exception as e:
@@ -3412,7 +3438,8 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         image_delivery=data.image_delivery or (data.settings.get("image_delivery") if data.settings else None),
         client=data.client or (data.settings.get("client") if data.settings else None),
         rag_focus=data.rag_focus,
-        attached_docs=data.attached_docs
+        attached_docs=data.attached_docs,
+        device_push=data.device_push
     )
 
 @app.get("/chat/stream")
@@ -3426,7 +3453,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       image_delivery: str|None = None,
                       client: str|None = None,
                       rag_focus: dict|None = None,
-                      attached_docs: list|None = None):
+                      attached_docs: list|None = None,
+                      device_push: dict|None = None):
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
@@ -3696,6 +3724,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 upload_storage_flag = not is_inline_image
                 res = await core_service.generate_character_image(ctx, img_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
+                if len(res) > 3 and res[3]:
+                    store_ephemeral_image(path, res[3])
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
@@ -3729,6 +3760,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 upload_storage_flag = not is_inline_image
                 res = await core_service.generate_general_image(ctx, img_prompt, chat, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
+                if len(res) > 3 and res[3]:
+                    store_ephemeral_image(path, res[3])
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
@@ -3830,6 +3864,9 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 upload_storage_flag = not is_inline_image
                 res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
+                if len(res) > 3 and res[3]:
+                    store_ephemeral_image(path, res[3])
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
@@ -3977,6 +4014,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
+            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description)
         
         # [LEGACY HISTORY] Load history removed
         history = []
@@ -4012,6 +4050,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
+            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description)
         return {
             "image": filename,
             "path": filename,
