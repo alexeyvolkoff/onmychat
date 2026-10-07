@@ -7,6 +7,7 @@ from PIL import Image
 import io
 import re
 import mimetypes
+import configparser
 import os
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -1884,38 +1885,56 @@ def validated_node_owner(ctx: user_context.UserContext | None) -> bool:
     return ctx.user_id == node_owner
 
 
-def trusted_caller_role(request: Request) -> str:
-    """Роль вызывающего из ДОВЕРЕННЫХ заголовков C++-туннеля.
+def is_did_paired(did: str) -> bool:
+    """Проверяет, спарен ли данный DID в конфигурации ноды (PairedDIDs)."""
+    if not did:
+        return False
+    did_clean = did.strip()
+    candidate_paths = [
+        "/home/alexey/projects/omd/onmydisk/Node/target/etc/onmydisk/onmydisk.conf.user",
+        "/etc/onmydisk/onmydisk.conf.user",
+        "/etc/onmydisk/onmydisk.conf",
+    ]
+    for cp in candidate_paths:
+        if os.path.isfile(cp):
+            try:
+                cp_cfg = configparser.ConfigParser()
+                cp_cfg.read(cp, encoding="utf-8")
+                if "PairedDIDs" in cp_cfg:
+                    for k in cp_cfg["PairedDIDs"]:
+                        if k.strip().lower() == did_clean.lower():
+                            return True
+            except Exception as e:
+                logging.debug(f"[is_did_paired] error reading {cp}: {e}")
+    return False
 
-    C++-нода перед пересадкой байт в локальный onmychat выдирает из HTTP-запроса
-    клиентские X-OMD-Caller-* и подставляет gateway-валидированные
-    X-OMD-Caller-User / X-OMD-Caller-Role (owner|shared|guest) +
-    X-OMD-Target-Owner (см. OnMyDiskLinkClient::writeInjectedRequestData).
-    Спуфить их нельзя: путь наружу на 0.0.0.0 в uvicorn богадствует локальную
-    сеть — не идентичность, dlatego роль считается ДОСТОВЕРНОЙ только если
-    прислана самим нодным прокси; прямые внешние запросы без туннеля к ним не
-    имеют доступа (uvicorn слушает на loopback).
-    """
+
+def trusted_caller_role(request: Request) -> str:
+    """Роль вызывающего из ДОВЕРЕННЫХ заголовков C++-туннеля."""
     role = (request.headers.get("X-OMD-Caller-Role") or "").strip().lower()
     return role if role in ("owner", "shared", "guest") else ""
 
 
 def trusted_private_access(request: Request, ctx: user_context.UserContext | None) -> bool:
-    """Приватные знания/фото/люди ноды — только владелец.
-
-    Доверенная роль известна в точке вызова onmychat из C++-туннеля
-    (TunnelOpen: initiatorUser == targetOwner — gateway проверил). Если туннельных
-    заголовков нет (встроенный локальный клиент/P2P WebRTC), проверяем
-    validated_node_owner(ctx) или fallback is_private_mode(request, ctx).
-    """
     role = trusted_caller_role(request)
-    if role:
-        if role == "owner":
-            return True   # gateway доказал: initiatorUser == владелец ноды
-        return False      # shared/guest — приватные данные закрыты
-    if validated_node_owner(ctx):
+    pm = request.headers.get("X-OMD-Private-Mode")
+    caller_did = (request.headers.get("X-OMD-Caller-DID") or request.headers.get("X-OMD-DID") or "").strip()
+    did_paired = is_did_paired(caller_did) if caller_did else False
+    logging.info(f"[trusted_private_access] path={request.url.path} role={role!r} pm={pm!r} did={caller_did[:16] if caller_did else 'none'} paired={did_paired} ctx_user={getattr(ctx, 'user_id', None)!r}")
+
+    # 1. Если роль owner (от ноды) или DID спарен на самой ноде — прямой доступ владельца
+    if role == "owner" or did_paired:
         return True
-    return is_private_mode(request, ctx)
+
+    # 2. Гость без спаренного DID и без private mode отсекается
+    if role in ("guest", "shared") and pm != "1":
+        return False
+
+    # 3. Если private mode явно включен и запрос локальный или доверенный
+    if is_private_mode(request, ctx):
+        return True
+
+    return validated_node_owner(ctx)
 
 def get_omd_key(
     request: Request,
