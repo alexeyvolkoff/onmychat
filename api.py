@@ -1905,15 +1905,17 @@ def trusted_private_access(request: Request, ctx: user_context.UserContext | Non
 
     Доверенная роль известна в точке вызова onmychat из C++-туннеля
     (TunnelOpen: initiatorUser == targetOwner — gateway проверил). Если туннельных
-    заголовков нет (встроенный локальный клиент/легаси), остаётся строгий
-    fallback validated_node_owner(ctx) — валидированный gateway'ем юзер.
+    заголовков нет (встроенный локальный клиент/P2P WebRTC), проверяем
+    validated_node_owner(ctx) или fallback is_private_mode(request, ctx).
     """
     role = trusted_caller_role(request)
     if role:
         if role == "owner":
             return True   # gateway доказал: initiatorUser == владелец ноды
         return False      # shared/guest — приватные данные закрыты
-    return validated_node_owner(ctx)
+    if validated_node_owner(ctx):
+        return True
+    return is_private_mode(request, ctx)
 
 def get_omd_key(
     request: Request,
