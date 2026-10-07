@@ -1825,9 +1825,11 @@ def schedule_generated_image_push(omd_key: str, device_push, filename: str, imag
     остаются, а клиент покажет placeholder «Image expired» после TTL.
     """
     if not device_push or not image_data:
+        logging.info(f"[device_push] Skipping push: device_push={bool(device_push)}, image_data={bool(image_data)}")
         return
     try:
         import device_push as _dp
+        logging.info(f"[device_push] Scheduling P2P push for {filename} to {device_push.get('linkId')} (folder={device_push.get('folder')})")
         _dp.schedule_generated_image_push(
             omd_key, device_push, filename, image_data, title, description,
         )
@@ -3476,7 +3478,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       rag_focus: dict|None = None,
                       attached_docs: list|None = None,
                       device_push: dict|None = None):
-    logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}...")
+    logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}..., device_push={device_push}")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)

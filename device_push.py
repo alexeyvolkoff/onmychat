@@ -41,11 +41,13 @@ FileSpec = Tuple[str, bytes]
 def _device_push_ctx(device_push: Any) -> Optional[Dict[str, Any]]:
     """Validate the client-supplied push descriptor; None when unusable."""
     if not isinstance(device_push, dict):
+        log.warning("device_push: descriptor is not a dict: %r", type(device_push))
         return None
     link_id = str(device_push.get("linkId") or "").strip()
     token = str(device_push.get("consentToken") or "").strip()
     folder = _clean_folder(device_push.get("folder"))
     if not link_id or not token or not folder:
+        log.warning("device_push: missing required fields: linkId=%r, token=%r, folder=%r", link_id, bool(token), folder)
         return None
     return {
         "linkId": link_id,
@@ -82,7 +84,7 @@ async def push_files_to_device(
     """Write every file into the granted folder on the user's device."""
     ctx_info = _device_push_ctx(device_push)
     if not ctx_info:
-        log.debug("device_push: missing/invalid device_push descriptor, skipping")
+        log.warning("device_push: missing/invalid device_push descriptor: %r, skipping", device_push)
         return False
     if not omd_key:
         log.warning("device_push: no omd_key for signaling, skipping")
