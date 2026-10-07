@@ -4552,9 +4552,9 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             except Exception as e:
                 logging.error(f"Upload to storage failed: {e}")
 
-    if ctx.private_mode:
-        # Private Mode: Node Owner or explicitly authorized user on device.
-        # Save directly to local storage on host relative to user's home directory.
+    from api import validated_node_owner
+    if validated_node_owner(ctx):
+        # Node Owner only: Save directly to local storage on host relative to user's home directory.
         home_dir = os.path.expanduser("~")
         clean_storage = (ctx.storage or ctx.settings.get("defaultStorage", "") or "OnMyChat").strip("/")
         if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
@@ -4572,9 +4572,9 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             readme_path = os.path.join(target_dir, readme_filename)
             with open(readme_path, "w", encoding="utf-8") as f:
                 f.write(formatted_readme)
-            logging.info(f"[PrivateMode] Saved generated image locally on host: {dest_path}")
+            logging.info(f"[NodeOwner] Saved generated image locally on host: {dest_path}")
         except Exception as e:
-            logging.warning(f"[PrivateMode] Local file save failed: {e}")
+            logging.warning(f"[NodeOwner] Local file save failed: {e}")
 
     try:
         from api import store_ephemeral_image
