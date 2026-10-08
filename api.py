@@ -66,27 +66,38 @@ _proxy_session = None
 # Читаются из JSON: логические пути (/<share>/... относительно шары) и
 # физические абсолютные пути. Для совпадения достаточно ПРЕФИКСА пути.
 # ---------------------------------------------------------------------------
+_INDEX_EXCL_MTIME = 0
+INDEX_EXCL_LOGICAL = []
+INDEX_EXCL_PHYSICAL = []
+
 def _load_index_exclusions():
+    global _INDEX_EXCL_MTIME, INDEX_EXCL_LOGICAL, INDEX_EXCL_PHYSICAL
     try:
         cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index_exclusions.json")
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        logical = [str(p).strip("/ ").lower() for p in (cfg.get("logical") or []) if str(p).strip()]
-        physical = [str(p).rstrip("/\\").lower() for p in (cfg.get("physical") or []) if str(p).strip()]
-        return logical, physical
+        if not os.path.isfile(cfg_path):
+            return [], []
+        mtime = os.path.getmtime(cfg_path)
+        if mtime != _INDEX_EXCL_MTIME:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            INDEX_EXCL_LOGICAL = [str(p).strip("/ ").lower() for p in (cfg.get("logical") or []) if str(p).strip()]
+            INDEX_EXCL_PHYSICAL = [str(p).rstrip("/\\").lower() for p in (cfg.get("physical") or []) if str(p).strip()]
+            _INDEX_EXCL_MTIME = mtime
+        return INDEX_EXCL_LOGICAL, INDEX_EXCL_PHYSICAL
     except Exception as e:
-        logging.warning(f"[index_exclusions] cannot load {cfg_path}: {e}")
-        return [], []
+        logging.warning(f"[index_exclusions] cannot load exclusions: {e}")
+        return INDEX_EXCL_LOGICAL, INDEX_EXCL_PHYSICAL
 
-INDEX_EXCL_LOGICAL, INDEX_EXCL_PHYSICAL = _load_index_exclusions()
+_load_index_exclusions()
 
-def _is_path_excluded(logical_path: str, physical_path: str) -> Optional[str]:
+def _is_path_excluded(logical_path: str, physical_path: str = "") -> Optional[str]:
     """Возвращает правило-исключение, если путь (логический или физический)
     попадает под список неиндексируемых директорий."""
+    _load_index_exclusions()
     logical = (logical_path or "").strip("/ ").lower()
     physical = (physical_path or "").rstrip("/\\").lower()
     for rule in INDEX_EXCL_LOGICAL:
-        if logical == rule or logical.startswith(rule + "/"):
+        if logical == rule or logical.startswith(rule + "/") or logical.endswith("/" + rule) or f"/{rule}/" in f"/{logical}/":
             return rule
     for rule in INDEX_EXCL_PHYSICAL:
         if physical == rule or physical.startswith(rule + "/") or (physical + "/").startswith(rule + "/"):
@@ -2868,6 +2879,9 @@ def _device_cards_response(offset: int = 0, limit: int = None):
     cards = unified_memory.get_all_memory_cards() + unified_memory.get_indexed_documents()
     out = []
     for c in cards:
+        doc_id = c.get("document_id") or c.get("path") or ""
+        if doc_id and _is_path_excluded(doc_id):
+            continue
         c["onDevice"] = True
         c["source"] = "device"
         if not c.get("created"):
