@@ -313,7 +313,12 @@ def is_folder_cover_image(fn: str) -> bool:
 def _readme_target(fn: str):
     """Если fn — описание (*.Readme.md), возвращает имя оригинального файла, иначе None."""
     m = re.match(r"(?i)^(.+)\.readme\.md$", fn or "")
-    return m.group(1) if m else None
+    if not m:
+        return None
+    target = m.group(1)
+    if target.lower() in ("readme.md", "readme.txt", "readme") or target.lower().endswith(".readme.md"):
+        return None
+    return target
 
 
 def recognition_enabled():
@@ -1006,6 +1011,11 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
         def _index_one_sync(full, fn, rel):
             """Performs ChromaDB-heavy indexing in the thread pool, returning a status dict."""
+            clean_fn = (fn or "").lower()
+            if clean_fn in ("readme.md.readme.md", "readme.txt.readme.md") or clean_fn.endswith(".readme.md.readme.md"):
+                unified_memory.delete_document(_doc_id_of(full, rel))
+                return None
+
             if is_folder_cover_image(fn):
                 unified_memory.delete_document(_doc_id_of(full, rel))
                 return None
@@ -1512,7 +1522,10 @@ async def rag_reindex_remote_endpoint(request: Request, background_tasks: Backgr
                     """Те же фильтры, что у /rag/index: exclusions + обложки папок."""
                     if _is_path_excluded(path):
                         return False
-                    if is_folder_cover_image(entry.get("name") or ""):
+                    name = (entry.get("name") or "").lower()
+                    if is_folder_cover_image(name):
+                        return False
+                    if name in ("readme.md", "readme.txt", "readme.md.readme.md") or name.endswith(".readme.md.readme.md"):
                         return False
                     if not entry.get("size"):
                         return False
@@ -2881,6 +2894,10 @@ def _device_cards_response(offset: int = 0, limit: int = None):
     for c in cards:
         doc_id = c.get("document_id") or c.get("path") or ""
         if doc_id and _is_path_excluded(doc_id):
+            continue
+        # Readme.md описывает саму папку (папка имеет отдельную карточку с is_folder=True).
+        # Одиночные карточки Readme.md как отдельный документ в список не включаем.
+        if (doc_id.lower().endswith("/readme.md") or doc_id.lower().endswith("/readme.txt")) and not c.get("is_folder"):
             continue
         c["onDevice"] = True
         c["source"] = "device"
