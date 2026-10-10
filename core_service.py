@@ -2945,6 +2945,13 @@ async def llm_request_stream(payload: dict, headers: dict = None):
     """Stream LLM response with hard timeout protection.
     LLM_STREAM_TIMEOUT = total wall-clock limit. Prevents ollama from hanging indefinitely.
     """
+    if "options" not in payload or not isinstance(payload["options"], dict):
+        payload["options"] = {}
+    if "num_ctx" not in payload["options"]:
+        payload["options"]["num_ctx"] = LLM_NUM_CTX
+    if "keep_alive" not in payload:
+        payload["keep_alive"] = LLM_KEEP_ALIVE
+
     try:
         timeout = aiohttp.ClientTimeout(
             total=LLM_STREAM_TIMEOUT,
@@ -2982,6 +2989,12 @@ async def llm_request(payload: dict, headers: dict = None):
     """Blocking LLM request with hard timeout protection.
     LLM_REQUEST_TIMEOUT = total limit. Prevents ollama from freezing the event loop.
     """
+    if "options" not in payload or not isinstance(payload["options"], dict):
+        payload["options"] = {}
+    if "num_ctx" not in payload["options"]:
+        payload["options"]["num_ctx"] = LLM_NUM_CTX
+    if "keep_alive" not in payload:
+        payload["keep_alive"] = LLM_KEEP_ALIVE
     try:
         timeout = aiohttp.ClientTimeout(total=LLM_REQUEST_TIMEOUT, connect=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
