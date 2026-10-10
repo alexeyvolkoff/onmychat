@@ -2949,7 +2949,7 @@ async def llm_request_stream(payload: dict, headers: dict = None):
         timeout = aiohttp.ClientTimeout(
             total=LLM_STREAM_TIMEOUT,
             connect=30,
-            sock_read=60,  # max silence between chunks — abort if ollama stops responding mid-stream
+            sock_read=LLM_STREAM_TIMEOUT,  # allow full time window for heavy models (e.g. 31B) to prefill
         )
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
