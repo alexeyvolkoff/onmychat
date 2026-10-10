@@ -13,3 +13,4 @@ agent_sessions.json
 index_exclusions.json
 data/
 asset/
+*.imported
