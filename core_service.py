@@ -3071,11 +3071,13 @@ async def _perform_prompt_gen(ctx: UserContext,
         # Для простого чата не ищем в базе — инжектим только то, что явно передано в контексте
         if provided_knowledge:
             facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=None)
+            logging.info(f"[inject_facts] context cards done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources")
         else:
             facts, sources = [], []
     elif intent in ("view", "show"):
         # Plain scene generation doesn't need RAG file search
         facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
+        logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources (query='{rag_query}')")
     else:
         facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
 
@@ -3095,7 +3097,7 @@ async def _perform_prompt_gen(ctx: UserContext,
                     if internal_found:
                         sources = []  # ответ будет из веба, не показывать внутренние источники
                     facts.append(web_results)
-    logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources (query='{rag_query}')")
+        logging.info(f"[inject_facts] done in {_time.time()-_t0:.3f}s: {len(facts)} facts, {len(sources)} sources (query='{rag_query}')")
     
     # Yield sources immediately for the frontend widget
     if sources:
