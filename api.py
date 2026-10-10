@@ -4696,3 +4696,15 @@ async def synthesize_speech(data: TTSRequest):
 import ondoc as _ondoc_module
 _ondoc_module.mount(app)
 
+
+if __name__ == "__main__":
+    import uvicorn
+    import sys
+    import os
+    
+    port = int(os.environ.get("PORT", 4000))
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+        
+    print(f"Starting OnMyChat API directly via uvicorn on port {port}...")
+    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=False)
