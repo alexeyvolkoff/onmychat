@@ -2622,7 +2622,6 @@ async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_m
 
 
 async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_id="", provided_knowledge: list|None = None, skip_db: bool = False, focus: dict|None = None, attached_docs: list|None = None) -> tuple[list[str], list[dict]]:
-    logging.info(f"[memory] inject_facts for user_id: {ctx.user_id}")
     facts = []
     sources_map = {}
 
@@ -2668,9 +2667,9 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             if focused:
                 provided_knowledge = focused
                 logging.info(f"[inject_facts] focus filter: kept {len(focused)} provided cards for {focus_doc}")
-        # 1a. Backend-side relevance: фильтруем по annotation_embedding через hub
+        # 1a. Backend-side relevance: фильтруем по annotation_embedding через hub (только при поиске по базе)
         filtered_knowledge = list(provided_knowledge)
-        if provided_knowledge and ctx.omd_key and query:
+        if not skip_db and provided_knowledge and ctx.omd_key and query:
             try:
                 token_hash = _simple_hash(ctx.omd_key)
                 query_emb = unified_memory.embed(query)
@@ -2785,8 +2784,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                             "fullPath":    doc_id if clickable else "",
                         }
 
-        # 1b. Chunk-level relevance: fetch chunks from hub for top cards
-        if ctx.omd_key:
+        # 1b. Chunk-level relevance: fetch chunks from hub for top cards (только при поиске по базе)
+        if not skip_db and ctx.omd_key:
             token_hash = _simple_hash(ctx.omd_key)
             for m in filtered_knowledge[:3]:  # top 3 cards only
                 if not isinstance(m, dict):
@@ -2885,11 +2884,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             await _inject_hub_card_fallback(ctx, focus_doc, facts, sources_map, "hub")
 
     # 3. Attached docs: релевантные чанки приаттаченных к чату документов
-    #    (ChromaDB, owner-пути). Инжектим БЕЗУСЛОВНО, независимо от skip_db:
-    #    пока карточка активна, документ применяется ко всем последующим ответам.
-    #    Гостевые имена без пути чанков в ChromaDB не имеют — их карточка уже
-    #    покрыта через provided_knowledge (шаг 1b).
-    if attached_list and ctx.settings.get("content_mode", "work") != "fun":
+    #    (ChromaDB, owner-пути). Не инжектим при skip_db (напр. обычный чат).
+    if not skip_db and attached_list and ctx.settings.get("content_mode", "work") != "fun":
         try:
             for adoc in attached_list:
                 doc_filter = adoc["doc_id"]
@@ -3071,8 +3067,14 @@ async def _perform_prompt_gen(ctx: UserContext,
     import time as _time
     _t0 = _time.time()
     # === Facts injection ===
-    if intent in ("view", "show", "chat"):
-        # Plain chat and scene generation don't need RAG file search
+    if intent == "chat":
+        # Для простого чата не ищем в базе — инжектим только то, что явно передано в контексте
+        if provided_knowledge:
+            facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=None)
+        else:
+            facts, sources = [], []
+    elif intent in ("view", "show"):
+        # Plain scene generation doesn't need RAG file search
         facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, skip_db=True, focus=rag_focus, attached_docs=attached_docs)
     else:
         facts, sources = await inject_facts(ctx, rag_query, kb_tag, mem_id, provided_knowledge=provided_knowledge, focus=rag_focus, attached_docs=attached_docs)
@@ -3099,13 +3101,17 @@ async def _perform_prompt_gen(ctx: UserContext,
     if sources:
         yield {"sources": sources, "done": False}
 
-    # Имя пользователя и дата — в самое начало секции Known facts
+    # Имя пользователя и дата — в начало секции Known facts (если есть факты или не чат)
     username = ctx.settings.get("name") or ctx.settings.get("username") or "User"
-    facts_text += "\n\n*Known facts:*\n"
-    facts_text += f"- User name: {username}\n"
-    facts_text += f"- Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     if facts:
+        facts_text += "\n\n*Known facts:*\n"
+        facts_text += f"- User name: {username}\n"
+        facts_text += f"- Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         facts_text += "\n" + "\n".join(facts)
+    elif intent != "chat":
+        facts_text += "\n\n*Known facts:*\n"
+        facts_text += f"- User name: {username}\n"
+        facts_text += f"- Current date and time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     if is_rag:
         # === ПОДГОТОВИТЕЛЬНЫЙ RAG-ЗАПРОС ===
         logging.info(f"RAG request: tag={kb_tag}")

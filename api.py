@@ -1769,6 +1769,8 @@ async def _build_ctx_from_request(request: Request):
     # Реальный юзер: X-OMD-User или NODE_OWNER из конфига. Без них — уважаем
     # "Calls me" из настроек клиента, а не выдаём чужака за владельца ноды.
     raw_user  = request.headers.get("X-OMD-User", "") or SETTINGS.get("NODE_OWNER", "")
+    if not raw_user:
+        raw_user = user_context.node_owner()
     ctx = user_context.UserContext(
         type="omd",
         user_id  = raw_user,
@@ -1777,11 +1779,6 @@ async def _build_ctx_from_request(request: Request):
         omd_key  = omd_key,
     )
     ctx.private_mode = trusted_private_access(request, ctx)
-    # Владелец ноды — только явный X-OMD-User или NODE_OWNER из конфига.
-    # Локальный/приватный запрос без них НЕ назначается владельцем (никакого
-    # ос-юзера): user_id остаётся "anonymous", имя берётся из настроек или "User".
-    if not ctx.user_id:
-        ctx.user_id = "anonymous"
     return ctx
 
 
@@ -3513,9 +3510,19 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
-    # Владелец ноды — только явный X-OMD-User / NODE_OWNER (см. _build_ctx_from_request).
-    # Локальный запрос без них владельцем не становится: user_id тянется из get_ctx
-    # ("anonymous" при отсутствии валидного omd_key/токена). Системного юзера не используем.
+
+    # В новой системе нет анонимов: определяем настоящее имя пользователя
+    header_user = (request.headers.get("X-OMD-User") or "").strip()
+    client_name = (
+        header_user
+        or (provided_settings.get("name") if provided_settings else None)
+        or (provided_settings.get("username") if provided_settings else None)
+    )
+    if client_name and (not ctx.user_id or ctx.user_id in ("anonymous", "system", "") or ctx.user_id.startswith("user_") or ctx.user_id.startswith("web_")):
+        ctx.user_id = client_name
+    elif (not ctx.user_id or ctx.user_id in ("anonymous", "system", "")) and ctx.private_mode:
+        ctx.user_id = user_context.node_owner()
+
     if provided_knowledge is None:
         logging.info("[chat] provided knowledge: None (client did not send)")
         try:
@@ -3544,8 +3551,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     if provided_settings:
         # Strip heavy fields that backend never reads — avoids sending base64 avatar every request
         provided_settings.pop("assistant_avatar", None)
-        logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         ctx.settings.update(provided_settings)
+        if not ctx.user_id or ctx.user_id in ("anonymous", "system", ""):
+            ctx.user_id = ctx.settings.get("name") or ctx.settings.get("username") or user_context.node_owner()
+        logging.info(f"Applying client-provided settings for {ctx.user_id}: {provided_settings}")
         if provided_settings.get("defaultStorage"):
             ctx.storage = provided_settings["defaultStorage"]
     else:
