@@ -253,10 +253,7 @@ def qa_match_query(question: str, min_score: float = 0.8, top_k: int = 1, includ
 
 def migrate_legacy_data():
     try:
-        if ensure_collection().count() > 0:
-            return
-        
-        logging.info("Migrating legacy RAG data to ChromaDB...")
+        logging.info("Checking legacy RAG data for ChromaDB migration...")
         # Migrate shared collections and document chunks
         if os.path.exists(BASE_INDEX_DIR):
             for root, dirs, files in os.walk(BASE_INDEX_DIR):
@@ -270,6 +267,9 @@ def migrate_legacy_data():
                              collection_name = rel_path.replace(os.sep, "_")
                         
                         path = os.path.join(root, file)
+                        marker_path = path + ".imported"
+                        if os.path.exists(marker_path):
+                            continue
                         try:
                             with open(path, "r", encoding="utf-8") as f:
                                 memories = [json.loads(line) for line in f if line.strip()]
@@ -312,8 +312,11 @@ def migrate_legacy_data():
                                             
                                         metadatas.append(meta)
                                     
-                                    ensure_collection().upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+                                    col = _chroma_client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
+                                    col.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
                                     logging.info(f"Migrated {file} to collection {collection_name} ({len(memories)} items)")
+                            with open(marker_path, "w") as mf:
+                                mf.write("done")
                         except Exception as fe:
                             if "DuplicateIDError" in type(fe).__name__ or "Expected IDs to be unique" in str(fe):
                                 pass
