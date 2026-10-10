@@ -14,3 +14,4 @@ index_exclusions.json
 data/
 asset/
 *.imported
+*.tar.gz
