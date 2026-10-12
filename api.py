@@ -57,6 +57,7 @@ from typing import List, Optional
 import core_service
 import user_context
 import horde_client
+import agentic_tunnel
 
 # Create a global session for proxying to avoid socket exhaustion
 _proxy_session = None
@@ -145,6 +146,28 @@ async def on_startup():
         unified_memory.init()
     except Exception as e:
         logging.error(f"[api] unified_memory init error: {e}")
+    try:
+        import agentic_tunnel
+        manager = await agentic_tunnel.start_from_settings(SETTINGS)
+        if manager:
+            # RAG/index stays local (embeddings CPU); only OLLAMA_URL and
+            # COMFY_API_URL got re-pointed at the P2P tunnel listeners.
+            logging.info("[api] agentic mode active: %s", {
+                "node": manager.active_node,
+                "urls": manager.urls(),
+            })
+    except Exception as e:
+        logging.error(f"[api] agentic mode init error: {e}")
+
+
+@app.get("/api/agentic/status")
+async def agentic_status():
+    """Diagnostics for the agentic inference tunnels (no auth: status only)."""
+    import agentic_tunnel
+    manager = agentic_tunnel.get_manager()
+    if not manager:
+        return {"status": "ok", "agentic": False, "mode": (str(SETTINGS.get("AI_PROVIDER", "local")) or "local").strip().lower()}
+    return {"status": "ok", **manager.status()}
 
 @app.get("/api/urls/delete")
 async def delete_url(request: Request):
@@ -3485,6 +3508,7 @@ async def _stream_first_chunk_timeout(agen, timeout=120):
 
 @app.post("/chat/stream")
 async def chat_stream_post(request: Request, data: ChatStreamInput):
+    agentic_tunnel.note_request(request, omd_key=data.omd_key, settings_payload=data.settings)
     return await chat_stream(
         request,
         prompt=data.prompt,
@@ -3516,6 +3540,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       rag_focus: dict|None = None,
                       attached_docs: list|None = None,
                       device_push: dict|None = None):
+    agentic_tunnel.note_request(request, omd_key=omd_key, settings_payload=provided_settings)
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}..., device_push={device_push}")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
@@ -4074,6 +4099,7 @@ async def recognize_endpoint(
 
 @app.post("/generate/image/character")
 async def generate_character_image(request: Request, data: GenerateInput):
+    agentic_tunnel.note_request(request, omd_key=data.omd_key, settings_payload=data.settings)
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
@@ -4111,6 +4137,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
 
 @app.post("/generate/image/general")
 async def generate_general_image(request: Request, data: GenerateInput):
+    agentic_tunnel.note_request(request, omd_key=data.omd_key, settings_payload=data.settings)
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
