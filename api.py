@@ -2479,6 +2479,13 @@ async def get_chat_image(
     # 2. Local storage candidates (Private Mode / Owner on device)
     candidates = []
     home_dir = os.path.expanduser("~")
+    try:
+        resolved_dir = core_service.resolve_local_target_dir(ctx, "generated")
+        candidates.append(os.path.join(resolved_dir, safe_filename))
+    except Exception:
+        pass
+    candidates.append(os.path.join(home_dir, "Data", "generated", safe_filename))
+
     clean_storage = (ctx.storage or "OnMyChat").strip("/")
     if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
         clean_storage = clean_storage[len(ctx.user_id) + 1:]

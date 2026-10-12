@@ -4376,6 +4376,48 @@ async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:
 
 
 
+def resolve_local_target_dir(ctx: UserContext, subfolder: str = "generated") -> str:
+    """
+    Resolves the real filesystem directory under the user's home directory
+    corresponding to ctx.storage / defaultStorage.
+    
+    Handles device-qualified paths from Svar (e.g. "/Colab-AI-Node/Data" -> "/home/<user>/Data/<subfolder>"),
+    user prefixes, and direct share paths.
+    """
+    home_dir = os.path.expanduser("~")
+    raw_storage = (
+        getattr(ctx, "storage", None)
+        or (ctx.settings.get("defaultStorage", "") if getattr(ctx, "settings", None) else "")
+        or "Data"
+    ).strip()
+
+    if raw_storage.startswith(home_dir):
+        return os.path.join(raw_storage, subfolder) if subfolder else raw_storage
+
+    parts = [p for p in raw_storage.strip("/").split("/") if p and p != "."]
+
+    # Strip user_id prefix if present
+    if parts and getattr(ctx, "user_id", None) and parts[0] == ctx.user_id:
+        parts = parts[1:]
+
+    # In Svar (storage-path.js), paths with >= 2 parts where parts[0] != "private"
+    # are device-qualified (e.g. "/Colab-AI-Node/Data" -> device="Colab-AI-Node", folder="Data").
+    # If parts[1] is an existing local share, or parts[0] is not a local folder, strip device name.
+    if len(parts) >= 2 and parts[0].lower() != "private":
+        first_exists = os.path.isdir(os.path.join(home_dir, parts[0]))
+        second_exists = os.path.isdir(os.path.join(home_dir, parts[1]))
+        if second_exists or not first_exists:
+            parts = parts[1:]
+    elif len(parts) == 1 and not os.path.isdir(os.path.join(home_dir, parts[0])):
+        # If parts[0] is only the device name itself (e.g. "Colab-AI-Node")
+        if os.path.isdir(os.path.join(home_dir, "Data")):
+            parts = ["Data"]
+
+    rel_path = "/".join(parts) if parts else "Data"
+    base_dir = os.path.join(home_dir, rel_path)
+    return os.path.join(base_dir, subfolder) if subfolder else base_dir
+
+
 async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, use_default_lora: bool = True, prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
     if not prompt:
         raise Exception("Please explain what do you want to see.")
@@ -4577,14 +4619,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     from api import validated_node_owner
     if validated_node_owner(ctx):
         # Node Owner only: Save directly to local storage on host relative to user's home directory.
-        home_dir = os.path.expanduser("~")
-        clean_storage = (ctx.storage or ctx.settings.get("defaultStorage", "") or "OnMyChat").strip("/")
-        if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
-            clean_storage = clean_storage[len(ctx.user_id) + 1:]
-        elif ctx.user_id and clean_storage == ctx.user_id:
-            clean_storage = "OnMyChat"
-
-        target_dir = os.path.join(home_dir, clean_storage, "generated")
+        target_dir = resolve_local_target_dir(ctx, "generated")
         try:
             os.makedirs(target_dir, exist_ok=True)
             dest_path = os.path.join(target_dir, filename)
