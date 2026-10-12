@@ -1837,7 +1837,7 @@ def cleanup_ephemeral_images():
 
 
 def schedule_generated_image_push(omd_key: str, device_push, filename: str, image_data: bytes,
-                                  title: str = "", description: str = ""):
+                                  title: str = "", description: str = "", ctx: user_context.UserContext | None = None):
     """Fire-and-forget p2p-пуш сгенерированного фото на устройство пользователя.
 
     `device_push` клиент выдаёт заранее: `{linkId, consentToken, folder}` из
@@ -1850,9 +1850,12 @@ def schedule_generated_image_push(omd_key: str, device_push, filename: str, imag
         return
     try:
         import device_push as _dp
+        if _dp.is_local_target(device_push, ctx):
+            logging.info(f"[device_push] Skipping P2P push: target {device_push.get('linkId')} is the local generation node itself")
+            return
         logging.info(f"[device_push] Scheduling P2P push for {filename} to {device_push.get('linkId')} (folder={device_push.get('folder')})")
         _dp.schedule_generated_image_push(
-            omd_key, device_push, filename, image_data, title, description,
+            omd_key, device_push, filename, image_data, title, description, ctx=ctx,
         )
     except Exception as exc:
         logging.warning(f"device_push scheduling failed: {exc}")
@@ -3796,7 +3799,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
-                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description, ctx=ctx)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
@@ -3832,7 +3835,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
-                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description, ctx=ctx)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed})}\n\n"
@@ -3936,7 +3939,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
-                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description)
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description, ctx=ctx)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
@@ -4084,7 +4087,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
-            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description)
+            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description, ctx=ctx)
         
         # [LEGACY HISTORY] Load history removed
         history = []
@@ -4120,7 +4123,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
-            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description)
+            schedule_generated_image_push(data.omd_key, data.device_push, filename, res[3], title, description, ctx=ctx)
         return {
             "image": filename,
             "path": filename,

@@ -72,6 +72,94 @@ def _clean_folder(folder: Any) -> str:
     return "/".join(parts)
 
 
+_LOCAL_NODE_IDS_CACHE: Optional[set[str]] = None
+
+
+def get_local_node_ids() -> set[str]:
+    """Return a set of known local node identifiers (lowercase linkIds, hostnames, device names)."""
+    global _LOCAL_NODE_IDS_CACHE
+    if _LOCAL_NODE_IDS_CACHE is not None:
+        return _LOCAL_NODE_IDS_CACHE
+
+    ids: set[str] = set()
+    import socket
+    try:
+        ids.add(socket.gethostname().lower())
+    except Exception:
+        pass
+
+    try:
+        from config import SETTINGS
+        for k in ("DEVICE_NAME", "HOST_NAME", "NODE_NAME"):
+            v = SETTINGS.get(k, "").strip().lower()
+            if v:
+                ids.add(v)
+    except Exception:
+        pass
+
+    # From /tmp/onmydisk.log
+    if os.path.exists("/tmp/onmydisk.log"):
+        try:
+            import re
+            with open("/tmp/onmydisk.log", "r", errors="ignore") as f:
+                content = f.read()
+                for m in re.finditer(r'Device Id:\s*"([^"]+)"', content, re.IGNORECASE):
+                    ids.add(m.group(1).lower())
+                for m in re.finditer(r'Refreshing share root:.*with ID:\s*([A-Za-z0-9_-]+)', content, re.IGNORECASE):
+                    ids.add(m.group(1).lower())
+                for m in re.finditer(r'Certificate loaded for\s+"([^"]+)"', content, re.IGNORECASE):
+                    ids.add(m.group(1).lower())
+        except Exception:
+            pass
+
+    # From config files
+    for cfg in (
+        "/etc/onmydisk/onmydisk.conf.user",
+        "/etc/onmydisk/onmydisk.conf",
+        os.path.expanduser("~/.config/onmydisk/onmydisk.conf"),
+        "/root/.config/onmydisk/onmydisk.conf",
+    ):
+        if os.path.exists(cfg):
+            try:
+                import configparser
+                cp = configparser.ConfigParser()
+                cp.read(cfg)
+                if "Settings" in cp:
+                    for key in ("linkid", "hostname", "deviceid"):
+                        val = cp["Settings"].get(key, "").strip().lower()
+                        if val:
+                            ids.add(val)
+            except Exception:
+                pass
+
+    _LOCAL_NODE_IDS_CACHE = ids
+    return ids
+
+
+def is_local_target(device_push: Any, ctx: Any = None) -> bool:
+    """Check if the device_push target is this local generation node itself."""
+    if not isinstance(device_push, dict):
+        return False
+    link_id = str(device_push.get("linkId") or "").strip().lower()
+    if not link_id:
+        return False
+    local_ids = get_local_node_ids()
+    if link_id in local_ids:
+        return True
+
+    # Check ctx storage device prefix against local ids
+    if ctx:
+        raw_storage = (
+            getattr(ctx, "storage", None)
+            or (ctx.settings.get("defaultStorage", "") if getattr(ctx, "settings", None) else "")
+            or ""
+        ).strip()
+        parts = [p.lower() for p in raw_storage.strip("/").split("/") if p and p != "."]
+        if len(parts) >= 2 and parts[0] in local_ids:
+            return True
+    return False
+
+
 def _safe_name(name: str) -> str:
     return os.path.basename(str(name or "")).strip()
 
@@ -80,8 +168,16 @@ async def push_files_to_device(
     omd_key: str,
     device_push: Any,
     files: Sequence[FileSpec],
+    ctx: Any = None,
 ) -> bool:
     """Write every file into the granted folder on the user's device."""
+    if is_local_target(device_push, ctx):
+        log.info(
+            "device_push: target %s is the local generation node itself; local save already performed, skipping P2P push",
+            (device_push or {}).get("linkId"),
+        )
+        return True
+
     ctx_info = _device_push_ctx(device_push)
     if not ctx_info:
         log.warning("device_push: missing/invalid device_push descriptor: %r, skipping", device_push)
@@ -144,8 +240,15 @@ def schedule_push(
     omd_key: str,
     device_push: Any,
     files: Sequence[FileSpec],
+    ctx: Any = None,
 ) -> bool:
     """Fire-and-forget wrapper: never blocks or fails the caller's response."""
+    if is_local_target(device_push, ctx):
+        log.info(
+            "device_push: target %s is the local generation node itself; skipping P2P push",
+            (device_push or {}).get("linkId"),
+        )
+        return False
     if not _device_push_ctx(device_push):
         return False
     try:
@@ -157,7 +260,7 @@ def schedule_push(
     async def _run() -> None:
         try:
             await asyncio.wait_for(
-                push_files_to_device(omd_key, device_push, files),
+                push_files_to_device(omd_key, device_push, files, ctx=ctx),
                 timeout=PUSH_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -178,14 +281,21 @@ def schedule_generated_image_push(
     image_data: bytes,
     title: str = "",
     description: str = "",
+    ctx: Any = None,
 ) -> bool:
     """Chat image → `<folder>/IMG_x.png` + companion Readme (legacy habit)."""
+    if is_local_target(device_push, ctx):
+        log.info(
+            "device_push: target %s is the local generation node itself; skipping P2P push",
+            (device_push or {}).get("linkId"),
+        )
+        return False
     files: List[FileSpec] = [(filename, image_data)]
     base = os.path.splitext(_safe_name(filename))[0]
     if base and title:
         readme = f"# {title}\n\n{description or ''}\n".encode("utf-8")
         files.append((f"{base}.Readme.md", readme))
-    return schedule_push(omd_key, device_push, files)
+    return schedule_push(omd_key, device_push, files, ctx=ctx)
 
 
 def schedule_avatar_push(
