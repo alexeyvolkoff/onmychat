@@ -4598,9 +4598,22 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
              filename = f"IMG_{timestamp}.png"
 
     gateway_uploaded = False
-    if upload_storage and ctx.omd_key:
-        # Old frontend (filemanager) delivery: image must land in the user's
-        # storage through the gateway, it renders /<storage>/generated/<file>
+    from api import validated_node_owner
+    is_node_owner = validated_node_owner(ctx)
+    is_p2p = getattr(ctx, "private_mode", False)
+
+    # In P2P calls or when running as node owner, skip gateway upload:
+    # 1. P2P clients receive the image directly via ephemeral /chat/image or WebRTC data push.
+    # 2. Node owners already have the file saved directly to host disk below.
+    # Gateway upload over internet adds several seconds of synchronous delay and is only needed
+    # for legacy web clients accessing via cloud gateway.
+    skip_gateway = (
+        not upload_storage
+        or is_p2p
+        or is_node_owner
+    )
+
+    if not skip_gateway and ctx.omd_key:
         effective_storage = ctx.storage or (f"/{ctx.user_id}/Private/onmychat" if ctx.user_id and ctx.user_id != "anonymous" else "")
         if effective_storage:
             dest = f"{effective_storage}/generated"
@@ -4615,9 +4628,11 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
                 gateway_uploaded = True
             except Exception as e:
                 logging.error(f"Upload to storage failed: {e}")
+    elif skip_gateway:
+        reason = "upload_storage=False" if not upload_storage else ("p2p mode" if is_p2p else "node owner local storage")
+        logging.info(f"Skipping gateway upload ({reason}): image delivered directly")
 
-    from api import validated_node_owner
-    if validated_node_owner(ctx):
+    if is_node_owner:
         # Node Owner only: Save directly to local storage on host relative to user's home directory.
         target_dir = resolve_local_target_dir(ctx, "generated")
         try:

@@ -2216,6 +2216,7 @@ class GenerateInput(BaseModel):
     history: list | None = None
     prompt_id: str | None = None
     device_push: dict | None = None
+    upload_storage: bool | None = None
 
 
 class UpdateAssistantInput(BaseModel):
@@ -4107,9 +4108,21 @@ async def generate_character_image(request: Request, data: GenerateInput):
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
+        is_p2p = (
+            ctx.private_mode
+            or bool(data.device_push)
+            or bool(request.headers.get("X-OMD-Caller-Role"))
+            or bool(request.headers.get("X-OMD-Caller-DID"))
+            or bool(request.headers.get("X-OMD-DID"))
+            or request.headers.get("X-OMD-Private-Mode") == "1"
+            or request.headers.get("x-client") == "svar"
+            or request.headers.get("x-image-delivery") == "inline"
+            or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
+        )
+        upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
         # generate_image returns (filename, title, description, img_data)
         is_new = data.message_nonce is None and data.message_index is None
-        res = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id)
+        res = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
@@ -4145,8 +4158,20 @@ async def generate_general_image(request: Request, data: GenerateInput):
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
+        is_p2p = (
+            ctx.private_mode
+            or bool(data.device_push)
+            or bool(request.headers.get("X-OMD-Caller-Role"))
+            or bool(request.headers.get("X-OMD-Caller-DID"))
+            or bool(request.headers.get("X-OMD-DID"))
+            or request.headers.get("X-OMD-Private-Mode") == "1"
+            or request.headers.get("x-client") == "svar"
+            or request.headers.get("x-image-delivery") == "inline"
+            or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
+        )
+        upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
         # generate_image returns (filename, title, description, img_data)
-        res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id)
+        res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
