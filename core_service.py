@@ -2450,7 +2450,7 @@ async def generate_image_workflow(workflow) -> bytes:
                         if len(msg.data) > 4:
                             event_type = int.from_bytes(msg.data[:4], 'big')
                             if event_type == 1:
-                                logging.info("Received binary preview image")
+                                logging.debug("Received binary preview image")
                                 # Only use binary preview if we don't have a high-res one yet, or as fallback
                                 if not final_image_data:
                                     # Skip first 8 bytes? ComfyUI source:
@@ -2459,9 +2459,9 @@ async def generate_image_workflow(workflow) -> bytes:
                                     # Standard preview is JPEG.
                                     final_image_data = msg.data[8:] 
                                     final_filename = f"preview_{uuid.uuid4()}.jpg"
-                                    logging.info(f"Captured preview image: {len(final_image_data)} bytes")
+                                    logging.debug(f"Captured preview image: {len(final_image_data)} bytes")
                             else:
-                                logging.info(f"Received binary event type: {event_type}")
+                                logging.debug(f"Received binary event type: {event_type}")
 
                 if not final_image_data:
                      logging.warning("No image data captured during execution.")
