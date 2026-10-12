@@ -218,7 +218,7 @@ touch /tmp/onmychat.log /tmp/onmydisk.log
 chown "${NODE_USER}:${NODE_USER}" /tmp/onmychat.log /tmp/onmydisk.log
 
 # Запуск OnMyChat от omduser
-setsid runuser -u "${NODE_USER}" -- bash -c "cd /content/onmychat && PYTHONUNBUFFERED=1 HOME=/home/${NODE_USER} USER=${NODE_USER} HF_HOME=/home/${NODE_USER}/.cache/huggingface exec python3 -u api.py 4000" >/tmp/onmychat.log 2>&1 &
+su - "${NODE_USER}" -c "cd /content/onmychat && PYTHONUNBUFFERED=1 HF_HOME=/home/${NODE_USER}/.cache/huggingface nohup python3 -u api.py 4000 >>/tmp/onmychat.log 2>&1 &"
 
 # Запуск OnMyDisk Connector
 setsid /usr/bin/onmydisk >/tmp/onmydisk.log 2>&1 &
@@ -255,7 +255,7 @@ echo ""
 while true; do
     pgrep -f "ollama serve" >/dev/null || { echo "Restarting Ollama..."; OLLAMA_MODELS="${LOCAL_OLLAMA}" setsid ollama serve >>/tmp/ollama.log 2>&1 & }
     pgrep -f "main.py.*8188" >/dev/null || { echo "Restarting ComfyUI..."; cd /content/ComfyUI && setsid python3 main.py --listen 127.0.0.1 --port 8188 --preview-method auto >>/tmp/comfyui.log 2>&1 & }
-    pgrep -f "api.py" >/dev/null || { echo "Restarting OnMyChat as ${NODE_USER}..."; setsid runuser -u "${NODE_USER}" -- bash -c "cd /content/onmychat && PYTHONUNBUFFERED=1 HOME=/home/${NODE_USER} USER=${NODE_USER} HF_HOME=/home/${NODE_USER}/.cache/huggingface exec python3 -u api.py 4000" >>/tmp/onmychat.log 2>&1 & }
+    pgrep -f "api.py" >/dev/null || { echo "Restarting OnMyChat as ${NODE_USER}..."; su - "${NODE_USER}" -c "cd /content/onmychat && PYTHONUNBUFFERED=1 HF_HOME=/home/${NODE_USER}/.cache/huggingface nohup python3 -u api.py 4000 >>/tmp/onmychat.log 2>&1 &"; }
     pgrep -x "onmydisk" >/dev/null || { echo "Restarting OnMyDisk..."; setsid /usr/bin/onmydisk >>/tmp/onmydisk.log 2>&1 & }
     cp -ru /etc/onmydisk/* "${NODE_DATA_DIR}/etc_onmydisk/" 2>/dev/null || true
     sleep 30
