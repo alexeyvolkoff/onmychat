@@ -2383,8 +2383,9 @@ async def generate_image_workflow(workflow) -> bytes:
                 # Timeout safety
                 loop_start = time.time()
 
+                comfy_timeout = int(SETTINGS.get("COMFY_TIMEOUT", 300))
                 async for msg in ws:
-                    if time.time() - loop_start > 120:
+                    if time.time() - loop_start > comfy_timeout:
                         logging.error("Timeout waiting for image generation")
                         break
 
