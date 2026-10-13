@@ -2563,9 +2563,10 @@ async def generate_krea2_image(
     if seed is None:
         seed = random.randint(1, 1125899906842624)
 
-    unet_model = "CyberRealistic_Krea2_V4.0_BF16.safetensors"
-    clip_model = "qwen3-vl-4b-heretic.safetensors"
-    vae_model = "qwen_image_vae.safetensors"
+    unet_model = SETTINGS.get("KREA_MODEL", "CyberRealistic_Krea2_V4.0_BF16.safetensors")
+    clip_model = SETTINGS.get("KREA_CLIP", "qwen3-vl-4b-heretic.safetensors")
+    vae_model = SETTINGS.get("KREA_VAE", "qwen_image_vae.safetensors")
+    lora_model = SETTINGS.get("KREA_LORA", "krea2_identity_edit_v1_2.safetensors")
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
