@@ -2219,6 +2219,24 @@ class GenerateInput(BaseModel):
     upload_storage: bool | None = None
 
 
+class KreaGenerateInput(BaseModel):
+    omd_key: str
+    prompt: str = ""
+    persona_id: str | None = None
+    persona_name: str | None = None
+    persona_prompt: str | None = None
+    sliders: dict | None = None
+    width: int = 896
+    height: int = 1152
+    steps: int = 10
+    cfg: float = 1.0
+    seed: int | None = None
+    chat: str = "default"
+    settings: dict | None = None
+    device_push: dict | None = None
+    upload_storage: bool | None = None
+
+
 class UpdateAssistantInput(BaseModel):
     omd_key: str
     style: str | None = None
@@ -2261,6 +2279,7 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "capabilities": {
                 "image_generation": await core_service.is_comfy_available(),
                 "vision": await core_service.is_vision_available(),
+                "krea2": await core_service.is_krea_available(),
                 "chat": True
             }
         }
@@ -3959,9 +3978,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
-                logging.info(f"Generating image for prompt {img_prompt} with title {img_title}")
                 upload_storage_flag = not is_inline_image
-                res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora = False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
+                if await core_service.is_krea_available():
+                    logging.info(f"[Krea2] Generating image in chat via Krea 2 for prompt: {img_prompt}")
+                    res = await core_service.generate_krea2_image(ctx, img_prompt, upload_storage=upload_storage_flag)
+                else:
+                    res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
@@ -4186,6 +4208,93 @@ async def generate_general_image(request: Request, data: GenerateInput):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/krea2")
+async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
+    agentic_tunnel.note_request(request, omd_key=data.omd_key, settings_payload=data.settings)
+    data.chat = data.chat or "default"
+    ctx = get_ctx(data.omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    if data.settings:
+        ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
+    try:
+        is_p2p = (
+            ctx.private_mode
+            or bool(data.device_push)
+            or bool(request.headers.get("X-OMD-Caller-Role"))
+            or bool(request.headers.get("X-OMD-Caller-DID"))
+            or bool(request.headers.get("X-OMD-DID"))
+            or request.headers.get("X-OMD-Private-Mode") == "1"
+            or request.headers.get("x-client") == "svar"
+            or request.headers.get("x-image-delivery") == "inline"
+            or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
+        )
+        upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
+
+        res = await core_service.generate_krea2_image(
+            ctx=ctx,
+            prompt=data.prompt,
+            persona_prompt=data.persona_prompt or "",
+            sliders=data.sliders,
+            width=data.width,
+            height=data.height,
+            steps=data.steps,
+            cfg=data.cfg,
+            seed=data.seed,
+            upload_storage=upload_storage_flag
+        )
+        filename, title, description, img_data = res[0], res[1], res[2], res[3]
+        if img_data:
+            store_ephemeral_image(filename, img_data)
+            schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
+
+        return {
+            "image": filename,
+            "path": filename,
+            "url": f"/chat/image/{filename}",
+            "title": title,
+            "description": description,
+            "persona": data.persona_name or data.persona_id or ""
+        }
+    except Exception as e:
+        logging.error(f"Error in /generate/krea2: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/personas")
+async def get_personas_endpoint(omd_key: str | None = Depends(get_omd_key)):
+    """Возвращает список доступных персон."""
+    ctx = get_ctx(omd_key)
+    june_desc = ctx.settings.get("assistant_appearance") or user_context.DEFAULT_ASSISTANT_APPEARANCE
+    default_personas = [
+        {
+            "id": "june",
+            "name": ctx.settings.get("assistant_name", "June"),
+            "title": ctx.settings.get("assistant_title", "Junior Assistant"),
+            "prompt": june_desc.strip(),
+            "avatar_url": "/assistant/avatar?size=160",
+            "is_default": True
+        },
+        {
+            "id": "cyber_alt",
+            "name": "Alt Shadow",
+            "title": "Goth Aesthetic",
+            "prompt": "An edgy alternative woman with dark raven hair, sharp eyeliner, layered gothic silver jewelry, dark lace aesthetic, expressive mysterious gaze",
+            "avatar_url": "",
+            "is_default": False
+        },
+        {
+            "id": "cyber_neon",
+            "name": "Neon Pilot",
+            "title": "Cyberpunk Scout",
+            "prompt": "A futuristic pilot with short sleek hair, subtle biometric neon glow reflections, high-tech tactical flight collar, confident smile",
+            "avatar_url": "",
+            "is_default": False
+        }
+    ]
+    return {"personas": default_personas}
 
 
 

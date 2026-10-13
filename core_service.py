@@ -2310,6 +2310,9 @@ async def get_generated_avatars(ctx: UserContext) -> list:
 _comfy_last_check = 0.0
 _comfy_available_cache = False
 
+_krea_last_check = 0.0
+_krea_available_cache = False
+
 _vision_last_check = 0.0
 _vision_available_cache = False
 
@@ -2357,6 +2360,30 @@ async def is_comfy_available() -> bool:
         _comfy_available_cache = False
     _comfy_last_check = now
     return _comfy_available_cache
+
+
+async def is_krea_available() -> bool:
+    """Проверяет доступность моделей Krea 2 в ComfyUI (UNETLoader / diffusion_models).
+    Кэшируется на 30с."""
+    global _krea_last_check, _krea_available_cache
+    if not await is_comfy_available():
+        return False
+    now = time.time()
+    if now - _krea_last_check < 30.0:
+        return _krea_available_cache
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+            async with session.get(f"{COMFY_API_URL}/object_info/UNETLoader") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    models = data.get("UNETLoader", {}).get("input", {}).get("required", {}).get("unet_name", [[]])[0]
+                    _krea_available_cache = any("krea" in str(m).lower() for m in models)
+                else:
+                    _krea_available_cache = False
+    except Exception:
+        _krea_available_cache = False
+    _krea_last_check = now
+    return _krea_available_cache
 
 
 async def generate_image_workflow(workflow) -> bytes:
@@ -2474,6 +2501,179 @@ async def generate_image_workflow(workflow) -> bytes:
 
     except Exception as e:
         logging.error(f"Error in generate_image_workflow: {e}")
+        return None, None
+
+
+async def generate_krea2_image(
+    ctx: UserContext,
+    prompt: str,
+    persona_prompt: str = "",
+    sliders: dict | None = None,
+    width: int = 896,
+    height: int = 1152,
+    steps: int = 10,
+    cfg: float = 1.0,
+    seed: int | None = None,
+    upload_storage: bool = True
+) -> tuple[str, str, str, bytes]:
+    """Генерация изображения через нативный пайплайн Krea 2 (CyberRealistic V4, Qwen3-VL Heretic)."""
+    if not prompt and not persona_prompt:
+        raise Exception("Укажите промпт или выберите персону для генерации.")
+
+    # Объединяем словесный паспорт персоны и пользовательский сюжет
+    full_parts = []
+    if persona_prompt and persona_prompt.strip():
+        full_parts.append(persona_prompt.strip())
+    if prompt and prompt.strip():
+        full_parts.append(prompt.strip())
+
+    # Применяем микро-слайдеры параметров
+    sliders = sliders or {}
+    detail_val = float(sliders.get("detail", 0.0))
+    if detail_val > 0.2:
+        full_parts.append("ultra-detailed, natural skin pores, fine textures, sharp focus, 8k uhd")
+    elif detail_val < -0.2:
+        full_parts.append("soft focus, subtle cinematic glow, film look")
+
+    age_val = float(sliders.get("age", 0.0))
+    if age_val > 0.3:
+        full_parts.append("mature look, elegant distinguished presence")
+    elif age_val < -0.3:
+        full_parts.append("youthful appearance, fresh vibrant look")
+
+    weight_val = float(sliders.get("weight", 0.0))
+    if weight_val > 0.3:
+        full_parts.append("curvy figure, athletic build")
+    elif weight_val < -0.3:
+        full_parts.append("slender build, delicate silhouette")
+
+    style_preset = sliders.get("style", "photorealistic")
+    if style_preset == "photorealistic":
+        full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural lighting")
+    elif style_preset == "cinematic":
+        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh")
+    elif style_preset == "goth":
+        full_parts.append("dark gothic aesthetic, alt fashion, moody dark shadows, ethereal atmosphere")
+    elif style_preset == "art":
+        full_parts.append("masterpiece fine art portrait, painterly elegance, expressive composition")
+
+    positive_text = ", ".join(full_parts)
+    negative_text = "wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, watermark, artifacts"
+
+    if seed is None:
+        seed = random.randint(1, 1125899906842624)
+
+    unet_model = "CyberRealistic_Krea2_V4.0_BF16.safetensors"
+    clip_model = "qwen3-vl-4b-heretic.safetensors"
+    vae_model = "qwen_image_vae.safetensors"
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+            async with session.get(f"{COMFY_API_URL}/object_info") as resp:
+                if resp.status == 200:
+                    obj_info = await resp.json()
+                    unets = obj_info.get("UNETLoader", {}).get("input", {}).get("required", {}).get("unet_name", [[]])[0]
+                    for u in unets:
+                        if "krea" in str(u).lower():
+                            unet_model = u
+                            break
+                    clips = obj_info.get("CLIPLoader", {}).get("input", {}).get("required", {}).get("clip_name", [[]])[0]
+                    if "qwen3-vl-4b-heretic.safetensors" in clips:
+                        clip_model = "qwen3-vl-4b-heretic.safetensors"
+                    elif any("qwen" in str(c).lower() for c in clips):
+                        clip_model = next(c for c in clips if "qwen" in str(c).lower())
+    except Exception:
+        pass
+
+    krea_workflow = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": unet_model,
+                "weight_dtype": "default"
+            }
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": clip_model,
+                "type": "krea2"
+            }
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": vae_model
+            }
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": positive_text,
+                "clip": ["2", 0]
+            }
+        },
+        "5": {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {
+                "conditioning": ["4", 0]
+            }
+        },
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": int(width),
+                "height": int(height),
+                "batch_size": 1
+            }
+        },
+        "7": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": int(steps),
+                "cfg": float(cfg),
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["1", 0],
+                "positive": ["4", 0],
+                "negative": ["5", 0],
+                "latent_image": ["6", 0]
+            }
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["7", 0],
+                "vae": ["3", 0]
+            }
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "Krea2/krea",
+                "images": ["8", 0]
+            }
+        }
+    }
+
+    logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height})")
+    img_data, filename = await generate_image_workflow(krea_workflow)
+    if not img_data:
+        raise Exception("Krea 2 image generation failed")
+
+    # Форматируем имя файла
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    match = re.search(r"_(\d{5})_\.png$", filename or "")
+    if match:
+        index = match.group(1)
+        filename = f"KREA_{index}_{timestamp}.png"
+    else:
+        filename = f"KREA_{timestamp}.png"
+
+    img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
+    return filename, img_title, positive_text, img_data
 
 
 
