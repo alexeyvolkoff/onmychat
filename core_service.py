@@ -2586,24 +2586,38 @@ async def generate_krea2_image(
     vae_model = SETTINGS.get("KREA_VAE", "qwen_image_vae.safetensors")
 
     available_loras = []
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
-            async with session.get(f"{COMFY_API_URL}/object_info") as resp:
-                if resp.status == 200:
-                    obj_info = await resp.json()
-                    unets = obj_info.get("UNETLoader", {}).get("input", {}).get("required", {}).get("unet_name", [[]])[0]
-                    for u in unets:
-                        if "krea" in str(u).lower():
-                            unet_model = u
-                            break
-                    clips = obj_info.get("CLIPLoader", {}).get("input", {}).get("required", {}).get("clip_name", [[]])[0]
-                    if "qwen3-vl-4b-heretic.safetensors" in clips:
-                        clip_model = "qwen3-vl-4b-heretic.safetensors"
-                    elif any("qwen" in str(c).lower() for c in clips):
-                        clip_model = next(c for c in clips if "qwen" in str(c).lower())
-                    available_loras = obj_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
-    except Exception:
-        pass
+    global _krea_model_cache
+    if "_krea_model_cache" not in globals():
+        _krea_model_cache = None
+
+    if _krea_model_cache is None:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+                async with session.get(f"{COMFY_API_URL}/object_info") as resp:
+                    if resp.status == 200:
+                        obj_info = await resp.json()
+                        unets = obj_info.get("UNETLoader", {}).get("input", {}).get("required", {}).get("unet_name", [[]])[0]
+                        detected_unet = next((u for u in unets if "krea" in str(u).lower()), unet_model)
+                        clips = obj_info.get("CLIPLoader", {}).get("input", {}).get("required", {}).get("clip_name", [[]])[0]
+                        if "qwen3-vl-4b-heretic.safetensors" in clips:
+                            detected_clip = "qwen3-vl-4b-heretic.safetensors"
+                        elif any("qwen" in str(c).lower() for c in clips):
+                            detected_clip = next(c for c in clips if "qwen" in str(c).lower())
+                        else:
+                            detected_clip = clip_model
+                        loras = obj_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
+                        _krea_model_cache = {
+                            "unet": detected_unet,
+                            "clip": detected_clip,
+                            "loras": loras or []
+                        }
+        except Exception:
+            pass
+
+    if _krea_model_cache:
+        unet_model = _krea_model_cache.get("unet", unet_model)
+        clip_model = _krea_model_cache.get("clip", clip_model)
+        available_loras = _krea_model_cache.get("loras", [])
 
     # Verify if active_lora is present in available_loras
     use_lora = False
