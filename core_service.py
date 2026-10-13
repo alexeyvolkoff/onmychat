@@ -2548,14 +2548,32 @@ async def generate_krea2_image(
         full_parts.append("slender build, delicate silhouette")
 
     style_preset = sliders.get("style", "photorealistic")
+    active_lora = None
+    lora_strength = 0.7
+
     if style_preset == "photorealistic":
-        full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural lighting")
+        full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight")
+    elif style_preset == "influencer":
+        full_parts.append("instagram lifestyle selfie, candid portrait, golden hour soft light, authentic natural look, highly detailed")
+    elif style_preset in ["alt", "goth"]:
+        full_parts.append("alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere")
     elif style_preset == "cinematic":
-        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh")
-    elif style_preset == "goth":
-        full_parts.append("dark gothic aesthetic, alt fashion, moody dark shadows, ethereal atmosphere")
+        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain")
+    elif style_preset == "cyberpunk":
+        full_parts.append("cyberpunk portrait, neon blue and magenta rim lighting, wet rainy streets bokeh, futuristic techwear")
+    elif style_preset == "anime":
+        full_parts.append("vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics")
+    elif style_preset == "tifa":
+        full_parts.append("tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait")
+        active_lora = "tifa_lockhart_krea2.safetensors"
+        lora_strength = 0.8
     elif style_preset == "art":
-        full_parts.append("masterpiece fine art portrait, painterly elegance, expressive composition")
+        full_parts.append("masterpiece fine art portrait, oil painting elegance, expressive brushwork, museum lighting")
+
+    # Custom persona LoRA if requested
+    if sliders.get("lora"):
+        active_lora = sliders.get("lora")
+        lora_strength = float(sliders.get("lora_weight", 0.7))
 
     positive_text = ", ".join(full_parts)
     negative_text = "wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, watermark, artifacts"
@@ -2566,8 +2584,8 @@ async def generate_krea2_image(
     unet_model = SETTINGS.get("KREA_MODEL", "CyberRealistic_Krea2_V4.0_BF16.safetensors")
     clip_model = SETTINGS.get("KREA_CLIP", "qwen3-vl-4b-heretic.safetensors")
     vae_model = SETTINGS.get("KREA_VAE", "qwen_image_vae.safetensors")
-    lora_model = SETTINGS.get("KREA_LORA", "krea2_identity_edit_v1_2.safetensors")
 
+    available_loras = []
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
             async with session.get(f"{COMFY_API_URL}/object_info") as resp:
@@ -2583,8 +2601,19 @@ async def generate_krea2_image(
                         clip_model = "qwen3-vl-4b-heretic.safetensors"
                     elif any("qwen" in str(c).lower() for c in clips):
                         clip_model = next(c for c in clips if "qwen" in str(c).lower())
+                    available_loras = obj_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
     except Exception:
         pass
+
+    # Verify if active_lora is present in available_loras
+    use_lora = False
+    resolved_lora_name = None
+    if active_lora:
+        for al in available_loras:
+            if active_lora.lower() in str(al).lower():
+                resolved_lora_name = al
+                use_lora = True
+                break
 
     krea_workflow = {
         "1": {
@@ -2611,7 +2640,7 @@ async def generate_krea2_image(
             "class_type": "CLIPTextEncode",
             "inputs": {
                 "text": positive_text,
-                "clip": ["2", 0]
+                "clip": ["10", 1] if use_lora else ["2", 0]
             }
         },
         "5": {
@@ -2637,7 +2666,7 @@ async def generate_krea2_image(
                 "sampler_name": "euler",
                 "scheduler": "simple",
                 "denoise": 1.0,
-                "model": ["1", 0],
+                "model": ["10", 0] if use_lora else ["1", 0],
                 "positive": ["4", 0],
                 "negative": ["5", 0],
                 "latent_image": ["6", 0]
@@ -2658,6 +2687,18 @@ async def generate_krea2_image(
             }
         }
     }
+
+    if use_lora and resolved_lora_name:
+        krea_workflow["10"] = {
+            "class_type": "LoraLoader",
+            "inputs": {
+                "lora_name": resolved_lora_name,
+                "strength_model": float(lora_strength),
+                "strength_clip": float(lora_strength),
+                "model": ["1", 0],
+                "clip": ["2", 0]
+            }
+        }
 
     logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height})")
     img_data, filename = await generate_image_workflow(krea_workflow)

@@ -2237,6 +2237,13 @@ class KreaGenerateInput(BaseModel):
     upload_storage: bool | None = None
 
 
+class PersonaGenerateInput(BaseModel):
+    omd_key: str | None = None
+    archetype: str = "alt"
+    gender: str = "female"
+    style: str | None = None
+
+
 class UpdateAssistantInput(BaseModel):
     omd_key: str
     style: str | None = None
@@ -4250,10 +4257,14 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             store_ephemeral_image(filename, img_data)
             schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
 
+        import base64
+        b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
+
         return {
             "image": filename,
             "path": filename,
             "url": f"/chat/image/{filename}",
+            "data": b64_str,
             "title": title,
             "description": description,
             "persona": data.persona_name or data.persona_id or ""
@@ -4261,6 +4272,93 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
     except Exception as e:
         logging.error(f"Error in /generate/krea2: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/personas/generate")
+async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput):
+    """Генерирует новую персону по типажу (словесный паспорт + портрет Krea 2)."""
+    import random, base64
+    ctx = get_ctx(data.omd_key)
+
+    archetype_presets = {
+        "alt": {
+            "names": ["Кира", "Лира", "Ника", "Raven", "Roxy", "Marta"],
+            "title": "Alt / Goth Girl",
+            "passport": "Young alternative woman with chin-length jet-black hair with vibrant purple streaks, dark winged eyeliner, small silver nose ring, velvet choker, expressive moody gaze, pale skin, edgy alternative chic",
+            "style": "alt"
+        },
+        "influencer": {
+            "names": ["София", "Эмма", "Мия", "Chloe", "Valerie", "Diana"],
+            "title": "Instagram Influencer",
+            "passport": "Stunning 22-year-old lifestyle influencer with long wavy honey-blonde hair, warm hazel eyes, glowing tanned skin, soft natural makeup, charming candid smile, chic oversized knitted cardigan, golden hour warmth",
+            "style": "influencer"
+        },
+        "business": {
+            "names": ["Виктория", "Елена", "Claire", "Diane", "Ingrid"],
+            "title": "Tech Founder & CEO",
+            "passport": "Sophisticated modern woman with sleek dark brunette bob, confident warm brown eyes, sharp tailored blazer, delicate minimalist earrings, intelligent poised expression, modern high-rise office ambiance",
+            "style": "photorealistic"
+        },
+        "cyberpunk": {
+            "names": ["Нейра", "Злата", "Nova", "Cipher", "Vesper"],
+            "title": "Cyberpunk Netrunner",
+            "passport": "Futuristic young cyber-operative with asymmetrical platinum hair and teal neon tips, glowing optic cyberware around temple, dark techwear jacket with luminous accents, rain-slicked neon street reflections",
+            "style": "cyberpunk"
+        },
+        "anime": {
+            "names": ["Юки", "Акари", "Sakura", "Hana", "Rei"],
+            "title": "Artistic Anime Muse",
+            "passport": "Artistic girl with voluminous pastel pink wavy hair, large luminous violet eyes, playful gentle expression, delicate porcelain skin, cute oversized sweater with artistic pins",
+            "style": "anime"
+        },
+        "tifa": {
+            "names": ["Тифа", "Tifa", "Lockhart"],
+            "title": "Legendary Heroine",
+            "passport": "Stunning athletic martial artist with long waist-length glossy black hair tied in dolphin-tail tip, captivating ruby-red eyes, toned athletic build, leather fingerless gloves, iconic white top with suspenders",
+            "style": "tifa"
+        }
+    }
+
+    arch_key = data.archetype if data.archetype in archetype_presets else "alt"
+    arch = archetype_presets[arch_key]
+
+    name = random.choice(arch["names"])
+    title = arch["title"]
+    passport = arch["passport"]
+    style = data.style or arch["style"]
+
+    timestamp = int(time.time())
+    persona_id = f"persona_{arch_key}_{timestamp}"
+
+    # Рендерим портрет через Krea 2
+    try:
+        res = await core_service.generate_krea2_image(
+            ctx=ctx,
+            prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
+            persona_prompt=passport,
+            sliders={"style": style, "detail": 0.5},
+            width=896,
+            height=1152,
+            steps=10,
+            cfg=1.0,
+            upload_storage=False
+        )
+        img_data = res[3]
+        b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
+    except Exception as e:
+        logging.error(f"Error generating persona portrait: {e}")
+        b64_str = ""
+
+    return {
+        "id": persona_id,
+        "name": name,
+        "title": title,
+        "prompt": passport,
+        "archetype": arch_key,
+        "style": style,
+        "avatar": b64_str,
+        "avatarData": b64_str
+    }
 
 
 @app.get("/personas")
