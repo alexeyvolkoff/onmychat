@@ -2719,6 +2719,8 @@ async def generate_krea2_image(
     if not img_data:
         raise Exception("Krea 2 image generation failed")
 
+    orig_filename = filename
+
     # Форматируем имя файла
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     match = re.search(r"_(\d{5})_\.png$", filename or "")
@@ -2746,6 +2748,21 @@ async def generate_krea2_image(
                 target_readme_path = os.path.join(gen_dir, f"{base_name}.Readme.md")
                 with open(target_readme_path, "w", encoding="utf-8") as f:
                     f.write(f"# {img_title}\n\n{positive_text}\n")
+
+                # Удаляем сырой файл ComfyUI, чтобы изображение не двоилось в папке
+                if orig_filename and orig_filename != filename:
+                    for old_cand in [
+                        os.path.join(gen_dir, os.path.basename(orig_filename)),
+                        os.path.join("/content/ComfyUI/output", orig_filename),
+                        os.path.join("/content/ComfyUI/output", os.path.basename(orig_filename))
+                    ]:
+                        if os.path.exists(old_cand) and os.path.abspath(old_cand) != os.path.abspath(target_img_path):
+                            try:
+                                os.remove(old_cand)
+                                logging.info(f"[Krea2] Removed raw ComfyUI file: {old_cand}")
+                            except Exception as e:
+                                logging.debug(f"[Krea2] Could not remove old file {old_cand}: {e}")
+
                 logging.info(f"[Krea2] Saved generated image to {target_img_path} with companion {target_readme_path}")
                 break
         except Exception as e:
