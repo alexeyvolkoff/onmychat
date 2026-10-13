@@ -2682,7 +2682,7 @@ async def generate_krea2_image(
         "9": {
             "class_type": "SaveImage",
             "inputs": {
-                "filename_prefix": "Krea2/krea",
+                "filename_prefix": "generated/krea",
                 "images": ["8", 0]
             }
         }
@@ -2715,6 +2715,27 @@ async def generate_krea2_image(
         filename = f"KREA_{timestamp}.png"
 
     img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
+
+    # Гарантируем сохранение в Data/generated для OnMyDisk
+    home_dir = os.path.expanduser("~")
+    for gen_dir in [
+        os.path.join(home_dir, "Data", "generated"),
+        "/content/ComfyUI/output/generated",
+        os.path.join(APP_ROOT_DIR, "generated")
+    ]:
+        try:
+            if os.path.isdir(gen_dir):
+                target_img_path = os.path.join(gen_dir, filename)
+                with open(target_img_path, "wb") as f:
+                    f.write(img_data)
+                target_txt_path = os.path.join(gen_dir, f"{filename}.txt")
+                with open(target_txt_path, "w", encoding="utf-8") as f:
+                    f.write(f"# {img_title}\n\n{positive_text}\n")
+                logging.info(f"[Krea2] Saved generated image to {target_img_path}")
+                break
+        except Exception as e:
+            logging.warning(f"[Krea2] Could not save directly to {gen_dir}: {e}")
+
     return filename, img_title, positive_text, img_data
 
 

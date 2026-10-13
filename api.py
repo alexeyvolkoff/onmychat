@@ -2538,6 +2538,10 @@ async def get_chat_image(
     except Exception:
         pass
     candidates.append(os.path.join(home_dir, "Data", "generated", safe_filename))
+    candidates.append(os.path.join(home_dir, "Data", "Krea2", safe_filename))
+    candidates.append(os.path.join("/content/ComfyUI/output", "generated", safe_filename))
+    candidates.append(os.path.join("/content/ComfyUI/output", "Krea2", safe_filename))
+    candidates.append(os.path.join("/content/ComfyUI/output", safe_filename))
 
     clean_storage = (ctx.storage or "OnMyChat").strip("/")
     if ctx.user_id and clean_storage.startswith(ctx.user_id + "/"):
@@ -4257,14 +4261,10 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             store_ephemeral_image(filename, img_data)
             schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
 
-        import base64
-        b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
-
         return {
             "image": filename,
             "path": filename,
             "url": f"/chat/image/{filename}",
-            "data": b64_str,
             "title": title,
             "description": description,
             "persona": data.persona_name or data.persona_id or ""
