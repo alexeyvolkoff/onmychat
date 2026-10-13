@@ -2742,10 +2742,11 @@ async def generate_krea2_image(
                 target_img_path = os.path.join(gen_dir, filename)
                 with open(target_img_path, "wb") as f:
                     f.write(img_data)
-                target_txt_path = os.path.join(gen_dir, f"{filename}.txt")
-                with open(target_txt_path, "w", encoding="utf-8") as f:
+                base_name = os.path.splitext(filename)[0]
+                target_readme_path = os.path.join(gen_dir, f"{base_name}.Readme.md")
+                with open(target_readme_path, "w", encoding="utf-8") as f:
                     f.write(f"# {img_title}\n\n{positive_text}\n")
-                logging.info(f"[Krea2] Saved generated image to {target_img_path}")
+                logging.info(f"[Krea2] Saved generated image to {target_img_path} with companion {target_readme_path}")
                 break
         except Exception as e:
             logging.warning(f"[Krea2] Could not save directly to {gen_dir}: {e}")
