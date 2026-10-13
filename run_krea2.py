@@ -15,7 +15,7 @@ workflow = {
   },
   "11": {
     "inputs": {
-      "clip_name": "qwen3vl_4b_bf16.safetensors",
+      "clip_name": "qwen3-vl-4b-heretic.safetensors",
       "type": "krea2"
     },
     "class_type": "CLIPLoader"
