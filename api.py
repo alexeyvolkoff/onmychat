@@ -4361,20 +4361,25 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
     persona_id = f"persona_{arch_key}_{timestamp}"
 
     # Рендерим портрет через Krea 2
+    b64_str = ""
     try:
-        res = await core_service.generate_krea2_image(
-            ctx=ctx,
-            prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
-            persona_prompt=passport,
-            sliders={"style": style, "archetype": arch.get("archetype"), "detail": 0.5},
-            width=896,
-            height=1152,
-            steps=10,
-            cfg=1.0,
-            upload_storage=False
-        )
-        img_data = res[3]
-        b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
+        if await core_service.is_krea_available():
+            arch_val = arch.get("archetype")
+            res = await core_service.generate_krea2_image(
+                ctx=ctx,
+                prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
+                persona_prompt=passport,
+                sliders={"style": style, "archetypes": [arch_val] if arch_val else [], "detail": 0.5},
+                width=896,
+                height=1152,
+                steps=10,
+                cfg=1.0,
+                upload_storage=False
+            )
+            img_data = res[3]
+            b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
+        else:
+            logging.info("[personas/generate] Krea 2 is not available, returning text passport")
     except Exception as e:
         logging.error(f"Error generating persona portrait: {e}")
         b64_str = ""
