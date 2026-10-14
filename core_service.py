@@ -2551,15 +2551,54 @@ async def generate_krea2_image(
     active_lora = None
     lora_strength = 0.8
 
-    # 1. Art Styles (Mutually exclusive rendering aesthetics)
-    if style_preset == "photorealistic":
+    target_loras = []
+
+    # 1. Art Styles (Dedicated Style LoRAs & rendering aesthetics)
+    STYLE_CONFIGS = {
+        "anime": {
+            "trigger": "anime style, vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics",
+            "lora": "k2-anime-classic-flat.safetensors",
+            "strength": 0.85
+        },
+        "semireal": {
+            "trigger": "semireal, 2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features",
+            "lora": "eiko_semireal_krea2.safetensors",
+            "strength": 0.85
+        },
+        "pinup": {
+            "trigger": "technicolor, vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition",
+            "lora": "technicolor_pinup_krea2.safetensors",
+            "strength": 0.85
+        },
+        "pixar": {
+            "trigger": "KR2Pix, 3d pixar animation style, expressive stylized character, vibrant Disney Pixar aesthetics, 3d digital render",
+            "lora": "pure_pixar_3d_krea2.safetensors",
+            "strength": 0.85
+        },
+        "comic": {
+            "trigger": "Bradhamel art style, comic book illustration, dynamic ink lines, graphic novel aesthetics, stylized comic art",
+            "lora": "krea_comics.safetensors",
+            "strength": 0.8
+        },
+        "midjourney": {
+            "trigger": "midjourney style, artistic concept art, ethereal atmospheric lighting, stunning composition, masterpiece",
+            "lora": "krea_midjourney.safetensors",
+            "strength": 0.8
+        }
+    }
+
+    # Style alias normalization
+    if style_preset in ["art"]:
+        style_preset = "semireal"
+    elif style_preset in ["3d"]:
+        style_preset = "pixar"
+
+    if style_preset in STYLE_CONFIGS:
+        cfg_style = STYLE_CONFIGS[style_preset]
+        full_parts.append(cfg_style["trigger"])
+        target_loras.append((cfg_style["lora"], cfg_style["strength"]))
+    elif style_preset == "photorealistic":
         full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight")
-    elif style_preset in ["semireal", "art"]:
-        full_parts.append("2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features, octane render quality")
-    elif style_preset == "anime":
-        full_parts.append("vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics")
-    elif style_preset == "pinup":
-        full_parts.append("vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition")
     elif style_preset == "cinematic":
         full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain")
     elif style_preset in ["neon", "cyberpunk"]:
@@ -2613,7 +2652,7 @@ async def generate_krea2_image(
     elif style_preset in ["goth"] and "alt" not in archetype_list:
         archetype_list.append("alt")
 
-    target_loras = []
+    # target_loras already contains any active style LoRA, append archetypes
     for arch_id in archetype_list:
         if arch_id in ARCHETYPE_CONFIGS:
             cfg_arch = ARCHETYPE_CONFIGS[arch_id]
@@ -2678,8 +2717,9 @@ async def generate_krea2_image(
             if lora_file.lower() in str(al).lower():
                 matched = al
                 break
-        if matched:
-            resolved_lora_chain.append((matched, strength))
+        if not matched:
+            matched = lora_file
+        resolved_lora_chain.append((matched, strength))
 
     # Base models
     current_model_link = ["1", 0]
