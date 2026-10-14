@@ -2628,6 +2628,18 @@ async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str |
                     if resp.status == 200:
                         return await resp.read()
             return None
+        if "/personas/" in ref_str and ref_str.endswith("/avatar"):
+            parts = [p for p in ref_str.split("/") if p]
+            if "personas" in parts:
+                p_idx = parts.index("personas")
+                if p_idx + 1 < len(parts):
+                    p_id = parts[p_idx + 1]
+                    dirs = get_personas_dirs(ctx)
+                    for p_dir in dirs:
+                        cand = os.path.join(p_dir, f"{p_id}.png")
+                        if os.path.isfile(cand):
+                            with open(cand, "rb") as f:
+                                return f.read()
         if ref_str.startswith("/assistant/avatar") or ref_str.startswith("assistant/avatar"):
             av_path = get_assistant_avatar_path(ctx)
             if av_path and os.path.isfile(av_path):
@@ -2639,6 +2651,7 @@ async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str |
             for d in [
                 os.path.join(APP_ROOT_DIR, "generated"),
                 os.path.join(os.path.expanduser("~"), "Data", "generated"),
+                os.path.join(os.path.expanduser("~"), "Data", "onmychat", "generated"),
                 "/content/ComfyUI/output/generated",
             ]:
                 cand = os.path.join(d, img_name)
@@ -2657,6 +2670,129 @@ async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str |
     except Exception as e:
         logging.warning(f"[Krea2] Error resolving reference image: {e}")
     return None
+
+
+def get_personas_dirs(ctx: UserContext | None = None) -> list[str]:
+    """Возвращает список папок personas рядом с generated."""
+    home_dir = os.path.expanduser("~")
+    dirs = []
+
+    # 1. Если задано пользовательское хранилище в ctx
+    if ctx and ctx.storage:
+        clean_st = ctx.storage.replace("/generated", "").rstrip("/")
+        cand = os.path.join(clean_st, "personas")
+        if os.path.isdir(cand) and cand not in dirs:
+            dirs.append(cand)
+
+    # 2. Стандартные папки рядом с generated
+    for base_parent in [
+        os.path.join(home_dir, "Data", "onmychat"),
+        os.path.join(home_dir, "Data"),
+        os.path.join(home_dir, "Private", "OnMyChat"),
+        os.path.join(home_dir, "OnMyChat"),
+        "/content/ComfyUI/output",
+        APP_ROOT_DIR
+    ]:
+        p_dir = os.path.join(base_parent, "personas")
+        if os.path.isdir(p_dir) and p_dir not in dirs:
+            dirs.append(p_dir)
+
+    if not dirs:
+        fallback = os.path.join(home_dir, "Data", "onmychat", "personas")
+        os.makedirs(fallback, exist_ok=True)
+        dirs.append(fallback)
+
+    return dirs
+
+
+def save_persona_to_disk(persona_data: dict, ctx: UserContext | None = None) -> dict:
+    """Сохраняет персону (.json и .png) в папку personas рядом с generated."""
+    p_id = persona_data.get("id") or f"persona_{int(time.time()*1000)}"
+    persona_data["id"] = p_id
+
+    dirs = get_personas_dirs(ctx)
+    target_dir = dirs[0]
+    os.makedirs(target_dir, exist_ok=True)
+
+    # Сохраняем аватар как отдельный .png файл рядом с .json
+    avatar_data = persona_data.get("avatarData") or persona_data.get("avatar") or ""
+    if avatar_data and "base64," in avatar_data:
+        try:
+            _, b64 = avatar_data.split("base64,", 1)
+            img_bytes = base64.b64decode(b64)
+            img_path = os.path.join(target_dir, f"{p_id}.png")
+            with open(img_path, "wb") as f:
+                f.write(img_bytes)
+            persona_data["avatar_url"] = f"/personas/{p_id}/avatar"
+            logging.info(f"[Personas] Saved avatar image: {img_path}")
+        except Exception as e:
+            logging.warning(f"[Personas] Failed to save persona avatar: {e}")
+
+    # Сохраняем компактный JSON (без тяжелого base64 avatarData)
+    json_obj = dict(persona_data)
+    json_obj.pop("avatarData", None)
+    if json_obj.get("avatar", "").startswith("data:"):
+        json_obj["avatar"] = f"/personas/{p_id}/avatar"
+    if not json_obj.get("avatar_url") and os.path.isfile(os.path.join(target_dir, f"{p_id}.png")):
+        json_obj["avatar_url"] = f"/personas/{p_id}/avatar"
+
+    json_path = os.path.join(target_dir, f"{p_id}.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(json_obj, f, indent=2, ensure_ascii=False)
+
+    logging.info(f"[Personas] Saved persona '{p_id}' to {json_path}")
+    return json_obj
+
+
+def load_personas_from_disk(ctx: UserContext | None = None) -> list[dict]:
+    """Считывает все персоны из папок personas рядом с generated."""
+    dirs = get_personas_dirs(ctx)
+    personas_map = {}
+
+    for p_dir in dirs:
+        if not os.path.isdir(p_dir):
+            continue
+        try:
+            for fname in os.listdir(p_dir):
+                if fname.endswith(".json"):
+                    p_path = os.path.join(p_dir, fname)
+                    try:
+                        with open(p_path, "r", encoding="utf-8") as f:
+                            p_obj = json.load(f)
+                            p_id = p_obj.get("id") or os.path.splitext(fname)[0]
+                            p_obj["id"] = p_id
+
+                            png_cand = os.path.join(p_dir, f"{p_id}.png")
+                            if os.path.isfile(png_cand):
+                                p_obj["avatar_url"] = f"/personas/{p_id}/avatar"
+                                if not p_obj.get("avatar"):
+                                    p_obj["avatar"] = f"/personas/{p_id}/avatar"
+
+                            if p_id not in personas_map:
+                                personas_map[p_id] = p_obj
+                    except Exception as e:
+                        logging.warning(f"[Personas] Failed to read persona file {p_path}: {e}")
+        except Exception as e:
+            logging.warning(f"[Personas] Error scanning personas dir {p_dir}: {e}")
+
+    return list(personas_map.values())
+
+
+def delete_persona_from_disk(persona_id: str, ctx: UserContext | None = None) -> bool:
+    """Удаляет .json и .png персоны из папок personas."""
+    dirs = get_personas_dirs(ctx)
+    deleted = False
+    for p_dir in dirs:
+        for ext in [".json", ".png"]:
+            cand = os.path.join(p_dir, f"{persona_id}{ext}")
+            if os.path.isfile(cand):
+                try:
+                    os.remove(cand)
+                    deleted = True
+                    logging.info(f"[Personas] Removed {cand}")
+                except Exception as e:
+                    logging.warning(f"[Personas] Error removing {cand}: {e}")
+    return deleted
 
 
 async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None = None) -> str | None:

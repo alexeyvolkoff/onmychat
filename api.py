@@ -4481,36 +4481,59 @@ async def describe_persona_face(request: Request, data: PersonaDescribeFaceInput
 
 @app.get("/personas")
 async def get_personas_endpoint(omd_key: str | None = Depends(get_omd_key)):
-    """Возвращает список доступных персон."""
+    """Возвращает список доступных персон из папки personas рядом с generated."""
     ctx = get_ctx(omd_key)
-    june_desc = ctx.settings.get("assistant_appearance") or user_context.DEFAULT_ASSISTANT_APPEARANCE
-    default_personas = [
-        {
+    disk_personas = core_service.load_personas_from_disk(ctx)
+
+    # Гарантируем наличие базовой персоны ассистента в начале списка
+    has_assistant = any(p.get("id") == "june" or p.get("is_default") for p in disk_personas)
+    if not has_assistant:
+        june_desc = ctx.settings.get("assistant_appearance") or user_context.DEFAULT_ASSISTANT_APPEARANCE
+        default_persona = {
             "id": "june",
             "name": ctx.settings.get("assistant_name", "June"),
             "title": ctx.settings.get("assistant_title", "Junior Assistant"),
             "prompt": june_desc.strip(),
+            "avatar": "/assistant/avatar?size=160",
             "avatar_url": "/assistant/avatar?size=160",
             "is_default": True
-        },
-        {
-            "id": "cyber_alt",
-            "name": "Alt Shadow",
-            "title": "Goth Aesthetic",
-            "prompt": "An edgy alternative woman with dark raven hair, sharp eyeliner, layered gothic silver jewelry, dark lace aesthetic, expressive mysterious gaze",
-            "avatar_url": "",
-            "is_default": False
-        },
-        {
-            "id": "cyber_neon",
-            "name": "Neon Pilot",
-            "title": "Cyberpunk Scout",
-            "prompt": "A futuristic pilot with short sleek hair, subtle biometric neon glow reflections, high-tech tactical flight collar, confident smile",
-            "avatar_url": "",
-            "is_default": False
         }
-    ]
-    return {"personas": default_personas}
+        disk_personas = [default_persona] + disk_personas
+
+    return {"personas": disk_personas}
+
+
+@app.post("/personas")
+async def save_persona_endpoint(request: Request, data: dict):
+    """Сохраняет персону (.json и .png) в папку personas рядом с generated."""
+    omd_key = data.get("omd_key")
+    ctx = get_ctx(omd_key)
+    saved = core_service.save_persona_to_disk(data, ctx)
+    return {"status": "ok", "persona": saved}
+
+
+@app.delete("/personas/{persona_id}")
+async def delete_persona_endpoint(persona_id: str, omd_key: str | None = Depends(get_omd_key)):
+    """Удаляет персону (.json и .png) из папки personas."""
+    ctx = get_ctx(omd_key)
+    success = core_service.delete_persona_from_disk(persona_id, ctx)
+    return {"status": "ok", "deleted": success}
+
+
+@app.get("/personas/{persona_id}/avatar")
+async def get_persona_avatar_endpoint(persona_id: str, omd_key: str | None = Depends(get_omd_key)):
+    """Отдает аватар персоны из папки personas."""
+    ctx = get_ctx(omd_key)
+    dirs = core_service.get_personas_dirs(ctx)
+    for p_dir in dirs:
+        cand = os.path.join(p_dir, f"{persona_id}.png")
+        if os.path.isfile(cand):
+            return FileResponse(cand, media_type="image/png")
+    # Fallback на дефолтный аватар
+    default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+    if os.path.isfile(default_path):
+        return FileResponse(default_path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Avatar not found")
 
 
 
