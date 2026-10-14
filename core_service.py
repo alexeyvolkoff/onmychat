@@ -2565,38 +2565,66 @@ async def generate_krea2_image(
     elif style_preset in ["neon", "cyberpunk"]:
         full_parts.append("neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast")
 
-    # 2. Character Archetypes & Likeness LoRAs
-    archetype = sliders.get("archetype")
-    # Also support style_preset as archetype for backward compatibility (e.g. if style_preset is 'tifa' or 'alt')
-    if archetype == "domi":
-        full_parts.append("DomiK, attractive woman, piercing gaze, modern stylish look")
-        active_lora = "DomiK4.safetensors"
-        lora_strength = 0.8
-    elif archetype == "ada":
-        full_parts.append("ada_wong, short black bob hair, crimson dress, confident femme fatale gaze")
-        active_lora = "ada_wong.safetensors"
-        lora_strength = 0.8
-    elif archetype == "brie":
-        full_parts.append("kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile")
-        active_lora = "kxbrie.safetensors"
-        lora_strength = 0.8
-    elif archetype == "tifa" or style_preset == "tifa":
-        full_parts.append("tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait")
-        active_lora = "tifa_lockhart_krea2.safetensors"
-        lora_strength = 0.8
-    elif archetype == "alt" or style_preset in ["alt", "goth"]:
-        full_parts.append("alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere")
-        active_lora = "BSS_AJlbTyIIIKu_V20_Krea2.safetensors"
-        lora_strength = 0.75
-    elif archetype == "influencer" or style_preset == "influencer":
-        full_parts.append("famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed")
-        active_lora = "Famegrid-Natural-V1-Krea-2.safetensors"
-        lora_strength = 0.7
+    # 2. Character Archetypes & Likeness LoRAs (supports multiple simultaneous archetypes)
+    ARCHETYPE_CONFIGS = {
+        "domi": {
+            "trigger": "DomiK, attractive woman, piercing gaze, modern stylish look",
+            "lora": "DomiK4.safetensors",
+            "strength": 0.8
+        },
+        "ada": {
+            "trigger": "ada_wong, short black bob hair, crimson dress, confident femme fatale gaze",
+            "lora": "ada_wong.safetensors",
+            "strength": 0.8
+        },
+        "brie": {
+            "trigger": "kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile",
+            "lora": "kxbrie.safetensors",
+            "strength": 0.8
+        },
+        "tifa": {
+            "trigger": "tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait",
+            "lora": "tifa_lockhart_krea2.safetensors",
+            "strength": 0.8
+        },
+        "alt": {
+            "trigger": "alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere",
+            "lora": "BSS_AJlbTyIIIKu_V20_Krea2.safetensors",
+            "strength": 0.75
+        },
+        "influencer": {
+            "trigger": "famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed",
+            "lora": "Famegrid-Natural-V1-Krea-2.safetensors",
+            "strength": 0.7
+        }
+    }
 
-    # Custom persona LoRA if requested explicitly (overrides preset archetype)
+    raw_archetypes = sliders.get("archetypes") or sliders.get("archetype") or []
+    if isinstance(raw_archetypes, str):
+        archetype_list = [a.strip() for a in raw_archetypes.split(",") if a.strip()]
+    elif isinstance(raw_archetypes, (list, tuple)):
+        archetype_list = [str(a).strip() for a in raw_archetypes if str(a).strip()]
+    else:
+        archetype_list = []
+
+    # Also support style_preset as archetype for backward compatibility
+    if style_preset in ARCHETYPE_CONFIGS and style_preset not in archetype_list:
+        archetype_list.append(style_preset)
+    elif style_preset in ["goth"] and "alt" not in archetype_list:
+        archetype_list.append("alt")
+
+    target_loras = []
+    for arch_id in archetype_list:
+        if arch_id in ARCHETYPE_CONFIGS:
+            cfg_arch = ARCHETYPE_CONFIGS[arch_id]
+            full_parts.append(cfg_arch["trigger"])
+            target_loras.append((cfg_arch["lora"], cfg_arch["strength"]))
+
+    # Custom persona LoRA if requested explicitly
     if sliders.get("lora"):
-        active_lora = sliders.get("lora")
-        lora_strength = float(sliders.get("lora_weight", 0.7))
+        custom_lora = sliders.get("lora")
+        custom_weight = float(sliders.get("lora_weight", 0.7))
+        target_loras.append((custom_lora, custom_weight))
 
     positive_text = ", ".join(full_parts)
     negative_text = "wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, watermark, artifacts"
@@ -2642,15 +2670,37 @@ async def generate_krea2_image(
         clip_model = _krea_model_cache.get("clip", clip_model)
         available_loras = _krea_model_cache.get("loras", [])
 
-    # Verify if active_lora is present in available_loras
-    use_lora = False
-    resolved_lora_name = None
-    if active_lora:
+    # Match target_loras against available_loras
+    resolved_lora_chain = []
+    for lora_file, strength in target_loras:
+        matched = None
         for al in available_loras:
-            if active_lora.lower() in str(al).lower():
-                resolved_lora_name = al
-                use_lora = True
+            if lora_file.lower() in str(al).lower():
+                matched = al
                 break
+        if matched:
+            resolved_lora_chain.append((matched, strength))
+
+    # Base models
+    current_model_link = ["1", 0]
+    current_clip_link = ["2", 0]
+
+    # Build sequential LoraLoader nodes starting from node id 10
+    lora_nodes = {}
+    for i, (lora_name, lora_str) in enumerate(resolved_lora_chain):
+        node_id = str(10 + i)
+        lora_nodes[node_id] = {
+            "class_type": "LoraLoader",
+            "inputs": {
+                "lora_name": lora_name,
+                "strength_model": float(lora_str),
+                "strength_clip": float(lora_str),
+                "model": current_model_link,
+                "clip": current_clip_link
+            }
+        }
+        current_model_link = [node_id, 0]
+        current_clip_link = [node_id, 1]
 
     krea_workflow = {
         "1": {
@@ -2677,7 +2727,7 @@ async def generate_krea2_image(
             "class_type": "CLIPTextEncode",
             "inputs": {
                 "text": positive_text,
-                "clip": ["10", 1] if use_lora else ["2", 0]
+                "clip": current_clip_link
             }
         },
         "5": {
@@ -2703,7 +2753,7 @@ async def generate_krea2_image(
                 "sampler_name": "euler",
                 "scheduler": "simple",
                 "denoise": 1.0,
-                "model": ["10", 0] if use_lora else ["1", 0],
+                "model": current_model_link,
                 "positive": ["4", 0],
                 "negative": ["5", 0],
                 "latent_image": ["6", 0]
@@ -2724,18 +2774,7 @@ async def generate_krea2_image(
             }
         }
     }
-
-    if use_lora and resolved_lora_name:
-        krea_workflow["10"] = {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "lora_name": resolved_lora_name,
-                "strength_model": float(lora_strength),
-                "strength_clip": float(lora_strength),
-                "model": ["1", 0],
-                "clip": ["2", 0]
-            }
-        }
+    krea_workflow.update(lora_nodes)
 
     logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height})")
     img_data, filename = await generate_image_workflow(krea_workflow)
