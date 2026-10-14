@@ -2244,6 +2244,11 @@ class PersonaGenerateInput(BaseModel):
     style: str | None = None
 
 
+class PersonaDescribeFaceInput(BaseModel):
+    omd_key: str | None = None
+    image: str
+
+
 class UpdateAssistantInput(BaseModel):
     omd_key: str
     style: str | None = None
@@ -4394,6 +4399,80 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
         "avatar": b64_str,
         "avatarData": b64_str
     }
+
+
+@app.post("/personas/describe-face")
+async def describe_persona_face(request: Request, data: PersonaDescribeFaceInput):
+    """Распознает черты лица и внешность с изображения через Vision-модель для словесного паспорта Krea 2."""
+    raw_img = data.image.strip()
+    if not raw_img:
+        raise HTTPException(status_code=400, detail="No image provided")
+    if "," in raw_img:
+        raw_img = raw_img.split(",", 1)[1]
+
+    # Ищем подходящую vision-модель в ollama
+    vision_model = (core_service.VISION_MODEL or "").strip()
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
+            async with session.get(f"{core_service.OLLAMA_URL}/api/tags") as resp:
+                if resp.status == 200:
+                    tags = await resp.json()
+                    available_vision = [
+                        m["name"] for m in tags.get("models", [])
+                        if "vision" in m.get("capabilities", [])
+                    ]
+                    if "qwen3.5-32k:latest" in available_vision:
+                        vision_model = "qwen3.5-32k:latest"
+                    elif "gemma4-work:latest" in available_vision:
+                        vision_model = "gemma4-work:latest"
+                    elif available_vision:
+                        vision_model = available_vision[0]
+    except Exception as e:
+        logging.warning(f"Error checking vision tags: {e}")
+
+    if not vision_model:
+        vision_model = "qwen3.5-32k:latest"
+
+    sys_prompt = (
+        "You are an expert character facial analyst for text-to-image diffusion models (Krea 2 / CyberRealistic). "
+        "Analyze this person's face and appearance from the photograph and produce a concise, highly specific physical description (verbal passport) "
+        "for consistent character image generation. Detail: gender, approximate age, ethnicity/features, facial structure, skin tone, eye shape & color, "
+        "eyebrows, nose, lips/mouth, hair style/color/length/texture, and any distinctive traits (freckles, glasses, smile). "
+        "Output ONLY the descriptive prompt in English in 2-3 sentences, starting with the subject description (e.g. 'A 25-year-old woman with...'). "
+        "Do not include commentary, markdown headers, or preambles."
+    )
+
+    payload = {
+        "model": vision_model,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": "Analyze this face for diffusion character passport.", "images": [raw_img]}
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2}
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60.0)) as session:
+            async with session.post(f"{core_service.OLLAMA_URL}/api/chat", json=payload) as resp:
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    raise HTTPException(status_code=resp.status, detail=f"Ollama vision error: {err_text}")
+                res = await resp.json()
+                passport = res.get("message", {}).get("content", "").strip()
+                if not passport:
+                    raise HTTPException(status_code=500, detail="Empty vision response")
+
+                # Clean any <think>...</think> if model output thought tags
+                passport = re.sub(r"<think>[\s\S]*?</think>", "", passport).strip()
+
+                return {
+                    "prompt": passport,
+                    "title": "Custom Character"
+                }
+    except Exception as e:
+        logging.error(f"Error in /personas/describe-face: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/personas")
