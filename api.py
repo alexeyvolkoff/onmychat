@@ -4281,41 +4281,68 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
     ctx = get_ctx(data.omd_key)
 
     archetype_presets = {
+        "domi": {
+            "names": ["Доминика", "Domi", "Ника", "Dominika"],
+            "title": "Domi / Mysterious Charisma",
+            "passport": "DomiK, attractive woman with piercing hazel gaze, shoulder-length stylish layered haircut, confident radiant smile, modern chic outfit, magnetic presence",
+            "style": "photorealistic",
+            "archetype": "domi"
+        },
+        "ada": {
+            "names": ["Ада", "Ada", "Ada Wong"],
+            "title": "Femme Fatale Secret Agent",
+            "passport": "ada_wong, short sleek black bob hair, elegant crimson silk dress, captivating dark eyes, confident enigmatic expression, cinematic espionage aesthetics",
+            "style": "cinematic",
+            "archetype": "ada"
+        },
+        "brie": {
+            "names": ["Бри", "Brie", "Bella", "Brooke"],
+            "title": "Cheerful Blonde Beauty",
+            "passport": "kxbrie woman, blonde wavy hair, sparkling blue eyes, radiant playful smile, sun-kissed natural complexion, stylish casual summer attire",
+            "style": "photorealistic",
+            "archetype": "brie"
+        },
         "alt": {
             "names": ["Кира", "Лира", "Ника", "Raven", "Roxy", "Marta"],
             "title": "Alt / Goth Girl",
             "passport": "Young alternative woman with chin-length jet-black hair with vibrant purple streaks, dark winged eyeliner, small silver nose ring, velvet choker, expressive moody gaze, pale skin, edgy alternative chic",
-            "style": "alt"
+            "style": "alt",
+            "archetype": "alt"
         },
         "influencer": {
             "names": ["София", "Эмма", "Мия", "Chloe", "Valerie", "Diana"],
             "title": "Instagram Influencer",
             "passport": "Stunning 22-year-old lifestyle influencer with long wavy honey-blonde hair, warm hazel eyes, glowing tanned skin, soft natural makeup, charming candid smile, chic oversized knitted cardigan, golden hour warmth",
-            "style": "influencer"
+            "style": "influencer",
+            "archetype": "influencer"
         },
         "business": {
             "names": ["Виктория", "Елена", "Claire", "Diane", "Ingrid"],
             "title": "Tech Founder & CEO",
             "passport": "Sophisticated modern woman with sleek dark brunette bob, confident warm brown eyes, sharp tailored blazer, delicate minimalist earrings, intelligent poised expression, modern high-rise office ambiance",
-            "style": "photorealistic"
+            "style": "photorealistic",
+            "archetype": None
         },
         "cyberpunk": {
             "names": ["Нейра", "Злата", "Nova", "Cipher", "Vesper"],
             "title": "Cyberpunk Netrunner",
             "passport": "Futuristic young cyber-operative with asymmetrical platinum hair and teal neon tips, glowing optic cyberware around temple, dark techwear jacket with luminous accents, rain-slicked neon street reflections",
-            "style": "cyberpunk"
+            "style": "neon",
+            "archetype": None
         },
         "anime": {
             "names": ["Юки", "Акари", "Sakura", "Hana", "Rei"],
             "title": "Artistic Anime Muse",
             "passport": "Artistic girl with voluminous pastel pink wavy hair, large luminous violet eyes, playful gentle expression, delicate porcelain skin, cute oversized sweater with artistic pins",
-            "style": "anime"
+            "style": "anime",
+            "archetype": None
         },
         "tifa": {
             "names": ["Тифа", "Tifa", "Lockhart"],
             "title": "Legendary Heroine",
             "passport": "Stunning athletic martial artist with long waist-length glossy black hair tied in dolphin-tail tip, captivating ruby-red eyes, toned athletic build, leather fingerless gloves, iconic white top with suspenders",
-            "style": "tifa"
+            "style": "photorealistic",
+            "archetype": "tifa"
         }
     }
 
@@ -4336,7 +4363,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             ctx=ctx,
             prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
             persona_prompt=passport,
-            sliders={"style": style, "detail": 0.5},
+            sliders={"style": style, "archetype": arch.get("archetype"), "detail": 0.5},
             width=896,
             height=1152,
             steps=10,

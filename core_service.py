@@ -2549,28 +2549,51 @@ async def generate_krea2_image(
 
     style_preset = sliders.get("style", "photorealistic")
     active_lora = None
-    lora_strength = 0.7
+    lora_strength = 0.8
 
+    # 1. Art Styles (Mutually exclusive rendering aesthetics)
     if style_preset == "photorealistic":
         full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight")
-    elif style_preset == "influencer":
-        full_parts.append("instagram lifestyle selfie, candid portrait, golden hour soft light, authentic natural look, highly detailed")
-    elif style_preset in ["alt", "goth"]:
-        full_parts.append("alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere")
-    elif style_preset == "cinematic":
-        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain")
-    elif style_preset == "cyberpunk":
-        full_parts.append("cyberpunk portrait, neon blue and magenta rim lighting, wet rainy streets bokeh, futuristic techwear")
+    elif style_preset in ["semireal", "art"]:
+        full_parts.append("2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features, octane render quality")
     elif style_preset == "anime":
         full_parts.append("vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics")
-    elif style_preset == "tifa":
+    elif style_preset == "pinup":
+        full_parts.append("vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition")
+    elif style_preset == "cinematic":
+        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain")
+    elif style_preset in ["neon", "cyberpunk"]:
+        full_parts.append("neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast")
+
+    # 2. Character Archetypes & Likeness LoRAs
+    archetype = sliders.get("archetype")
+    # Also support style_preset as archetype for backward compatibility (e.g. if style_preset is 'tifa' or 'alt')
+    if archetype == "domi":
+        full_parts.append("DomiK, attractive woman, piercing gaze, modern stylish look")
+        active_lora = "DomiK4.safetensors"
+        lora_strength = 0.8
+    elif archetype == "ada":
+        full_parts.append("ada_wong, short black bob hair, crimson dress, confident femme fatale gaze")
+        active_lora = "ada_wong.safetensors"
+        lora_strength = 0.8
+    elif archetype == "brie":
+        full_parts.append("kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile")
+        active_lora = "kxbrie.safetensors"
+        lora_strength = 0.8
+    elif archetype == "tifa" or style_preset == "tifa":
         full_parts.append("tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait")
         active_lora = "tifa_lockhart_krea2.safetensors"
         lora_strength = 0.8
-    elif style_preset == "art":
-        full_parts.append("masterpiece fine art portrait, oil painting elegance, expressive brushwork, museum lighting")
+    elif archetype == "alt" or style_preset in ["alt", "goth"]:
+        full_parts.append("alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere")
+        active_lora = "BSS_AJlbTyIIIKu_V20_Krea2.safetensors"
+        lora_strength = 0.75
+    elif archetype == "influencer" or style_preset == "influencer":
+        full_parts.append("famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed")
+        active_lora = "Famegrid-Natural-V1-Krea-2.safetensors"
+        lora_strength = 0.7
 
-    # Custom persona LoRA if requested
+    # Custom persona LoRA if requested explicitly (overrides preset archetype)
     if sliders.get("lora"):
         active_lora = sliders.get("lora")
         lora_strength = float(sliders.get("lora_weight", 0.7))
