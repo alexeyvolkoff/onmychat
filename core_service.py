@@ -2504,6 +2504,112 @@ async def generate_image_workflow(workflow) -> bytes:
         return None, None
 
 
+def extract_krea2_prompt_and_params(ctx: UserContext, prompt: str, is_character: bool = False) -> tuple[str, str, dict]:
+    """
+    Интеллектуальный разбор промпта и настроек чата для нативного движка Krea 2:
+    - Извлекает теги стиля (<anime>, <pinup>, <semireal>, <pixar>, <comic>, <midjourney>, <cinematic>, etc.)
+    - Извлекает архетипы персонажа (<domi>, <ada>, <brie>, <tifa>, <alt>, <influencer>, <june>)
+    - Для персонажных фото (is_character=True) подключает модель/внешность ассистента
+    - Очищает текст от тегов <...> для чистого естественного промпта Qwen3-VL
+    - Возвращает (clean_prompt, persona_prompt, sliders)
+    """
+    # 1. Извлекаем чистый текст, если пришел формат с заголовком (Title: ... \\n Image: ...)
+    clean_img_prompt, _ = extract_title_and_prompt(prompt) if ("Image:" in prompt or "Title:" in prompt) else (prompt, "")
+    clean_img_prompt = clean_img_prompt.strip()
+
+    STYLE_ALIASES = {
+        "anime": "anime",
+        "semireal": "semireal",
+        "art": "semireal",
+        "pinup": "pinup",
+        "retro": "pinup",
+        "pixar": "pixar",
+        "3d": "pixar",
+        "comic": "comic",
+        "midjourney": "midjourney",
+        "fantasy": "midjourney",
+        "photorealistic": "photorealistic",
+        "realistic": "photorealistic",
+        "cinematic": "cinematic",
+        "neon": "neon",
+        "cyberpunk": "neon",
+        "goth": "alt"
+    }
+
+    ARCHETYPE_ALIASES = {
+        "domi": "domi",
+        "june": "domi",
+        "default": "domi",
+        "ada": "ada",
+        "ada_wong": "ada",
+        "brie": "brie",
+        "kxbrie": "brie",
+        "tifa": "tifa",
+        "tifa_lockhart": "tifa",
+        "alt": "alt",
+        "goth": "alt",
+        "influencer": "influencer"
+    }
+
+    # 2. Ищем теги <...> в тексте
+    detected_style = None
+    detected_archetypes = []
+    custom_lora = None
+
+    raw_tags = re.findall(r"<([^>]+)>", clean_img_prompt)
+    for tag in raw_tags:
+        t_clean = tag.lower().strip()
+        if t_clean in STYLE_ALIASES:
+            if not detected_style:
+                detected_style = STYLE_ALIASES[t_clean]
+        elif t_clean in ARCHETYPE_ALIASES:
+            arch = ARCHETYPE_ALIASES[t_clean]
+            if arch not in detected_archetypes:
+                detected_archetypes.append(arch)
+        elif t_clean.endswith(".safetensors"):
+            custom_lora = tag.strip()
+
+    # 3. Если стиль не найден в тегах, смотрим настройки контекста
+    if not detected_style:
+        style_setting = (ctx.settings.get("style") or ctx.settings.get("style_lora") or ctx.settings.get("style_loras") or "").lower().strip("<> ")
+        if style_setting in STYLE_ALIASES:
+            detected_style = STYLE_ALIASES[style_setting]
+        elif style_setting:
+            for s_key, s_target in STYLE_ALIASES.items():
+                if s_key in style_setting:
+                    detected_style = s_target
+                    break
+
+    if not detected_style:
+        detected_style = "photorealistic"
+
+    # 4. Если это фото персонажа/ассистента или был запрос персонажа
+    persona_prompt = ""
+    if is_character or len(detected_archetypes) > 0:
+        if not detected_archetypes:
+            ast_model = (ctx.settings.get("assistant_model") or ctx.settings.get("character_lora") or "domi").lower().strip("<> ")
+            arch = ARCHETYPE_ALIASES.get(ast_model, "domi")
+            detected_archetypes.append(arch)
+
+        # Подключаем словесный паспорт ассистента, если задан
+        ast_appearance = (ctx.settings.get("assistant_appearance") or ctx.settings.get("appearance_prompt") or "").strip()
+        if ast_appearance:
+            persona_prompt = ast_appearance
+
+    # 5. Очищаем текст от <...> тегов для качественного эмбеддинга Qwen3-VL
+    clean_text = re.sub(r"<[^>]+>", "", clean_img_prompt)
+    clean_text = re.sub(r"\s+", " ", clean_text).strip(" ,")
+
+    sliders = {
+        "style": detected_style,
+        "archetypes": detected_archetypes
+    }
+    if custom_lora:
+        sliders["lora"] = custom_lora
+
+    return clean_text, persona_prompt, sliders
+
+
 async def generate_krea2_image(
     ctx: UserContext,
     prompt: str,
@@ -5055,10 +5161,18 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
     return filename, img_title, neutral_description, img_data
 
 async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
+    if await is_krea_available():
+        clean_prompt, persona_prompt, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=True)
+        logging.info(f"[Krea2] Generating character image: prompt='{clean_prompt[:50]}...', archetypes={sliders.get('archetypes')}, style={sliders.get('style')}")
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, upload_storage=upload_storage)
     return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
+    if await is_krea_available():
+        clean_prompt, _, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=False)
+        logging.info(f"[Krea2] Generating general image: prompt='{clean_prompt[:50]}...', style={sliders.get('style')}")
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt="", sliders=sliders, upload_storage=upload_storage)
     return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # img is base64 image #
@@ -5985,6 +6099,34 @@ async def extract_and_save_memory(ctx: UserContext, message: str) -> str:
 
 async def generate_avatar(ctx: UserContext, style: str, character_lora: str, prompt: str, device_push: dict | None = None):
     try:
+        if await is_krea_available():
+            try:
+                logging.info(f"[Krea2] Fast avatar generation: character={character_lora}, style={style}")
+                clean_prompt, persona_prompt, sliders = extract_krea2_prompt_and_params(
+                    ctx,
+                    f"{prompt} <{character_lora}> <{style}>",
+                    is_character=True
+                )
+                filename, title, desc, img_data = await generate_krea2_image(
+                    ctx,
+                    clean_prompt,
+                    persona_prompt=persona_prompt,
+                    sliders=sliders,
+                    width=768,
+                    height=768,
+                    upload_storage=False
+                )
+                from api import store_ephemeral_image, schedule_generated_image_push
+                store_ephemeral_image(filename, img_data)
+                schedule_generated_image_push(ctx.omd_key, device_push, filename, img_data, title, desc, ctx=ctx)
+                return {
+                    "image": filename,
+                    "url": f"/chat/image/{filename}",
+                    "device_path": f"{device_push.get('folder', '')}/{filename}" if device_push else ""
+                }
+            except Exception as krea_err:
+                logging.warning(f"[Krea2] Avatar generation fallback to legacy workflow: {krea_err}")
+
         # 1. Load Workflow
         if not os.path.exists(WORKFLOW_PATH):
             logging.error("Workflow file not found")

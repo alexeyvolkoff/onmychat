@@ -3992,7 +3992,10 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 upload_storage_flag = not is_inline_image
                 if await core_service.is_krea_available():
                     logging.info(f"[Krea2] Generating image in chat via Krea 2 for prompt: {img_prompt}")
-                    res = await core_service.generate_krea2_image(ctx, img_prompt, upload_storage=upload_storage_flag)
+                    has_char_tag = any(k in img_prompt.lower() for k in ["<domi>", "<ada>", "<brie>", "<tifa>", "<alt>", "<influencer>", "<june>"])
+                    is_char = has_char_tag or bool(ctx.settings.get("assistant_model") or ctx.settings.get("character_lora"))
+                    clean_prompt, persona_prompt, sliders = core_service.extract_krea2_prompt_and_params(ctx, img_prompt, is_character=is_char)
+                    res = await core_service.generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, upload_storage=upload_storage_flag)
                 else:
                     res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
@@ -4155,7 +4158,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
         # generate_image returns (filename, title, description, img_data)
         is_new = data.message_nonce is None and data.message_index is None
-        res = await core_service.generate_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
+        res = await core_service.generate_character_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
@@ -4203,8 +4206,8 @@ async def generate_general_image(request: Request, data: GenerateInput):
             or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
-        # generate_image returns (filename, title, description, img_data)
-        res = await core_service.generate_image(ctx, data.prompt, data.chat, use_default_lora=False, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
+        # generate_general_image returns (filename, title, description, img_data)
+        res = await core_service.generate_general_image(ctx, data.prompt, data.chat, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
         filename, title, description = res[0], res[1], res[2]
         if len(res) > 3 and res[3]:
             store_ephemeral_image(filename, res[3])
