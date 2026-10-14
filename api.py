@@ -2225,6 +2225,8 @@ class KreaGenerateInput(BaseModel):
     persona_id: str | None = None
     persona_name: str | None = None
     persona_prompt: str | None = None
+    reference_image: str | None = None
+    reference_images: list[str] | None = None
     sliders: dict | None = None
     width: int = 896
     height: int = 1152
@@ -3999,8 +4001,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     logging.info(f"[Krea2] Generating image in chat via Krea 2 for prompt: {img_prompt}")
                     has_char_tag = any(k in img_prompt.lower() for k in ["<domi>", "<ada>", "<brie>", "<tifa>", "<alt>", "<influencer>", "<june>"])
                     is_char = has_char_tag or bool(ctx.settings.get("assistant_model") or ctx.settings.get("character_lora"))
-                    clean_prompt, persona_prompt, sliders = core_service.extract_krea2_prompt_and_params(ctx, img_prompt, is_character=is_char)
-                    res = await core_service.generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, upload_storage=upload_storage_flag)
+                    ref_avatar = ctx.settings.get("assistant_avatar") or core_service.get_assistant_avatar_path(ctx)
+                    res = await core_service.generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, reference_image=ref_avatar, upload_storage=upload_storage_flag)
                 else:
                     res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
@@ -4252,11 +4254,13 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
 
+        ref_img = data.reference_image or (data.reference_images[0] if data.reference_images else None)
         res = await core_service.generate_krea2_image(
             ctx=ctx,
             prompt=data.prompt,
             persona_prompt=data.persona_prompt or "",
             sliders=data.sliders,
+            reference_image=ref_img,
             width=data.width,
             height=data.height,
             steps=data.steps,

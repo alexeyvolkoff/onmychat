@@ -8,6 +8,7 @@ import shutil
 import logging
 from PIL import Image, PngImagePlugin, ImageOps, ExifTags
 import io
+import base64
 
 import aiohttp
 import asyncio
@@ -2610,11 +2611,96 @@ def extract_krea2_prompt_and_params(ctx: UserContext, prompt: str, is_character:
     return clean_text, persona_prompt, sliders
 
 
+async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str | None) -> bytes | None:
+    """Извлекает байты референсного изображения лица из Data URL, URL или локального файла."""
+    if not reference_image:
+        return None
+    try:
+        ref_str = str(reference_image).strip()
+        if ref_str.startswith("data:image"):
+            if "," in ref_str:
+                _, b64_data = ref_str.split(",", 1)
+                return base64.b64decode(b64_data)
+            return None
+        if ref_str.startswith("http://") or ref_str.startswith("https://"):
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+                async with session.get(ref_str) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+            return None
+        if ref_str.startswith("/assistant/avatar") or ref_str.startswith("assistant/avatar"):
+            av_path = get_assistant_avatar_path(ctx)
+            if av_path and os.path.isfile(av_path):
+                with open(av_path, "rb") as f:
+                    return f.read()
+            return None
+        if ref_str.startswith("/chat/image/") or ref_str.startswith("chat/image/"):
+            img_name = os.path.basename(ref_str)
+            for d in [
+                os.path.join(APP_ROOT_DIR, "generated"),
+                os.path.join(os.path.expanduser("~"), "Data", "generated"),
+                "/content/ComfyUI/output/generated",
+            ]:
+                cand = os.path.join(d, img_name)
+                if os.path.isfile(cand):
+                    with open(cand, "rb") as f:
+                        return f.read()
+            return None
+        if os.path.isfile(ref_str):
+            with open(ref_str, "rb") as f:
+                return f.read()
+        if len(ref_str) > 100:
+            try:
+                return base64.b64decode(ref_str)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning(f"[Krea2] Error resolving reference image: {e}")
+    return None
+
+
+async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None = None) -> str | None:
+    """Загружает референсное изображение лица в ComfyUI (через API или напрямую в input/)."""
+    if not img_bytes:
+        return None
+    filename = filename or f"krea_ref_{uuid.uuid4().hex[:10]}.png"
+    # 1. ComfyUI /upload/image API (работает локально и удаленно в Colab)
+    try:
+        data = aiohttp.FormData()
+        data.add_field("image", img_bytes, filename=filename, content_type="image/png")
+        data.add_field("overwrite", "true")
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+            async with session.post(f"{COMFY_API_URL}/upload/image", data=data) as resp:
+                if resp.status == 200:
+                    resp_data = await resp.json()
+                    uploaded_name = resp_data.get("name", filename)
+                    logging.info(f"[Krea2] Uploaded reference image to ComfyUI input: {uploaded_name}")
+                    return uploaded_name
+    except Exception as e:
+        logging.warning(f"[Krea2] ComfyUI /upload/image failed: {e}")
+
+    # 2. Прямая запись в ComfyUI input директорию при локальной доступности
+    comfy_base = os.path.dirname(COMFY_OUTPUT_DIR) if COMFY_OUTPUT_DIR else ""
+    if comfy_base:
+        input_dir = os.path.join(comfy_base, "input")
+        if os.path.isdir(input_dir):
+            try:
+                target_path = os.path.join(input_dir, filename)
+                with open(target_path, "wb") as f:
+                    f.write(img_bytes)
+                logging.info(f"[Krea2] Saved reference image directly to input dir: {filename}")
+                return filename
+            except Exception as e:
+                logging.warning(f"[Krea2] Direct write to input dir failed: {e}")
+    return None
+
+
 async def generate_krea2_image(
     ctx: UserContext,
     prompt: str,
     persona_prompt: str = "",
     sliders: dict | None = None,
+    reference_image: str | None = None,
     width: int = 896,
     height: int = 1152,
     steps: int = 10,
@@ -2622,9 +2708,15 @@ async def generate_krea2_image(
     seed: int | None = None,
     upload_storage: bool = True
 ) -> tuple[str, str, str, bytes]:
-    """Генерация изображения через нативный пайплайн Krea 2 (CyberRealistic V4, Qwen3-VL Heretic)."""
+    """Генерация изображения через нативный пайплайн Krea 2 с поддержкой One-Shot Face Reference."""
     if not prompt and not persona_prompt:
         raise Exception("Укажите промпт или выберите персону для генерации.")
+
+    # Разрешаем референсное изображение лица (если передано)
+    ref_bytes = await resolve_reference_image_bytes(ctx, reference_image)
+    comfy_ref_name = None
+    if ref_bytes:
+        comfy_ref_name = await upload_reference_image_to_comfy(ref_bytes)
 
     # Объединяем словесный паспорт персоны и пользовательский сюжет
     full_parts = []
@@ -2802,10 +2894,19 @@ async def generate_krea2_image(
                         else:
                             detected_clip = clip_model
                         loras = obj_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
+
+                        reactor_req = obj_info.get("ReActorFaceSwap", {}).get("input", {}).get("required", {})
+                        has_reactor = bool(reactor_req)
+                        swap_models = reactor_req.get("swap_model", [[]])[0] if has_reactor else []
+                        restore_models = reactor_req.get("face_restore_model", [[]])[0] if has_reactor else []
+
                         _krea_model_cache = {
                             "unet": detected_unet,
                             "clip": detected_clip,
-                            "loras": loras or []
+                            "loras": loras or [],
+                            "has_reactor": has_reactor,
+                            "swap_models": swap_models,
+                            "restore_models": restore_models
                         }
         except Exception:
             pass
@@ -2827,14 +2928,20 @@ async def generate_krea2_image(
             matched = lora_file
         resolved_lora_chain.append((matched, strength))
 
+    # Если есть референсное лицо и доступна LoRA сохранения идентичности, подключаем ее
+    if comfy_ref_name:
+        id_lora = next((al for al in available_loras if "identity" in str(al).lower() and "krea" in str(al).lower()), None)
+        if id_lora and not any(id_lora == l[0] for l in resolved_lora_chain):
+            resolved_lora_chain.append((id_lora, 0.6))
+
     # Base models
     current_model_link = ["1", 0]
     current_clip_link = ["2", 0]
 
-    # Build sequential LoraLoader nodes starting from node id 10
+    # Build sequential LoraLoader nodes starting from node id 100 to avoid ID clashes
     lora_nodes = {}
     for i, (lora_name, lora_str) in enumerate(resolved_lora_chain):
-        node_id = str(10 + i)
+        node_id = str(100 + i)
         lora_nodes[node_id] = {
             "class_type": "LoraLoader",
             "inputs": {
@@ -2847,6 +2954,61 @@ async def generate_krea2_image(
         }
         current_model_link = [node_id, 0]
         current_clip_link = [node_id, 1]
+
+    last_image_output = ["8", 0]
+    face_ref_nodes = {}
+    has_reactor = _krea_model_cache.get("has_reactor", False) if _krea_model_cache else False
+
+    if comfy_ref_name and has_reactor:
+        swap_models = _krea_model_cache.get("swap_models", [])
+        restore_models = _krea_model_cache.get("restore_models", [])
+
+        chosen_swap = "reswapper_256.onnx"
+        if swap_models:
+            if "reswapper_256.onnx" in swap_models:
+                chosen_swap = "reswapper_256.onnx"
+            elif "inswapper_128.onnx" in swap_models:
+                chosen_swap = "inswapper_128.onnx"
+            else:
+                chosen_swap = swap_models[0]
+
+        chosen_restore = "GFPGANv1.4.pth"
+        if restore_models:
+            if "GFPGANv1.4.pth" in restore_models:
+                chosen_restore = "GFPGANv1.4.pth"
+            elif "GFPGANv1.3.pth" in restore_models:
+                chosen_restore = "GFPGANv1.3.pth"
+            else:
+                chosen_restore = "none"
+
+        logging.info(f"[Krea2] Injecting one-shot face reference likeness via ReActor: ref='{comfy_ref_name}', model='{chosen_swap}', restore='{chosen_restore}'")
+        face_ref_nodes["20"] = {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": comfy_ref_name
+            }
+        }
+        face_ref_nodes["21"] = {
+            "class_type": "ReActorFaceSwap",
+            "inputs": {
+                "enabled": True,
+                "input_image": ["8", 0],
+                "source_image": ["20", 0],
+                "swap_model": chosen_swap,
+                "facedetection": "retinaface_resnet50",
+                "face_restore_model": chosen_restore,
+                "face_restore_visibility": 1.0,
+                "codeformer_weight": 0.5,
+                "detect_gender_input": "no",
+                "detect_gender_source": "no",
+                "input_faces_index": "0",
+                "source_faces_index": "0",
+                "console_log_level": 1
+            }
+        }
+        last_image_output = ["21", 0]
+    elif comfy_ref_name:
+        logging.info(f"[Krea2] One-shot reference image uploaded ({comfy_ref_name}), verbal passport & prompt active.")
 
     krea_workflow = {
         "1": {
@@ -2916,13 +3078,14 @@ async def generate_krea2_image(
             "class_type": "SaveImage",
             "inputs": {
                 "filename_prefix": "generated/krea",
-                "images": ["8", 0]
+                "images": last_image_output
             }
         }
     }
     krea_workflow.update(lora_nodes)
+    krea_workflow.update(face_ref_nodes)
 
-    logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height})")
+    logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height}, ref={bool(comfy_ref_name)})")
     img_data, filename = await generate_image_workflow(krea_workflow)
     if not img_data:
         raise Exception("Krea 2 image generation failed")
@@ -5164,7 +5327,8 @@ async def generate_character_image(ctx: UserContext, prompt, chat: str = 'defaul
     if await is_krea_available():
         clean_prompt, persona_prompt, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=True)
         logging.info(f"[Krea2] Generating character image: prompt='{clean_prompt[:50]}...', archetypes={sliders.get('archetypes')}, style={sliders.get('style')}")
-        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, upload_storage=upload_storage)
+        ref_avatar = ctx.settings.get("assistant_avatar") or get_assistant_avatar_path(ctx)
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, reference_image=ref_avatar, upload_storage=upload_storage)
     return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # Generate general image, returns full path for further sending or conversion
