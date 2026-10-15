@@ -2537,6 +2537,29 @@ async def get_chat_image(
             except Exception as e:
                 logging.warning(f"Failed to resize in-memory image: {e}")
 
+        total_len = len(ephemeral_data)
+        range_header = request.headers.get("range")
+        if range_header and range_header.startswith("bytes="):
+            try:
+                parts = range_header.replace("bytes=", "").split("-")
+                start = int(parts[0]) if parts[0] else 0
+                end = int(parts[1]) if len(parts) > 1 and parts[1] else total_len - 1
+                end = min(end, total_len - 1)
+                chunk = ephemeral_data[start:end + 1]
+                return Response(
+                    content=chunk,
+                    status_code=206,
+                    media_type="image/png",
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{total_len}",
+                        "Content-Length": str(len(chunk)),
+                        "Accept-Ranges": "bytes",
+                        "Cache-Control": "public, max-age=300"
+                    }
+                )
+            except Exception as e:
+                logging.warning(f"Error handling Range request: {e}")
+
         async def stream_ephemeral():
             chunk_size = 32768
             for i in range(0, len(ephemeral_data), chunk_size):
@@ -2547,7 +2570,8 @@ async def get_chat_image(
             stream_ephemeral(),
             media_type="image/png",
             headers={
-                "Content-Length": str(len(ephemeral_data)),
+                "Content-Length": str(total_len),
+                "Accept-Ranges": "bytes",
                 "Cache-Control": "public, max-age=300"
             }
         )
