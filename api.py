@@ -2513,21 +2513,25 @@ async def assistant_avatar(
         return serve_default_avatar(default_path, request, size=size)
 
 
-@app.get("/chat/image/{filename}")
-@app.get("/generated/{filename}")
+@app.get("/chat/image/{filename:path}")
+@app.get("/generated/{filename:path}")
+@app.get("/{storage_name}/generated/{filename:path}")
 async def get_chat_image(
     filename: str,
     request: Request,
+    storage_name: str | None = None,
     size: int | None = None,
     omd_key: str | None = Depends(get_omd_key)
 ):
     ctx = get_ctx(omd_key)
     safe_filename = os.path.basename(filename)
+    is_markdown = safe_filename.lower().endswith(".md")
+    content_media_type = "text/markdown; charset=utf-8" if is_markdown else "image/png"
 
     # 1. Check in-memory ephemeral cache first (Zero Contact / Subscriber mode)
     ephemeral_data = get_ephemeral_image(safe_filename)
     if ephemeral_data:
-        if size:
+        if size and not is_markdown:
             try:
                 img = Image.open(io.BytesIO(ephemeral_data))
                 img.thumbnail((size, size))
@@ -2549,7 +2553,7 @@ async def get_chat_image(
                 return Response(
                     content=chunk,
                     status_code=206,
-                    media_type="image/png",
+                    media_type=content_media_type,
                     headers={
                         "Content-Range": f"bytes {start}-{end}/{total_len}",
                         "Content-Length": str(len(chunk)),
@@ -2568,7 +2572,7 @@ async def get_chat_image(
 
         return StreamingResponse(
             stream_ephemeral(),
-            media_type="image/png",
+            media_type=content_media_type,
             headers={
                 "Content-Length": str(total_len),
                 "Accept-Ranges": "bytes",
@@ -4321,6 +4325,9 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         filename, title, description, img_data = res[0], res[1], res[2], res[3]
         if img_data:
             store_ephemeral_image(filename, img_data)
+            readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+            readme_text = f"# {title}\n\n{description}\n"
+            store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
             if data.device_push:
                 schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
 
