@@ -2718,15 +2718,16 @@ def save_persona_to_disk(persona_data: dict, ctx: UserContext | None = None) -> 
 
     # Сохраняем аватар как отдельный .png файл рядом с .json
     avatar_data = persona_data.get("avatarData") or persona_data.get("avatar") or ""
-    if avatar_data and "base64," in avatar_data:
+    if avatar_data:
         try:
-            _, b64 = avatar_data.split("base64,", 1)
-            img_bytes = base64.b64decode(b64)
-            img_path = os.path.join(target_dir, f"{p_id}.png")
-            with open(img_path, "wb") as f:
-                f.write(img_bytes)
-            persona_data["avatar_url"] = f"/personas/{p_id}/avatar"
-            logging.info(f"[Personas] Saved avatar image: {img_path}")
+            b64 = avatar_data.split("base64,", 1)[1] if "base64," in avatar_data else avatar_data
+            if len(b64) > 100:
+                img_bytes = base64.b64decode(b64)
+                img_path = os.path.join(target_dir, f"{p_id}.png")
+                with open(img_path, "wb") as f:
+                    f.write(img_bytes)
+                persona_data["avatar_url"] = f"/personas/{p_id}/avatar"
+                logging.info(f"[Personas] Saved avatar image: {img_path}")
         except Exception as e:
             logging.warning(f"[Personas] Failed to save persona avatar: {e}")
 

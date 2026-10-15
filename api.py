@@ -4581,10 +4581,11 @@ async def get_persona_avatar_endpoint(persona_id: str, omd_key: str | None = Dep
         cand = os.path.join(p_dir, f"{persona_id}.png")
         if os.path.isfile(cand):
             return FileResponse(cand, media_type="image/png")
-    # Fallback на дефолтный аватар
-    default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
-    if os.path.isfile(default_path):
-        return FileResponse(default_path, media_type="image/png")
+    # Fallback на дефолтный аватар ТОЛЬКО для базовой June
+    if persona_id in ("june", "default"):
+        default_path = os.path.join(core_service.APP_ROOT_DIR, core_service.AVATAR_DIR, "default.png")
+        if os.path.isfile(default_path):
+            return FileResponse(default_path, media_type="image/png")
     raise HTTPException(status_code=404, detail="Avatar not found")
 
 
