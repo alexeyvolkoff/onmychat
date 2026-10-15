@@ -4264,6 +4264,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             is_node_owner = False
         save_locally = bool(is_node_owner and data.save_local)
 
+        ref_img = data.reference_image or (data.reference_images[0] if data.reference_images else None)
         res = await core_service.generate_krea2_image(
             ctx=ctx,
             prompt=data.prompt,
