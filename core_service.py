@@ -3033,18 +3033,13 @@ async def generate_krea2_image(
                             detected_clip = clip_model
                         loras = obj_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
 
-                        reactor_req = obj_info.get("ReActorFaceSwap", {}).get("input", {}).get("required", {})
-                        has_reactor = bool(reactor_req)
-                        swap_models = reactor_req.get("swap_model", [[]])[0] if has_reactor else []
-                        restore_models = reactor_req.get("face_restore_model", [[]])[0] if has_reactor else []
+                        has_krea2_edit = ("Krea2EditModelPatch" in obj_info) and ("Krea2EditGroundedEncode" in obj_info)
 
                         _krea_model_cache = {
                             "unet": detected_unet,
                             "clip": detected_clip,
                             "loras": loras or [],
-                            "has_reactor": has_reactor,
-                            "swap_models": swap_models,
-                            "restore_models": restore_models
+                            "has_krea2_edit": has_krea2_edit
                         }
         except Exception:
             pass
@@ -3067,11 +3062,13 @@ async def generate_krea2_image(
         else:
             logging.warning(f"[Krea2] LoRA '{lora_file}' not found in ComfyUI available LoRAs — skipping LoraLoader node.")
 
-    # Если есть референсное лицо и доступна LoRA сохранения идентичности, подключаем ее
-    if comfy_ref_name:
-        id_lora = next((al for al in available_loras if "identity" in str(al).lower() and "krea" in str(al).lower()), None)
+    has_krea2_edit = _krea_model_cache.get("has_krea2_edit", False) if _krea_model_cache else False
+
+    # Если есть референсное лицо и доступен krea2-identity-edit, подключаем его родную LoRA
+    if comfy_ref_name and has_krea2_edit:
+        id_lora = next((al for al in available_loras if "identity_edit" in str(al).lower() or ("identity" in str(al).lower() and "krea" in str(al).lower())), None)
         if id_lora and not any(id_lora == l[0] for l in resolved_lora_chain):
-            resolved_lora_chain.append((id_lora, 0.6))
+            resolved_lora_chain.append((id_lora, 1.0))
 
     # Base models
     current_model_link = ["1", 0]
@@ -3094,60 +3091,74 @@ async def generate_krea2_image(
         current_model_link = [node_id, 0]
         current_clip_link = [node_id, 1]
 
-    last_image_output = ["8", 0]
     face_ref_nodes = {}
-    has_reactor = _krea_model_cache.get("has_reactor", False) if _krea_model_cache else False
+    active_model_link = current_model_link
 
-    if comfy_ref_name and has_reactor:
-        swap_models = _krea_model_cache.get("swap_models", [])
-        restore_models = _krea_model_cache.get("restore_models", [])
-
-        chosen_swap = "reswapper_256.onnx"
-        if swap_models:
-            if "reswapper_256.onnx" in swap_models:
-                chosen_swap = "reswapper_256.onnx"
-            elif "inswapper_128.onnx" in swap_models:
-                chosen_swap = "inswapper_128.onnx"
-            else:
-                chosen_swap = swap_models[0]
-
-        chosen_restore = "GFPGANv1.4.pth"
-        if restore_models:
-            if "GFPGANv1.4.pth" in restore_models:
-                chosen_restore = "GFPGANv1.4.pth"
-            elif "GFPGANv1.3.pth" in restore_models:
-                chosen_restore = "GFPGANv1.3.pth"
-            else:
-                chosen_restore = "none"
-
-        logging.info(f"[Krea2] Injecting one-shot face reference likeness via ReActor: ref='{comfy_ref_name}', model='{chosen_swap}', restore='{chosen_restore}'")
-        face_ref_nodes["20"] = {
+    if comfy_ref_name and has_krea2_edit:
+        ref_boost_val = float(sliders.get("ref_boost", 4.0))
+        logging.info(f"[Krea2] Injecting native Krea2 Identity Edit (dual conditioning): ref='{comfy_ref_name}', ref_boost={ref_boost_val}")
+        face_ref_nodes["72"] = {
             "class_type": "LoadImage",
             "inputs": {
                 "image": comfy_ref_name
             }
         }
-        face_ref_nodes["21"] = {
-            "class_type": "ReActorFaceSwap",
+        face_ref_nodes["73"] = {
+            "class_type": "VAEEncode",
             "inputs": {
-                "enabled": True,
-                "input_image": ["8", 0],
-                "source_image": ["20", 0],
-                "swap_model": chosen_swap,
-                "facedetection": "retinaface_resnet50",
-                "face_restore_model": chosen_restore,
-                "face_restore_visibility": 1.0,
-                "codeformer_weight": 0.5,
-                "detect_gender_input": "no",
-                "detect_gender_source": "no",
-                "input_faces_index": "0",
-                "source_faces_index": "0",
-                "console_log_level": 1
+                "pixels": ["72", 0],
+                "vae": ["3", 0]
             }
         }
-        last_image_output = ["21", 0]
-    elif comfy_ref_name:
-        logging.info(f"[Krea2] One-shot reference image uploaded ({comfy_ref_name}), verbal passport & prompt active.")
+        face_ref_nodes["79"] = {
+            "class_type": "Krea2EditModelPatch",
+            "inputs": {
+                "model": current_model_link,
+                "source_latent": ["73", 0],
+                "vae": ["3", 0],
+                "source_image": ["72", 0],
+                "target_latent": ["6", 0],
+                "ref_boost": ref_boost_val,
+                "ref_boost_a": 1.0,
+                "fit_mode": "fit"
+            }
+        }
+        active_model_link = ["79", 0]
+
+        pos_node = {
+            "class_type": "Krea2EditGroundedEncode",
+            "inputs": {
+                "clip": current_clip_link,
+                "prompt": positive_text,
+                "image": ["72", 0],
+                "grounding_px": 768
+            }
+        }
+        neg_node = {
+            "class_type": "Krea2EditGroundedEncode",
+            "inputs": {
+                "clip": current_clip_link,
+                "prompt": "",
+                "image": ["72", 0],
+                "grounding_px": 768
+            }
+        }
+    else:
+        if comfy_ref_name:
+            logging.info(f"[Krea2] One-shot reference image uploaded ({comfy_ref_name}), verbal passport & prompt active.")
+        pos_node = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": positive_text,
+                "clip": current_clip_link
+            }
+        }
+        neg_node = {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {
+                "conditioning": ["4", 0]
+            }
+        }
 
     krea_workflow = {
         "1": {
@@ -3170,19 +3181,8 @@ async def generate_krea2_image(
                 "vae_name": vae_model
             }
         },
-        "4": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "text": positive_text,
-                "clip": current_clip_link
-            }
-        },
-        "5": {
-            "class_type": "ConditioningZeroOut",
-            "inputs": {
-                "conditioning": ["4", 0]
-            }
-        },
+        "4": pos_node,
+        "5": neg_node,
         "6": {
             "class_type": "EmptySD3LatentImage",
             "inputs": {
@@ -3200,7 +3200,7 @@ async def generate_krea2_image(
                 "sampler_name": "euler",
                 "scheduler": "simple",
                 "denoise": 1.0,
-                "model": current_model_link,
+                "model": active_model_link,
                 "positive": ["4", 0],
                 "negative": ["5", 0],
                 "latent_image": ["6", 0]
@@ -3217,7 +3217,7 @@ async def generate_krea2_image(
             "class_type": "SaveImage",
             "inputs": {
                 "filename_prefix": "generated/krea",
-                "images": last_image_output
+                "images": ["8", 0]
             }
         }
     }
