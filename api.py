@@ -4294,8 +4294,6 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             "persona": data.persona_name or data.persona_id or "",
             "saved_locally": save_locally
         }
-        if img_data:
-            resp["image_base64"] = base64.b64encode(img_data).decode("utf-8")
         return resp
     except Exception as e:
         logging.error(f"Error in /generate/krea2: {e}")
