@@ -2840,6 +2840,7 @@ async def generate_krea2_image(
     persona_prompt: str = "",
     sliders: dict | None = None,
     reference_image: str | None = None,
+    reference_images: list[str] | None = None,
     width: int = 896,
     height: int = 1152,
     steps: int = 10,
@@ -2848,15 +2849,26 @@ async def generate_krea2_image(
     upload_storage: bool = True,
     save_local: bool = False
 ) -> tuple[str, str, str, bytes]:
-    """Генерация изображения через нативный пайплайн Krea 2 с поддержкой One-Shot Face Reference."""
+    """Генерация изображения через нативный пайплайн Krea 2 с поддержкой 1 или 2 Reference Images."""
     if not prompt and not persona_prompt:
         raise Exception("Укажите промпт или выберите персону для генерации.")
 
-    # Разрешаем референсное изображение лица (если передано)
-    ref_bytes = await resolve_reference_image_bytes(ctx, reference_image)
-    comfy_ref_name = None
-    if ref_bytes:
-        comfy_ref_name = await upload_reference_image_to_comfy(ref_bytes)
+    # Разрешаем список референсных изображений (до 2 штук)
+    raw_refs = []
+    if reference_images and isinstance(reference_images, list):
+        raw_refs.extend([r for r in reference_images if r])
+    elif reference_image:
+        raw_refs.append(reference_image)
+
+    comfy_ref_names = []
+    for ref_item in raw_refs[:2]:
+        ref_bytes = await resolve_reference_image_bytes(ctx, ref_item)
+        if ref_bytes:
+            c_name = await upload_reference_image_to_comfy(ref_bytes)
+            if c_name:
+                comfy_ref_names.append(c_name)
+
+    comfy_ref_name = comfy_ref_names[0] if comfy_ref_names else None
 
     # Объединяем словесный паспорт персоны и пользовательский сюжет
     full_parts = []
@@ -3096,13 +3108,16 @@ async def generate_krea2_image(
     face_ref_nodes = {}
     active_model_link = current_model_link
 
-    if comfy_ref_name and has_krea2_edit:
+    if comfy_ref_names and has_krea2_edit:
         ref_boost_val = float(sliders.get("ref_boost", 4.0))
-        logging.info(f"[Krea2] Injecting native Krea2 Identity Edit (dual conditioning): ref='{comfy_ref_name}', ref_boost={ref_boost_val}")
+        comfy_ref_name_a = comfy_ref_names[0]
+        comfy_ref_name_b = comfy_ref_names[1] if len(comfy_ref_names) > 1 else None
+
+        logging.info(f"[Krea2] Injecting native Krea2 Identity Edit (multi-ref): ref_a='{comfy_ref_name_a}', ref_b='{comfy_ref_name_b}', ref_boost={ref_boost_val}")
         face_ref_nodes["72"] = {
             "class_type": "LoadImage",
             "inputs": {
-                "image": comfy_ref_name
+                "image": comfy_ref_name_a
             }
         }
         face_ref_nodes["73"] = {
@@ -3112,38 +3127,52 @@ async def generate_krea2_image(
                 "vae": ["3", 0]
             }
         }
+        patch_inputs = {
+            "model": current_model_link,
+            "source_latent": ["73", 0],
+            "vae": ["3", 0],
+            "source_image": ["72", 0],
+            "target_latent": ["6", 0],
+            "ref_boost": ref_boost_val,
+            "ref_boost_a": 1.0,
+            "fit_mode": "fit"
+        }
+        pos_inputs = {
+            "clip": current_clip_link,
+            "prompt": positive_text,
+            "image": ["72", 0],
+            "grounding_px": 768
+        }
+        neg_inputs = {
+            "clip": current_clip_link,
+            "prompt": "",
+            "image": ["72", 0],
+            "grounding_px": 768
+        }
+        if comfy_ref_name_b:
+            face_ref_nodes["74"] = {
+                "class_type": "LoadImage",
+                "inputs": {
+                    "image": comfy_ref_name_b
+                }
+            }
+            patch_inputs["source_image_b"] = ["74", 0]
+            pos_inputs["image_b"] = ["74", 0]
+            neg_inputs["image_b"] = ["74", 0]
+
         face_ref_nodes["79"] = {
             "class_type": "Krea2EditModelPatch",
-            "inputs": {
-                "model": current_model_link,
-                "source_latent": ["73", 0],
-                "vae": ["3", 0],
-                "source_image": ["72", 0],
-                "target_latent": ["6", 0],
-                "ref_boost": ref_boost_val,
-                "ref_boost_a": 1.0,
-                "fit_mode": "fit"
-            }
+            "inputs": patch_inputs
         }
         active_model_link = ["79", 0]
 
         pos_node = {
             "class_type": "Krea2EditGroundedEncode",
-            "inputs": {
-                "clip": current_clip_link,
-                "prompt": positive_text,
-                "image": ["72", 0],
-                "grounding_px": 768
-            }
+            "inputs": pos_inputs
         }
         neg_node = {
             "class_type": "Krea2EditGroundedEncode",
-            "inputs": {
-                "clip": current_clip_link,
-                "prompt": "",
-                "image": ["72", 0],
-                "grounding_px": 768
-            }
+            "inputs": neg_inputs
         }
     else:
         if comfy_ref_name:
