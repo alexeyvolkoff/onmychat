@@ -3243,40 +3243,9 @@ async def generate_krea2_image(
 
     img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
 
-    # Локальное сохранение на хосте выполняем ТОЛЬКО для владельца ноды, если нет внешнего device_push.
-    # Если указан device_push на другое устройство (например Linux-desktop) — локальное сохранение пропускаем.
-    has_remote_push = False
-    if device_push:
-        try:
-            import device_push as _dp
-            has_remote_push = not _dp.is_local_target(device_push, ctx)
-        except Exception:
-            pass
-
-    is_node_owner = False
-    try:
-        from api import validated_node_owner
-        is_node_owner = validated_node_owner(ctx)
-    except Exception:
-        is_node_owner = False
-
-    target_img_path = None
-    if is_node_owner and not has_remote_push:
-        try:
-            target_dir = resolve_local_target_dir(ctx, "generated")
-            os.makedirs(target_dir, exist_ok=True)
-            target_img_path = os.path.join(target_dir, filename)
-            with open(target_img_path, "wb") as f:
-                f.write(img_data)
-            base_name = os.path.splitext(filename)[0]
-            target_readme_path = os.path.join(target_dir, f"{base_name}.Readme.md")
-            with open(target_readme_path, "w", encoding="utf-8") as f:
-                f.write(f"# {img_title}\n\n{positive_text}\n")
-            logging.info(f"[Krea2] Saved generated image locally on host: {target_img_path}")
-        except Exception as e:
-            logging.warning(f"[Krea2] Local file save failed: {e}")
-
-    # Удаляем сырой временный файл ComfyUI, чтобы файлы не скапливались на диске
+    # AI-нода не сохраняет файлы локально на диск. 
+    # Картинка возвращается клиенту через память (store_ephemeral_image) и пушится через P2P device_push.
+    # Очищаем только сырой временный вывод ComfyUI.
     if orig_filename:
         for old_cand in [
             os.path.join("/content/ComfyUI/output", orig_filename),
@@ -3286,8 +3255,6 @@ async def generate_krea2_image(
             os.path.join(APP_ROOT_DIR, "generated", os.path.basename(orig_filename)),
         ]:
             if os.path.exists(old_cand):
-                if target_img_path and os.path.abspath(old_cand) == os.path.abspath(target_img_path):
-                    continue
                 try:
                     os.remove(old_cand)
                     logging.info(f"[Krea2] Cleaned up temporary ComfyUI output: {old_cand}")
