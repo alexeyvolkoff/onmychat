@@ -2845,7 +2845,7 @@ async def generate_krea2_image(
     cfg: float = 1.0,
     seed: int | None = None,
     upload_storage: bool = True,
-    device_push: Any = None
+    device_push: dict | None = None
 ) -> tuple[str, str, str, bytes]:
     """Генерация изображения через нативный пайплайн Krea 2 с поддержкой One-Shot Face Reference."""
     if not prompt and not persona_prompt:
