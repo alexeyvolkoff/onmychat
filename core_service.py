@@ -2996,6 +2996,37 @@ async def generate_krea2_image(
     else:
         archetype_list = []
 
+    # Parse LoRA tags and archetypes directly from prompt text
+    # 1. Standard WebUI syntax: <lora:name:weight> or <lora:name>
+    lora_syntax_matches = re.findall(r"<lora:([^:>]+)(?::([0-9.]+))?>", prompt or "", flags=re.IGNORECASE)
+    for lora_match_name, lora_match_weight in lora_syntax_matches:
+        w = float(lora_match_weight) if lora_match_weight else 0.8
+        target_loras.append((lora_match_name.strip(), w))
+        logging.info(f"[Krea2] Extracted LoRA from prompt syntax: '{lora_match_name.strip()}' (weight={w})")
+
+    # 2. Archetype and style tags: <ada>, <domi>, <anime>, <pinup>, etc.
+    general_tags = re.findall(r"<([^>:]+)>", prompt or "")
+    for tag in general_tags:
+        t_clean = tag.strip().lower()
+        if t_clean in STYLE_CONFIGS and style_preset == "photorealistic":
+            style_preset = t_clean
+            cfg_style = STYLE_CONFIGS[style_preset]
+            full_parts.append(cfg_style["trigger"])
+            target_loras.append((cfg_style["lora"], cfg_style["strength"]))
+            logging.info(f"[Krea2] Extracted style from prompt tag <{t_clean}>: {cfg_style['lora']}")
+        elif t_clean in ARCHETYPE_CONFIGS and t_clean not in archetype_list:
+            archetype_list.append(t_clean)
+            logging.info(f"[Krea2] Extracted archetype from prompt tag <{t_clean}>")
+        elif t_clean in ["ada_wong", "ada"] and "ada" not in archetype_list:
+            archetype_list.append("ada")
+            logging.info(f"[Krea2] Extracted archetype <ada> from tag <{t_clean}>")
+        elif t_clean in ["domi", "domik", "june"] and "domi" not in archetype_list:
+            archetype_list.append("domi")
+            logging.info(f"[Krea2] Extracted archetype <domi> from tag <{t_clean}>")
+        elif t_clean.endswith(".safetensors"):
+            target_loras.append((t_clean, 0.8))
+            logging.info(f"[Krea2] Extracted custom LoRA file tag <{t_clean}>")
+
     # Also support style_preset as archetype for backward compatibility
     if style_preset in ARCHETYPE_CONFIGS and style_preset not in archetype_list:
         archetype_list.append(style_preset)
@@ -3008,12 +3039,14 @@ async def generate_krea2_image(
             cfg_arch = ARCHETYPE_CONFIGS[arch_id]
             full_parts.append(cfg_arch["trigger"])
             target_loras.append((cfg_arch["lora"], cfg_arch["strength"]))
+            logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']})")
 
     # Custom persona LoRA if requested explicitly
     if sliders.get("lora"):
         custom_lora = sliders.get("lora")
         custom_weight = float(sliders.get("lora_weight", 0.7))
         target_loras.append((custom_lora, custom_weight))
+        logging.info(f"[Krea2] Applying Custom Slider LoRA: {custom_lora} (weight={custom_weight})")
 
     positive_text = ", ".join(full_parts)
     negative_text = "wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, watermark, artifacts"
