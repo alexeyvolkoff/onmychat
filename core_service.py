@@ -3242,41 +3242,48 @@ async def generate_krea2_image(
 
     img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
 
-    # Гарантируем сохранение в Data/generated для OnMyDisk
-    home_dir = os.path.expanduser("~")
-    for gen_dir in [
-        os.path.join(home_dir, "Data", "generated"),
-        "/content/ComfyUI/output/generated",
-        os.path.join(APP_ROOT_DIR, "generated")
-    ]:
+    # Локальное сохранение на хосте выполняем ТОЛЬКО для владельца ноды (локальная генерация).
+    # Для внешних клиентов/Colab картинка отдается в RAM cache (store_ephemeral_image) и пушится через P2P (device_push).
+    is_node_owner = False
+    try:
+        from api import validated_node_owner
+        is_node_owner = validated_node_owner(ctx)
+    except Exception:
+        is_node_owner = False
+
+    target_img_path = None
+    if is_node_owner:
         try:
-            if os.path.isdir(gen_dir):
-                target_img_path = os.path.join(gen_dir, filename)
-                with open(target_img_path, "wb") as f:
-                    f.write(img_data)
-                base_name = os.path.splitext(filename)[0]
-                target_readme_path = os.path.join(gen_dir, f"{base_name}.Readme.md")
-                with open(target_readme_path, "w", encoding="utf-8") as f:
-                    f.write(f"# {img_title}\n\n{positive_text}\n")
-
-                # Удаляем сырой файл ComfyUI, чтобы изображение не двоилось в папке
-                if orig_filename and orig_filename != filename:
-                    for old_cand in [
-                        os.path.join(gen_dir, os.path.basename(orig_filename)),
-                        os.path.join("/content/ComfyUI/output", orig_filename),
-                        os.path.join("/content/ComfyUI/output", os.path.basename(orig_filename))
-                    ]:
-                        if os.path.exists(old_cand) and os.path.abspath(old_cand) != os.path.abspath(target_img_path):
-                            try:
-                                os.remove(old_cand)
-                                logging.info(f"[Krea2] Removed raw ComfyUI file: {old_cand}")
-                            except Exception as e:
-                                logging.debug(f"[Krea2] Could not remove old file {old_cand}: {e}")
-
-                logging.info(f"[Krea2] Saved generated image to {target_img_path} with companion {target_readme_path}")
-                break
+            target_dir = resolve_local_target_dir(ctx, "generated")
+            os.makedirs(target_dir, exist_ok=True)
+            target_img_path = os.path.join(target_dir, filename)
+            with open(target_img_path, "wb") as f:
+                f.write(img_data)
+            base_name = os.path.splitext(filename)[0]
+            target_readme_path = os.path.join(target_dir, f"{base_name}.Readme.md")
+            with open(target_readme_path, "w", encoding="utf-8") as f:
+                f.write(f"# {img_title}\n\n{positive_text}\n")
+            logging.info(f"[Krea2] Saved generated image locally on host: {target_img_path}")
         except Exception as e:
-            logging.warning(f"[Krea2] Could not save directly to {gen_dir}: {e}")
+            logging.warning(f"[Krea2] Local file save failed: {e}")
+
+    # Удаляем сырой временный файл ComfyUI, чтобы файлы не скапливались на диске
+    if orig_filename:
+        for old_cand in [
+            os.path.join("/content/ComfyUI/output", orig_filename),
+            os.path.join("/content/ComfyUI/output", os.path.basename(orig_filename)),
+            os.path.join(os.path.expanduser("~"), "Data", "generated", os.path.basename(orig_filename)),
+            os.path.join(os.path.expanduser("~"), "Data", "generated", orig_filename),
+            os.path.join(APP_ROOT_DIR, "generated", os.path.basename(orig_filename)),
+        ]:
+            if os.path.exists(old_cand):
+                if target_img_path and os.path.abspath(old_cand) == os.path.abspath(target_img_path):
+                    continue
+                try:
+                    os.remove(old_cand)
+                    logging.info(f"[Krea2] Cleaned up temporary ComfyUI output: {old_cand}")
+                except Exception as e:
+                    logging.debug(f"[Krea2] Could not remove old file {old_cand}: {e}")
 
     return filename, img_title, positive_text, img_data
 
