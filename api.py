@@ -2536,7 +2536,21 @@ async def get_chat_image(
                 ephemeral_data = buf.getvalue()
             except Exception as e:
                 logging.warning(f"Failed to resize in-memory image: {e}")
-        return Response(content=ephemeral_data, media_type="image/png")
+
+        async def stream_ephemeral():
+            chunk_size = 32768
+            for i in range(0, len(ephemeral_data), chunk_size):
+                yield ephemeral_data[i:i + chunk_size]
+                await asyncio.sleep(0.002)
+
+        return StreamingResponse(
+            stream_ephemeral(),
+            media_type="image/png",
+            headers={
+                "Content-Length": str(len(ephemeral_data)),
+                "Cache-Control": "public, max-age=300"
+            }
+        )
 
     # 2. Local storage candidates (Private Mode / Owner on device)
     candidates = []
