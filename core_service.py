@@ -2588,9 +2588,11 @@ def extract_krea2_prompt_and_params(ctx: UserContext, prompt: str, is_character:
     persona_prompt = ""
     if is_character or len(detected_archetypes) > 0:
         if not detected_archetypes:
-            ast_model = (ctx.settings.get("assistant_model") or ctx.settings.get("character_lora") or "domi").lower().strip("<> ")
-            arch = ARCHETYPE_ALIASES.get(ast_model, "domi")
-            detected_archetypes.append(arch)
+            ast_model = (ctx.settings.get("assistant_model") or ctx.settings.get("character_lora") or "").lower().strip("<> ")
+            if ast_model:
+                arch = ARCHETYPE_ALIASES.get(ast_model)
+                if arch and arch not in detected_archetypes:
+                    detected_archetypes.append(arch)
 
         # Подключаем словесный паспорт ассистента, если задан
         ast_appearance = (ctx.settings.get("assistant_appearance") or ctx.settings.get("appearance_prompt") or "").strip()
@@ -3060,9 +3062,10 @@ async def generate_krea2_image(
             if lora_file.lower() in str(al).lower():
                 matched = al
                 break
-        if not matched:
-            matched = lora_file
-        resolved_lora_chain.append((matched, strength))
+        if matched:
+            resolved_lora_chain.append((matched, strength))
+        else:
+            logging.warning(f"[Krea2] LoRA '{lora_file}' not found in ComfyUI available LoRAs — skipping LoraLoader node.")
 
     # Если есть референсное лицо и доступна LoRA сохранения идентичности, подключаем ее
     if comfy_ref_name:
