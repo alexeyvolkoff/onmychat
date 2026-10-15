@@ -2248,6 +2248,17 @@ class PersonaGenerateInput(BaseModel):
     style: str | None = None
 
 
+class RandomPromptInput(BaseModel):
+    omd_key: str = ""
+    persona_id: str | None = None
+    persona_name: str | None = None
+    persona_prompt: str | None = None
+    style: str | None = None
+    keywords: str | None = None
+    chat: str = "default"
+
+
+
 class PersonaDescribeFaceInput(BaseModel):
     omd_key: str | None = None
     image: str
@@ -4630,9 +4641,30 @@ async def generate_general_image_prompt(request: Request, data: GenerateInput):
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
     try:
-        result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat, history=data.history)
+        if not data.prompt or data.prompt.strip() in ("", "random"):
+            result = await core_service.generate_random_creative_prompt(ctx)
+        else:
+            result = await core_service.generate_general_image_prompt(ctx, data.prompt, data.chat, history=data.history)
         return {"prompt": result}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/prompt/random")
+async def generate_random_prompt_endpoint(request: Request, data: RandomPromptInput):
+    ctx = get_ctx(data.omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    try:
+        result = await core_service.generate_random_creative_prompt(
+            ctx,
+            persona_name=data.persona_name or "",
+            persona_prompt=data.persona_prompt or "",
+            style=data.style or "",
+            keywords=data.keywords or ""
+        )
+        return {"prompt": result}
+    except Exception as e:
+        logging.error(f"[api] Error in /generate/prompt/random: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

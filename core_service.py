@@ -5120,6 +5120,94 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat, history)
 
 
+async def generate_random_creative_prompt(
+    ctx: UserContext,
+    persona_name: str = "",
+    persona_prompt: str = "",
+    style: str = "",
+    keywords: str = ""
+) -> str:
+    """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
+    mode = ctx.settings.get("content_mode", "work")
+    model = get_llm_model(ctx, mode)
+
+    creative_themes = [
+        "cinematic slice-of-life scene with striking natural lighting and vivid atmosphere",
+        "atmospheric retro-futurism or cyberpunk mystery with wet street reflections",
+        "high-fashion avant-garde editorial portrait in an unexpected, moody architectural setting",
+        "dreamy surreal landscape with poetic scale, drifting clouds, and golden twilight warmth",
+        "intimate candid film photograph, 35mm grain, lens flare, soft focus and cinematic depth",
+        "epic mythic or fantasy moment rich with tactile fabrics, ancient stones, and weather effects",
+        "solitary contemplative moment in a bustling historic neon-lit quarter or night street",
+        "dramatic chiaroscuro portrait with deep shadows, rim lighting, and intense expression"
+    ]
+    random_theme = random.choice(creative_themes)
+
+    system_instruction = (
+        "You are an expert visual director and prompt artist for high-end AI image generation (Krea 2).\n"
+        "Your goal is to generate one original, highly creative, visually stunning image prompt.\n\n"
+        "GUIDELINES:\n"
+        "- Write in English only.\n"
+        "- Write 2 to 4 natural, descriptive, evocative sentences (45 to 80 words). Do NOT output tag lists or comma separated keywords.\n"
+        "- Clearly describe the primary subject, specific action or pose, environment, lighting quality (e.g. golden hour, soft diffuse, moody neon), camera framing, and textures.\n"
+        "- Do NOT use quality buzzwords like 'masterpiece, best quality, 8k, photorealistic'.\n"
+        "- Output ONLY the final prompt text. No explanations, no introductory text, no quotes, no markdown headers."
+    )
+
+    user_parts = [f"Theme idea: {random_theme}."]
+    if persona_name or persona_prompt:
+        char_desc = persona_name
+        if persona_prompt:
+            char_desc += f" ({persona_prompt})"
+        user_parts.append(f"The scene must prominently feature this character: {char_desc}.")
+    if style:
+        user_parts.append(f"Visual style aesthetic: {style}.")
+    if keywords and keywords.strip():
+        user_parts.append(f"Incorporate or creatively elaborate upon these user ideas: {keywords.strip()}.")
+    else:
+        user_parts.append("Create a completely fresh, unexpected, artistic, and visually captivating scene.")
+
+    user_content = " ".join(user_parts)
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content}
+        ],
+        "model": model,
+        "stream": False,
+        "options": {
+            "temperature": 0.9,
+            "top_p": 0.95
+        }
+    }
+
+    try:
+        data = await llm_request(payload)
+        prompt = ""
+        if data and "message" in data and "content" in data["message"]:
+            prompt = data["message"]["content"].strip()
+        elif data and isinstance(data, dict):
+            prompt = data.get("content", "").strip()
+
+        if prompt:
+            # Clean up potential LLM prefixes or quotation marks
+            prompt = re.sub(r'^(Prompt|Image|Description):\s*', '', prompt, flags=re.IGNORECASE).strip('"\n ')
+            return prompt
+    except Exception as e:
+        logging.error(f"[generate_random_creative_prompt] LLM failed: {e}")
+
+    # Fallback if LLM is unavailable
+    fallback_scenes = [
+        "A cinematic portrait of a young woman standing on a misty bridge in Tokyo at twilight, neon reflections dancing across wet asphalt, warm bokeh and 35mm film grain",
+        "A candid moment inside a sun-drenched sunroom surrounded by lush monsteras and hanging ferns, soft golden hour sunlight cutting through dust motes",
+        "An avant-garde editorial photo in a minimalist concrete gallery, sharp directional shadows, vibrant silk attire contrasting with raw stone",
+        "A peaceful rooftop at dusk overlooking a sprawling vintage metropolis, gentle wind catching hair, soft pastel sunset palette, atmospheric depth"
+    ]
+    return random.choice(fallback_scenes)
+
+
+
 def extract_title_and_prompt(response: str) -> tuple[str, str]:
     """Extract title and image prompt from LLM response.
     Expected format: 'Title: title\nImage: prompt'
