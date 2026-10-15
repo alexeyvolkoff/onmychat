@@ -3304,7 +3304,18 @@ async def generate_krea2_image(
     else:
         filename = f"KREA_{timestamp}.png"
 
-    img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
+    clean_user_prompt = (prompt or persona_prompt or "").strip()
+    neutral_title, neutral_description = await generate_neutral_description_and_title(ctx, clean_user_prompt)
+    if neutral_title:
+        img_title = neutral_title
+    elif clean_user_prompt:
+        img_title = await generate_title_from_prompt(ctx, neutral_description or clean_user_prompt)
+    else:
+        img_title = "Krea Creation"
+
+    readme_content = f"# {img_title}\n\n{neutral_description}\n"
+    if clean_user_prompt:
+        readme_content += f"\n<!-- prompt: {clean_user_prompt} -->\n"
 
     # Случай 1: Владелец ноды выбрал сохранение на этой ноде (save_local=True)
     target_img_path = None
@@ -3318,7 +3329,7 @@ async def generate_krea2_image(
             base_name = os.path.splitext(filename)[0]
             target_readme_path = os.path.join(target_dir, f"{base_name}.Readme.md")
             with open(target_readme_path, "w", encoding="utf-8") as f:
-                f.write(f"# {img_title}\n\n{positive_text}\n")
+                f.write(readme_content)
             logging.info(f"[Krea2] Saved generated image locally on AI node: {target_img_path}")
         except Exception as e:
             logging.warning(f"[Krea2] Local file save failed: {e}")
@@ -3339,7 +3350,7 @@ async def generate_krea2_image(
                 except Exception as e:
                     logging.debug(f"[Krea2] Could not remove old file {old_cand}: {e}")
 
-    return filename, img_title, positive_text, img_data
+    return filename, img_title, neutral_description, img_data
 
 
 

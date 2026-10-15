@@ -282,6 +282,7 @@ def schedule_generated_image_push(
     title: str = "",
     description: str = "",
     ctx: Any = None,
+    prompt: str = "",
 ) -> bool:
     """Chat image → `<folder>/IMG_x.png` + companion Readme (legacy habit)."""
     if is_local_target(device_push, ctx):
@@ -293,7 +294,10 @@ def schedule_generated_image_push(
     files: List[FileSpec] = [(filename, image_data)]
     base = os.path.splitext(_safe_name(filename))[0]
     if base and title:
-        readme = f"# {title}\n\n{description or ''}\n".encode("utf-8")
+        readme_text = f"# {title}\n\n{description or ''}\n"
+        if prompt:
+            readme_text += f"\n<!-- prompt: {prompt} -->\n"
+        readme = readme_text.encode("utf-8")
         files.append((f"{base}.Readme.md", readme))
     return schedule_push(omd_key, device_push, files, ctx=ctx)
 

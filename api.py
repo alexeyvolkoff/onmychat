@@ -4323,13 +4323,16 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             save_local=save_locally
         )
         filename, title, description, img_data = res[0], res[1], res[2], res[3]
+        raw_prompt = (data.prompt or data.persona_prompt or "").strip()
         if img_data:
             store_ephemeral_image(filename, img_data)
             readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
             readme_text = f"# {title}\n\n{description}\n"
+            if raw_prompt:
+                readme_text += f"\n<!-- prompt: {raw_prompt} -->\n"
             store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
             if data.device_push:
-                schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
+                schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx, prompt=raw_prompt)
 
         resp = {
             "image": filename,
@@ -4337,6 +4340,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             "url": f"/chat/image/{filename}",
             "title": title,
             "description": description,
+            "prompt": raw_prompt,
             "persona": data.persona_name or data.persona_id or "",
             "saved_locally": save_locally
         }
