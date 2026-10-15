@@ -2844,7 +2844,8 @@ async def generate_krea2_image(
     steps: int = 10,
     cfg: float = 1.0,
     seed: int | None = None,
-    upload_storage: bool = True
+    upload_storage: bool = True,
+    device_push: Any = None
 ) -> tuple[str, str, str, bytes]:
     """Генерация изображения через нативный пайплайн Krea 2 с поддержкой One-Shot Face Reference."""
     if not prompt and not persona_prompt:
@@ -3242,8 +3243,16 @@ async def generate_krea2_image(
 
     img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
 
-    # Локальное сохранение на хосте выполняем ТОЛЬКО для владельца ноды (локальная генерация).
-    # Для внешних клиентов/Colab картинка отдается в RAM cache (store_ephemeral_image) и пушится через P2P (device_push).
+    # Локальное сохранение на хосте выполняем ТОЛЬКО для владельца ноды, если нет внешнего device_push.
+    # Если указан device_push на другое устройство (например Linux-desktop) — локальное сохранение пропускаем.
+    has_remote_push = False
+    if device_push:
+        try:
+            import device_push as _dp
+            has_remote_push = not _dp.is_local_target(device_push, ctx)
+        except Exception:
+            pass
+
     is_node_owner = False
     try:
         from api import validated_node_owner
@@ -3252,7 +3261,7 @@ async def generate_krea2_image(
         is_node_owner = False
 
     target_img_path = None
-    if is_node_owner:
+    if is_node_owner and not has_remote_push:
         try:
             target_dir = resolve_local_target_dir(ctx, "generated")
             os.makedirs(target_dir, exist_ok=True)

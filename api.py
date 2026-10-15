@@ -4266,7 +4266,8 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             steps=data.steps,
             cfg=data.cfg,
             seed=data.seed,
-            upload_storage=upload_storage_flag
+            upload_storage=upload_storage_flag,
+            device_push=data.device_push
         )
         filename, title, description, img_data = res[0], res[1], res[2], res[3]
         if img_data:
