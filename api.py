@@ -2237,6 +2237,8 @@ class KreaGenerateInput(BaseModel):
     settings: dict | None = None
     device_push: dict | None = None
     upload_storage: bool | None = None
+    image_delivery: str | None = "inline"
+    save_local: bool | None = False
 
 
 class PersonaGenerateInput(BaseModel):
@@ -4254,7 +4256,14 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
 
-        ref_img = data.reference_image or (data.reference_images[0] if data.reference_images else None)
+        # Случай 1: Владелец ноды выбрал сохранение на этой ноде (save_local=True)
+        is_node_owner = False
+        try:
+            is_node_owner = validated_node_owner(ctx)
+        except Exception:
+            is_node_owner = False
+        save_locally = bool(is_node_owner and data.save_local)
+
         res = await core_service.generate_krea2_image(
             ctx=ctx,
             prompt=data.prompt,
@@ -4267,21 +4276,26 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             cfg=data.cfg,
             seed=data.seed,
             upload_storage=upload_storage_flag,
-            device_push=data.device_push
+            save_local=save_locally
         )
         filename, title, description, img_data = res[0], res[1], res[2], res[3]
         if img_data:
             store_ephemeral_image(filename, img_data)
-            schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
+            if data.device_push:
+                schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx)
 
-        return {
+        resp = {
             "image": filename,
             "path": filename,
             "url": f"/chat/image/{filename}",
             "title": title,
             "description": description,
-            "persona": data.persona_name or data.persona_id or ""
+            "persona": data.persona_name or data.persona_id or "",
+            "saved_locally": save_locally
         }
+        if img_data:
+            resp["image_base64"] = base64.b64encode(img_data).decode("utf-8")
+        return resp
     except Exception as e:
         logging.error(f"Error in /generate/krea2: {e}")
         raise HTTPException(status_code=500, detail=str(e))

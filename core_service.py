@@ -2845,7 +2845,7 @@ async def generate_krea2_image(
     cfg: float = 1.0,
     seed: int | None = None,
     upload_storage: bool = True,
-    device_push: dict | None = None
+    save_local: bool = False
 ) -> tuple[str, str, str, bytes]:
     """Генерация изображения через нативный пайплайн Krea 2 с поддержкой One-Shot Face Reference."""
     if not prompt and not persona_prompt:
@@ -3243,9 +3243,24 @@ async def generate_krea2_image(
 
     img_title = (prompt or persona_prompt)[:40].strip() or "Krea Creation"
 
-    # AI-нода не сохраняет файлы локально на диск. 
-    # Картинка возвращается клиенту через память (store_ephemeral_image) и пушится через P2P device_push.
-    # Очищаем только сырой временный вывод ComfyUI.
+    # Случай 1: Владелец ноды выбрал сохранение на этой ноде (save_local=True)
+    target_img_path = None
+    if save_local:
+        try:
+            target_dir = resolve_local_target_dir(ctx, "generated")
+            os.makedirs(target_dir, exist_ok=True)
+            target_img_path = os.path.join(target_dir, filename)
+            with open(target_img_path, "wb") as f:
+                f.write(img_data)
+            base_name = os.path.splitext(filename)[0]
+            target_readme_path = os.path.join(target_dir, f"{base_name}.Readme.md")
+            with open(target_readme_path, "w", encoding="utf-8") as f:
+                f.write(f"# {img_title}\n\n{positive_text}\n")
+            logging.info(f"[Krea2] Saved generated image locally on AI node: {target_img_path}")
+        except Exception as e:
+            logging.warning(f"[Krea2] Local file save failed: {e}")
+
+    # Очищаем сырой временный вывод ComfyUI
     if orig_filename:
         for old_cand in [
             os.path.join("/content/ComfyUI/output", orig_filename),
