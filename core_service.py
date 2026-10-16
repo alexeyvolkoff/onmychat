@@ -5177,14 +5177,24 @@ async def generate_random_creative_prompt(
     random_theme = random.choice(creative_themes)
 
     system_instruction = (
-        "You are an expert visual director and prompt artist for high-end AI image generation (Krea 2).\n"
-        "Your goal is to generate one original, highly creative, visually stunning image prompt.\n\n"
-        "GUIDELINES:\n"
-        "- Write in English only.\n"
-        "- Write 2 to 4 natural, descriptive, evocative sentences (45 to 80 words). Do NOT output tag lists or comma separated keywords.\n"
-        "- Clearly describe the primary subject, specific action or pose, environment, lighting quality (e.g. golden hour, soft diffuse, moody neon), camera framing, and textures.\n"
-        "- Do NOT use quality buzzwords like 'masterpiece, best quality, 8k, photorealistic'.\n"
-        "- Output ONLY the final prompt text. No explanations, no introductory text, no quotes, no markdown headers."
+        "You are an expert AI image prompt engineer for state-of-the-art diffusion models (Krea, Flux, SDXL).\n"
+        "Your task is to generate a concise, visually concrete, highly effective image prompt.\n\n"
+        "CORE RULES FOR DIFFUSION PROMPTING:\n"
+        "1. STRICTLY VISUAL: Describe ONLY visible physical elements (subject, clothing, pose, setting, lighting, camera angle, textures). NEVER describe invisible sensations: no sounds, no music, no smells/fragrances, no internal feelings, and no abstract poetic metaphors (e.g. avoid 'gentle embrace of', 'scent of pine', 'echoing whispers').\n"
+        "2. CONCISE & DENSE: Exactly 1 to 2 complete, well-structured visual sentences (30 to 45 words maximum). Do NOT write paragraphs, stories, or conversational filler.\n"
+        "3. PROVEN STRUCTURE: [Subject & action/expression], [environment & key background props], [lighting & color atmosphere], [camera framing / lens perspective / depth of field], [textures & artistic style].\n"
+        "4. NO QUALITY BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece, hyperdetailed'. Use tangible photographic and lighting cues instead.\n"
+        "5. COMPLETE ENDING: Always finish your sentence completely with a period before reaching 50 words.\n\n"
+        "FEW-SHOT EXAMPLES:\n"
+        "- Example 1 (Urban Character):\n"
+        "  A stylish young woman in a tailored camel trench coat standing on a wet Tokyo crosswalk at twilight, vibrant neon reflections on slick asphalt, candid medium-close shot, 50mm f/1.4 lens, soft creamy bokeh.\n"
+        "- Example 2 (Environment / Setting):\n"
+        "  A sunlit Mediterranean stone terrace with terracotta potted lemon trees and climbing bougainvillea, bathed in warm golden hour sunlight with long diagonal shadows, wide establishing shot, vibrant natural colors.\n"
+        "- Example 3 (Moody Portrait):\n"
+        "  Close-up portrait of a thoughtful man in a dark turtleneck looking through a rain-streaked cafe window, soft diffuse ambient tungsten lighting, shallow depth of field, subtle 35mm film grain.\n"
+        "- Example 4 (Dynamic Action):\n"
+        "  An athletic runner leaping across a brutalist concrete rooftop against a dramatic stormy sky, dynamic low-angle tracking shot, high shutter speed motion freeze, cool desaturated cinematic color grading.\n\n"
+        "Output ONLY the final prompt text. No quotes, no intro, no labels."
     )
 
     user_parts = [f"Theme idea: {random_theme}."]
@@ -5192,13 +5202,13 @@ async def generate_random_creative_prompt(
         char_desc = persona_name
         if persona_prompt:
             char_desc += f" ({persona_prompt})"
-        user_parts.append(f"The scene must prominently feature this character: {char_desc}.")
+        user_parts.append(f"Subject to depict: {char_desc}.")
     if style:
-        user_parts.append(f"Visual style aesthetic: {style}.")
+        user_parts.append(f"Aesthetic style: {style}.")
     if keywords and keywords.strip():
-        user_parts.append(f"Incorporate or creatively elaborate upon these user ideas: {keywords.strip()}.")
+        user_parts.append(f"Incorporate these user ideas: {keywords.strip()}.")
     else:
-        user_parts.append("Create a completely fresh, unexpected, artistic, and visually captivating scene.")
+        user_parts.append("Create a fresh, visually captivating, photographic scene.")
 
     user_content = " ".join(user_parts)
 
@@ -5210,9 +5220,9 @@ async def generate_random_creative_prompt(
         "model": model,
         "stream": False,
         "options": {
-            "temperature": 0.95,
-            "top_p": 0.95,
-            "num_predict": 120
+            "temperature": 0.75,
+            "top_p": 0.9,
+            "num_predict": 160
         }
     }
 
@@ -5227,6 +5237,13 @@ async def generate_random_creative_prompt(
         if prompt:
             # Clean up potential LLM prefixes or quotation marks
             prompt = re.sub(r'^(Prompt|Image|Description):\s*', '', prompt, flags=re.IGNORECASE).strip('"\n ')
+            # If the prompt was abruptly truncated mid-sentence, trim back to the last complete sentence
+            if prompt and prompt[-1] not in ".!?":
+                last_punct = max(prompt.rfind("."), prompt.rfind("!"), prompt.rfind("?"))
+                if last_punct > 25:
+                    prompt = prompt[:last_punct + 1].strip()
+                else:
+                    prompt = prompt.rstrip(" ,-—:") + "."
             return prompt
     except Exception as e:
         logging.error(f"[generate_random_creative_prompt] LLM failed: {e}")
