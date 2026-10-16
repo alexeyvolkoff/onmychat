@@ -2843,6 +2843,10 @@ async def generate_krea2_image(
     ctx: UserContext,
     prompt: str,
     persona_prompt: str = "",
+    persona_lora: str | None = None,
+    persona_id: str | None = None,
+    persona_name: str | None = None,
+    force_avatar_ref: bool = False,
     sliders: dict | None = None,
     reference_image: str | None = None,
     reference_images: list[str] | None = None,
@@ -2852,7 +2856,8 @@ async def generate_krea2_image(
     cfg: float = 1.0,
     seed: int | None = None,
     upload_storage: bool = True,
-    save_local: bool = False
+    save_local: bool = False,
+    **kwargs
 ) -> tuple[str, str, str, bytes]:
     """Генерация изображения через нативный пайплайн Krea 2 с поддержкой 1 или 2 Reference Images."""
     if not prompt and not persona_prompt:
@@ -3045,6 +3050,13 @@ async def generate_krea2_image(
             full_parts.append(cfg_arch["trigger"])
             target_loras.append((cfg_arch["lora"], cfg_arch["strength"]))
             logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']})")
+
+    # Persona LoRA if requested explicitly
+    if persona_lora and str(persona_lora).strip():
+        plora = str(persona_lora).strip()
+        if not any(t[0] == plora for t in target_loras):
+            target_loras.append((plora, 0.8))
+            logging.info(f"[Krea2] Applying Persona LoRA: {plora} (weight=0.8)")
 
     # Custom persona LoRA if requested explicitly
     if sliders.get("lora"):
