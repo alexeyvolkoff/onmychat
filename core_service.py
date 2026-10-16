@@ -5156,69 +5156,36 @@ async def generate_random_creative_prompt(
     """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
     model = get_fast_model(ctx)
 
-    creative_themes = [
-        "cinematic slice-of-life scene with striking natural lighting and vivid atmosphere",
-        "atmospheric retro-futurism or cyberpunk mystery with wet street reflections and neon glow",
-        "high-fashion avant-garde editorial portrait in an unexpected, moody architectural setting",
-        "dreamy surreal landscape with poetic scale, drifting clouds, and golden twilight warmth",
-        "intimate candid film photograph, 35mm grain, subtle lens flare, soft focus and cinematic depth",
-        "epic mythic or fantasy moment rich with tactile fabrics, ancient stones, and weather effects",
-        "solitary contemplative moment in a bustling historic neon-lit quarter or night street",
-        "dramatic chiaroscuro portrait with deep shadows, rim lighting, and intense expression",
-        "serene morning in an art-filled Parisian studio, dust motes floating in sunbeams",
-        "retro 1980s synthwave aesthetic, driving along a coastal highway during violet sunset",
-        "sun-drenched Mediterranean villa courtyard with terracotta tiles, lemon trees and linen curtains",
-        "futuristic botanical conservatory under a colossal geodesic glass dome with exotic bioluminescence",
-        "grainy street photography in rainy London, steaming manhole covers, trench coat and black umbrella",
-        "moody late-night jazz club booth, soft amber tungsten light, smoke haze and warm wood textures",
-        "kinetic parkour action across brutalist rooftops against a stormy dramatic sky",
-        "ethereal underwater portrait with billowing silk fabrics and refracted sun caustic patterns",
-        "Scandinavian minimalist cabin in snowy pine woods, floor-to-ceiling windows with warm fireplace glow",
-        "sunlit desert dunes at twilight with dramatic wind-swept sand ripples and deep blue starry sky",
-        "steampunk inventor workshop cluttered with brass gears, glowing vacuum tubes, and parchment sketches",
-        "vibrant bustling Moroccan bazaar with hanging woven carpets, brass lanterns, and shafts of sunlight",
-        "sleek black sports car parked on an empty wet mountain serpentine road, low-key headlights piercing mist"
-    ]
-    random_theme = random.choice(creative_themes)
-
     system_instruction = (
-        "You are an expert AI image prompt engineer for state-of-the-art diffusion models (Krea, Flux, SDXL).\n"
-        "Your task is to generate a concise, visually concrete, highly effective image prompt.\n\n"
-        "CORE RULES FOR DIFFUSION PROMPTING:\n"
-        "1. STRICTLY VISUAL: Describe ONLY visible physical elements (subject, clothing, pose, setting, lighting, camera angle, textures). NEVER describe invisible sensations: no sounds, no music, no smells/fragrances, no internal feelings, and no abstract poetic metaphors (e.g. avoid 'gentle embrace of', 'scent of pine', 'echoing whispers').\n"
-        "2. CONCISE & DENSE: Exactly 1 to 2 complete, well-structured visual sentences (30 to 45 words maximum). Do NOT write paragraphs, stories, or conversational filler.\n"
-        "3. PROVEN STRUCTURE: [Subject & action/expression], [environment & key background props], [lighting & color atmosphere], [camera framing / lens perspective / depth of field], [textures & artistic style].\n"
-        "4. NO QUALITY BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece, hyperdetailed'. Use tangible photographic and lighting cues instead.\n"
-        "5. COMPLETE ENDING: Always finish your sentence completely with a period before reaching 50 words.\n\n"
-        "FEW-SHOT EXAMPLES:\n"
-        "- Example 1 (Urban Character):\n"
-        "  A stylish young woman in a tailored camel trench coat standing on a wet Tokyo crosswalk at twilight, vibrant neon reflections on slick asphalt, candid medium-close shot, 50mm f/1.4 lens, soft creamy bokeh.\n"
-        "- Example 2 (Environment / Setting):\n"
-        "  A sunlit Mediterranean stone terrace with terracotta potted lemon trees and climbing bougainvillea, bathed in warm golden hour sunlight with long diagonal shadows, wide establishing shot, vibrant natural colors.\n"
-        "- Example 3 (Moody Portrait):\n"
-        "  Close-up portrait of a thoughtful man in a dark turtleneck looking through a rain-streaked cafe window, soft diffuse ambient tungsten lighting, shallow depth of field, subtle 35mm film grain.\n"
-        "- Example 4 (Dynamic Action):\n"
-        "  An athletic runner leaping across a brutalist concrete rooftop against a dramatic stormy sky, dynamic low-angle tracking shot, high shutter speed motion freeze, cool desaturated cinematic color grading.\n\n"
-        "Output ONLY the final prompt text. No quotes, no intro, no labels."
+        "You are an avant-garde visual artist and AI cinematographer for state-of-the-art diffusion models.\n"
+        "Your mission is to invent a completely original, unexpected, visually breathtaking image prompt from scratch.\n"
+        "Explore infinite creative possibilities across any subject: candid human moments, exotic wildlife, architectural marvels, surreal dreams, historical eras, atmospheric sci-fi, culinary art, macro nature, or dramatic fashion.\n"
+        "Every single prompt must be a fresh, bold, distinctive visual concept unlike any other.\n\n"
+        "PROMPT RULES:\n"
+        "1. VISUAL ONLY: Describe physical subjects, pose, clothing, setting, lighting, camera framing, textures. Avoid abstract feelings, sounds, or poetry.\n"
+        "2. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
+        "3. NO BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece'. Use concrete photographic, optical, and lighting details.\n"
+        "4. OUTPUT FORMAT: Output ONLY the prompt text. No quotes, no intro, no labels."
     )
 
-    user_parts = [f"Distinct visual theme: {random_theme}."]
+    user_parts = []
     if persona_name or persona_prompt:
         char_desc = persona_name
         if persona_prompt:
             char_desc += f" ({persona_prompt})"
         user_parts.append(f"Subject to depict: {char_desc}.")
     if style:
-        user_parts.append(f"Aesthetic style: {style}.")
+        user_parts.append(f"Visual style: {style}.")
 
     # Only incorporate keywords if they are a brief user concept (<= 4 words, no sentences)
-    # This prevents recycling previous full prompts when clicking the random button repeatedly
     clean_kw = (keywords or "").strip()
     words = clean_kw.split()
     if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
         user_parts.append(f"Incorporate this user topic: {clean_kw}.")
     else:
-        user_parts.append(f"Create a fresh, brand-new photographic scene (variation {random.randint(100, 999)}).")
+        user_parts.append(
+            f"Invent a completely spontaneous, unexpected, original scene with rich visual atmosphere (seed {random.randint(1000, 999999)})."
+        )
 
     user_content = " ".join(user_parts)
 
@@ -5230,9 +5197,11 @@ async def generate_random_creative_prompt(
         "model": model,
         "stream": False,
         "options": {
-            "temperature": 0.92,
+            "temperature": 1.0,
             "top_p": 0.95,
-            "num_predict": 160
+            "presence_penalty": 1.0,
+            "frequency_penalty": 1.0,
+            "num_predict": 120
         }
     }
 
