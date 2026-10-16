@@ -1860,7 +1860,8 @@ def cleanup_ephemeral_images():
 
 
 def schedule_generated_image_push(omd_key: str, device_push, filename: str, image_data: bytes,
-                                  title: str = "", description: str = "", ctx: user_context.UserContext | None = None):
+                                  title: str = "", description: str = "", ctx: user_context.UserContext | None = None,
+                                  prompt: str = ""):
     """Fire-and-forget p2p-пуш сгенерированного фото на устройство пользователя.
 
     `device_push` клиент выдаёт заранее: `{linkId, consentToken, folder}` из
@@ -1878,7 +1879,7 @@ def schedule_generated_image_push(omd_key: str, device_push, filename: str, imag
             return
         logging.info(f"[device_push] Scheduling P2P push for {filename} to {device_push.get('linkId')} (folder={device_push.get('folder')})")
         _dp.schedule_generated_image_push(
-            omd_key, device_push, filename, image_data, title, description, ctx=ctx,
+            omd_key, device_push, filename, image_data, title, description, ctx=ctx, prompt=prompt
         )
     except Exception as exc:
         logging.warning(f"device_push scheduling failed: {exc}")
@@ -2027,7 +2028,7 @@ def get_omd_key(
         logging.info(f"omd_key found in cookie: {cookie_token[:10]}...")
         return cookie_token
 
-    logging.warning("No omd_key found in request")
+    logging.debug("No omd_key found in request")
     return None
 
 @app.get("/search")
@@ -2225,6 +2226,8 @@ class KreaGenerateInput(BaseModel):
     persona_id: str | None = None
     persona_name: str | None = None
     persona_prompt: str | None = None
+    persona_lora: str | None = None
+    force_avatar_ref: bool | None = False
     reference_image: str | None = None
     reference_images: list[str] | None = None
     sliders: dict | None = None
@@ -2253,8 +2256,11 @@ class RandomPromptInput(BaseModel):
     persona_id: str | None = None
     persona_name: str | None = None
     persona_prompt: str | None = None
+    persona_lora: str | None = None
     style: str | None = None
     keywords: str | None = None
+    archetypes: str | None = None
+    loras: str | None = None
     chat: str = "default"
 
 
@@ -4063,7 +4069,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
-                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description, ctx=ctx)
+                    schedule_generated_image_push(omd_key, device_push, path, res[3], title, description, ctx=ctx, prompt=img_prompt)
                 image_url = f"/chat/image/{path}"
                 img_payload = {'path': path, 'title': title, 'description': description, 'url': image_url, 'prompt': img_prompt}
                 yield f"data: {json.dumps({'prompt': img_prompt, 'prompt_id': prompt_id, 'image': img_payload, 'tokens_consumed': ctx.tokens_consumed, 'done': True})}\n\n"
@@ -4322,6 +4328,10 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             ctx=ctx,
             prompt=data.prompt,
             persona_prompt=data.persona_prompt or "",
+            persona_lora=data.persona_lora,
+            persona_id=data.persona_id,
+            persona_name=data.persona_name,
+            force_avatar_ref=bool(data.force_avatar_ref),
             sliders=data.sliders,
             reference_image=ref_imgs[0] if ref_imgs else None,
             reference_images=ref_imgs,
@@ -4373,35 +4383,40 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             "title": "Domi / Mysterious Charisma",
             "passport": "DomiK, attractive woman with piercing hazel gaze, shoulder-length stylish layered haircut, confident radiant smile, modern chic outfit, magnetic presence",
             "style": "photorealistic",
-            "archetype": "domi"
+            "archetype": "domi",
+            "lora": "DomiK4.safetensors"
         },
         "ada": {
             "names": ["Ада", "Ada", "Ada Wong"],
             "title": "Femme Fatale Secret Agent",
             "passport": "ada_wong, short sleek black bob hair, elegant crimson silk dress, captivating dark eyes, confident enigmatic expression, cinematic espionage aesthetics",
             "style": "cinematic",
-            "archetype": "ada"
+            "archetype": "ada",
+            "lora": "ada_wong.safetensors"
         },
         "brie": {
             "names": ["Бри", "Brie", "Bella", "Brooke"],
             "title": "Cheerful Blonde Beauty",
             "passport": "kxbrie woman, blonde wavy hair, sparkling blue eyes, radiant playful smile, sun-kissed natural complexion, stylish casual summer attire",
             "style": "photorealistic",
-            "archetype": "brie"
+            "archetype": "brie",
+            "lora": "kxbrie.safetensors"
         },
         "alt": {
             "names": ["Кира", "Лира", "Ника", "Raven", "Roxy", "Marta"],
             "title": "Alt / Goth Girl",
             "passport": "Young alternative woman with chin-length jet-black hair with vibrant purple streaks, dark winged eyeliner, small silver nose ring, velvet choker, expressive moody gaze, pale skin, edgy alternative chic",
             "style": "alt",
-            "archetype": "alt"
+            "archetype": "alt",
+            "lora": "BSS_AJlbTyIIIKu_V20_Krea2.safetensors"
         },
         "influencer": {
             "names": ["София", "Эмма", "Мия", "Chloe", "Valerie", "Diana"],
             "title": "Instagram Influencer",
             "passport": "Stunning 22-year-old lifestyle influencer with long wavy honey-blonde hair, warm hazel eyes, glowing tanned skin, soft natural makeup, charming candid smile, chic oversized knitted cardigan, golden hour warmth",
             "style": "influencer",
-            "archetype": "influencer"
+            "archetype": "influencer",
+            "lora": "Famegrid-Natural-V1-Krea-2.safetensors"
         },
         "business": {
             "names": ["Виктория", "Елена", "Claire", "Diane", "Ingrid"],
@@ -4429,7 +4444,8 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             "title": "Legendary Heroine",
             "passport": "Stunning athletic martial artist with long waist-length glossy black hair tied in dolphin-tail tip, captivating ruby-red eyes, toned athletic build, leather fingerless gloves, iconic white top with suspenders",
             "style": "photorealistic",
-            "archetype": "tifa"
+            "archetype": "tifa",
+            "lora": "tifa_lockhart_krea2.safetensors"
         }
     }
 
@@ -4474,6 +4490,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
         "title": title,
         "prompt": passport,
         "archetype": arch_key,
+        "lora": arch.get("lora", ""),
         "style": style,
         "avatar": b64_str,
         "avatarData": b64_str
@@ -4569,6 +4586,8 @@ async def get_personas_endpoint(omd_key: str | None = Depends(get_omd_key)):
             "name": ctx.settings.get("assistant_name", "June"),
             "title": ctx.settings.get("assistant_title", "Junior Assistant"),
             "prompt": june_desc.strip(),
+            "archetype": "domi",
+            "lora": "DomiK4.safetensors",
             "avatar": "/assistant/avatar?size=160",
             "avatar_url": "/assistant/avatar?size=160",
             "is_default": True
@@ -4651,16 +4670,24 @@ async def generate_general_image_prompt(request: Request, data: GenerateInput):
 
 
 @app.post("/generate/prompt/random")
-async def generate_random_prompt_endpoint(request: Request, data: RandomPromptInput):
-    ctx = get_ctx(data.omd_key)
+async def generate_random_prompt_endpoint(
+    request: Request,
+    data: RandomPromptInput,
+    omd_key: str | None = Depends(get_omd_key)
+):
+    effective_key = data.omd_key or omd_key or ""
+    ctx = get_ctx(effective_key)
     ctx.private_mode = trusted_private_access(request, ctx)
     try:
         result = await core_service.generate_random_creative_prompt(
             ctx,
             persona_name=data.persona_name or "",
             persona_prompt=data.persona_prompt or "",
+            persona_lora=data.persona_lora or "",
             style=data.style or "",
-            keywords=data.keywords or ""
+            keywords=data.keywords or "",
+            archetypes=data.archetypes or "",
+            loras=data.loras or ""
         )
         return {"prompt": result}
     except Exception as e:

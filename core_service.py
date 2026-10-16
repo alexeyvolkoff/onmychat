@@ -181,11 +181,11 @@ IMPROVEMENT_PROMPT = get_prompt("improvement.txt")
 RECOGNITION_PROMPT = get_prompt("recognition.txt")
 
 STYLE_MODELS = {
-    "realistic": SETTINGS["REALISTIC_MODEL"],
-    "realistic2": SETTINGS.get("REALISTIC2_MODEL", SETTINGS["REALISTIC_MODEL"]),
-    "perfect": SETTINGS["PERFECT_MODEL"],
-    "fantasy": SETTINGS["FANTASY_MODEL"],
-    "tooned": SETTINGS["TOONED_MODEL"],
+    "realistic": SETTINGS.get("REALISTIC_MODEL", "CyberRealisticXLPlay_V10.0_FP16.safetensors"),
+    "realistic2": SETTINGS.get("REALISTIC2_MODEL", SETTINGS.get("REALISTIC_MODEL", "CyberRealisticXLPlay_V10.0_FP16.safetensors")),
+    "perfect": SETTINGS.get("PERFECT_MODEL", "cyberrealisticPony_v180Coreshift.safetensors"),
+    "fantasy": SETTINGS.get("FANTASY_MODEL", "CyberIllustrious_V12_FP16.safetensors"),
+    "tooned": SETTINGS.get("TOONED_MODEL", "CyberRealistic_PonySemi_V5.safetensors"),
 }
 
 NEGATIVE_PROMPTS = get_json_prompt("negative_prompts.json")
@@ -5151,7 +5151,8 @@ async def generate_random_creative_prompt(
     persona_name: str = "",
     persona_prompt: str = "",
     style: str = "",
-    keywords: str = ""
+    keywords: str = "",
+    archetypes: str = ""
 ) -> str:
     """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
     model = get_fast_model(ctx)
@@ -5169,11 +5170,18 @@ async def generate_random_creative_prompt(
     )
 
     user_parts = []
+    if archetypes:
+        user_parts.append(
+            f"The image MUST feature and portray the character archetype(s): {archetypes}. "
+            "Incorporate their distinctive appearance, aesthetic, hair, styling, and presence into the scene."
+        )
+
     if persona_name or persona_prompt:
         char_desc = persona_name
         if persona_prompt:
             char_desc += f" ({persona_prompt})"
-        user_parts.append(f"Subject to depict: {char_desc}.")
+        user_parts.append(f"Depict character identity: {char_desc}.")
+
     if style:
         user_parts.append(f"Visual style: {style}.")
 
@@ -5181,11 +5189,9 @@ async def generate_random_creative_prompt(
     clean_kw = (keywords or "").strip()
     words = clean_kw.split()
     if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
-        user_parts.append(f"Incorporate this user topic: {clean_kw}.")
+        user_parts.append(f"Incorporate user theme: {clean_kw}.")
     else:
-        user_parts.append(
-            f"Invent a completely spontaneous, unexpected, original scene with rich visual atmosphere (seed {random.randint(1000, 999999)})."
-        )
+        user_parts.append("Invent a fresh, completely original scene with rich visual atmosphere and cinematic lighting.")
 
     user_content = " ".join(user_parts)
 
@@ -5216,6 +5222,8 @@ async def generate_random_creative_prompt(
         if prompt:
             # Clean up potential LLM prefixes or quotation marks
             prompt = re.sub(r'^(Prompt|Image|Description):\s*', '', prompt, flags=re.IGNORECASE).strip('"\n ')
+            # Strip any accidental seed mentions if LLM hallucinates it
+            prompt = re.sub(r'\b(in\s+seed\s*\d+|seed\s*\d+)\b', '', prompt, flags=re.IGNORECASE).strip(' ,')
             # If the prompt was abruptly truncated mid-sentence, trim back to the last complete sentence
             if prompt and prompt[-1] not in ".!?":
                 last_punct = max(prompt.rfind("."), prompt.rfind("!"), prompt.rfind("?"))
