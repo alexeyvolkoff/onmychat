@@ -2841,6 +2841,67 @@ async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None
     return None
 
 
+KREA_PRESETS_FILE = os.path.join(os.path.dirname(__file__), "krea_presets.json")
+_KREA_PRESETS_CACHE = None
+
+def get_krea_presets() -> dict:
+    """Загружает единый конфигурационный файл стилей и LoRA для Krea 2."""
+    global _KREA_PRESETS_CACHE
+    if _KREA_PRESETS_CACHE is not None:
+        return _KREA_PRESETS_CACHE
+
+    cand_paths = [
+        KREA_PRESETS_FILE,
+        "/content/onmychat/krea_presets.json",
+        os.path.join(APP_ROOT_DIR, "krea_presets.json"),
+    ]
+    for cp in cand_paths:
+        if os.path.isfile(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    _KREA_PRESETS_CACHE = json.load(f)
+                    return _KREA_PRESETS_CACHE
+            except Exception as e:
+                logging.warning(f"[KreaPresets] Error reading {cp}: {e}")
+    return {"art_styles": [], "archetypes": []}
+
+
+def get_krea_style_configs() -> dict[str, dict]:
+    """Возвращает словарь конфигураций стилей, сгенерированный из krea_presets.json."""
+    presets = get_krea_presets()
+    configs = {}
+    for item in presets.get("art_styles", []):
+        s_id = item.get("id")
+        if not s_id:
+            continue
+        configs[s_id] = {
+            "trigger": item.get("trigger", ""),
+            "lora": item.get("filename", ""),
+            "strength": float(item.get("strength", 0.85)),
+            "name": item.get("name", s_id),
+            "description": item.get("description", "")
+        }
+    return configs
+
+
+def get_krea_archetype_configs() -> dict[str, dict]:
+    """Возвращает словарь конфигураций архетипов персонажей из krea_presets.json."""
+    presets = get_krea_presets()
+    configs = {}
+    for item in presets.get("archetypes", []):
+        a_id = item.get("id")
+        if not a_id:
+            continue
+        configs[a_id] = {
+            "trigger": item.get("trigger", ""),
+            "lora": item.get("filename", ""),
+            "strength": float(item.get("strength", 0.8)),
+            "name": item.get("name", a_id),
+            "description": item.get("description", "")
+        }
+    return configs
+
+
 async def generate_krea2_image(
     ctx: UserContext,
     prompt: str,
@@ -2915,90 +2976,26 @@ async def generate_krea2_image(
 
     target_loras = []
 
-    # 1. Art Styles (Dedicated Style LoRAs & rendering aesthetics)
-    STYLE_CONFIGS = {
-        "anime": {
-            "trigger": "anime style, vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics",
-            "lora": "k2-anime-classic-flat.safetensors",
-            "strength": 0.85
-        },
-        "semireal": {
-            "trigger": "semireal, 2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features",
-            "lora": "eiko_semireal_krea2.safetensors",
-            "strength": 0.85
-        },
-        "pinup": {
-            "trigger": "technicolor, vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition",
-            "lora": "technicolor_pinup_krea2.safetensors",
-            "strength": 0.85
-        },
-        "pixar": {
-            "trigger": "KR2Pix, 3d pixar animation style, expressive stylized character, vibrant Disney Pixar aesthetics, 3d digital render",
-            "lora": "pure_pixar_3d_krea2.safetensors",
-            "strength": 0.85
-        },
-        "comic": {
-            "trigger": "Bradhamel art style, comic book illustration, dynamic ink lines, graphic novel aesthetics, stylized comic art",
-            "lora": "krea_comics.safetensors",
-            "strength": 0.8
-        },
-        "midjourney": {
-            "trigger": "midjourney style, artistic concept art, ethereal atmospheric lighting, stunning composition, masterpiece",
-            "lora": "krea_midjourney.safetensors",
-            "strength": 0.8
-        }
-    }
+    # 1. Art Styles (Loaded dynamically from krea_presets.json)
+    STYLE_CONFIGS = get_krea_style_configs()
 
     # Style alias normalization
     if style_preset in ["art"]:
         style_preset = "semireal"
     elif style_preset in ["3d"]:
         style_preset = "pixar"
+    elif style_preset in ["cyberpunk"]:
+        style_preset = "neon"
 
     if style_preset in STYLE_CONFIGS:
         cfg_style = STYLE_CONFIGS[style_preset]
-        full_parts.append(cfg_style["trigger"])
-        target_loras.append((cfg_style["lora"], cfg_style["strength"]))
-    elif style_preset == "photorealistic":
-        full_parts.append("8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight")
-    elif style_preset == "cinematic":
-        full_parts.append("cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain")
-    elif style_preset in ["neon", "cyberpunk"]:
-        full_parts.append("neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast")
+        if cfg_style.get("trigger"):
+            full_parts.append(cfg_style["trigger"])
+        if cfg_style.get("lora"):
+            target_loras.append((cfg_style["lora"], cfg_style["strength"]))
 
-    # 2. Character Archetypes & Likeness LoRAs (supports multiple simultaneous archetypes)
-    ARCHETYPE_CONFIGS = {
-        "domi": {
-            "trigger": "DomiK, attractive woman, piercing gaze, modern stylish look",
-            "lora": "DomiK4.safetensors",
-            "strength": 0.8
-        },
-        "ada": {
-            "trigger": "ada_wong, short black bob hair, crimson dress, confident femme fatale gaze",
-            "lora": "ada_wong.safetensors",
-            "strength": 0.8
-        },
-        "brie": {
-            "trigger": "kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile",
-            "lora": "kxbrie.safetensors",
-            "strength": 0.8
-        },
-        "tifa": {
-            "trigger": "tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait",
-            "lora": "tifa_lockhart_krea2.safetensors",
-            "strength": 0.8
-        },
-        "alt": {
-            "trigger": "alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere",
-            "lora": "BSS_AJlbTyIIIKu_V20_Krea2.safetensors",
-            "strength": 0.75
-        },
-        "influencer": {
-            "trigger": "famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed",
-            "lora": "Famegrid-Natural-V1-Krea-2.safetensors",
-            "strength": 0.7
-        }
-    }
+    # 2. Character Archetypes & Likeness LoRAs (Loaded dynamically from krea_presets.json)
+    ARCHETYPE_CONFIGS = get_krea_archetype_configs()
 
     raw_archetypes = sliders.get("archetypes") or sliders.get("archetype") or []
     if isinstance(raw_archetypes, str):

@@ -1,0 +1,156 @@
+{
+  "art_styles": [
+    {
+      "id": "photorealistic",
+      "name": "Photorealistic",
+      "description": "8K UHD photorealism, natural skin texture, realistic daylight",
+      "icon": "📸",
+      "filename": "",
+      "url": "",
+      "trigger": "8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight",
+      "strength": 1.0
+    },
+    {
+      "id": "semireal",
+      "name": "Semi-Real",
+      "description": "2.5D digital art & semi-realistic illustration",
+      "icon": "🎨",
+      "filename": "eiko_semireal_krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3206634",
+      "trigger": "semireal, 2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features",
+      "strength": 0.85
+    },
+    {
+      "id": "anime",
+      "name": "Anime",
+      "description": "Classic flat 2D anime style with clean lines",
+      "icon": "🌸",
+      "filename": "k2-anime-classic-flat.safetensors",
+      "url": "https://civitai.com/api/download/models/3395512",
+      "trigger": "anime style, vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics",
+      "strength": 0.85
+    },
+    {
+      "id": "pinup",
+      "name": "Pin-up",
+      "description": "Vintage 1950s technicolor glamour pin-up art",
+      "icon": "🍒",
+      "filename": "technicolor_pinup_krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3124790",
+      "trigger": "technicolor, vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition",
+      "strength": 0.85
+    },
+    {
+      "id": "pixar",
+      "name": "3D Pixar",
+      "description": "Expressive 3D Disney Pixar animation aesthetics",
+      "icon": "🧸",
+      "filename": "pure_pixar_3d_krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3374517",
+      "trigger": "KR2Pix, 3d pixar animation style, expressive stylized character, vibrant Disney Pixar aesthetics, 3d digital render",
+      "strength": 0.85
+    },
+    {
+      "id": "comic",
+      "name": "Comic Book",
+      "description": "Graphic novel art with dynamic ink linework",
+      "icon": "💥",
+      "filename": "krea_comics.safetensors",
+      "url": "https://civitai.com/api/download/models/3081942",
+      "trigger": "Bradhamel art style, comic book illustration, dynamic ink lines, graphic novel aesthetics, stylized comic art",
+      "strength": 0.8
+    },
+    {
+      "id": "midjourney",
+      "name": "Midjourney",
+      "description": "Artistic concept art with atmospheric lighting",
+      "icon": "🌌",
+      "filename": "krea_midjourney.safetensors",
+      "url": "https://civitai.com/api/download/models/3095398",
+      "trigger": "midjourney style, artistic concept art, ethereal atmospheric lighting, stunning composition, masterpiece",
+      "strength": 0.8
+    },
+    {
+      "id": "cinematic",
+      "name": "Cinematic",
+      "description": "35mm movie film still with anamorphic bokeh",
+      "icon": "🎬",
+      "filename": "",
+      "url": "",
+      "trigger": "cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain",
+      "strength": 1.0
+    },
+    {
+      "id": "neon",
+      "name": "Neon Noir",
+      "description": "Cyberpunk night city reflections & glowing neon signage",
+      "icon": "⚡",
+      "filename": "",
+      "url": "",
+      "trigger": "neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast",
+      "strength": 1.0
+    }
+  ],
+  "archetypes": [
+    {
+      "id": "domi",
+      "name": "Domi",
+      "description": "Charismatic modern stylish woman with piercing gaze",
+      "icon": "💎",
+      "filename": "DomiK4.safetensors",
+      "url": "https://civitai.com/api/download/models/3194285",
+      "trigger": "DomiK, attractive woman, piercing gaze, modern stylish look",
+      "strength": 0.8
+    },
+    {
+      "id": "ada",
+      "name": "Ada Wong",
+      "description": "Confident femme fatale in crimson dress",
+      "icon": "🌹",
+      "filename": "ada_wong.safetensors",
+      "url": "https://civitai.com/api/download/models/3345019",
+      "trigger": "ada_wong, short black bob hair, crimson dress, confident femme fatale gaze",
+      "strength": 0.8
+    },
+    {
+      "id": "brie",
+      "name": "Brie",
+      "description": "Cheerful blonde beauty with playful radiant smile",
+      "icon": "☀️",
+      "filename": "kxbrie.safetensors",
+      "url": "https://civitai.com/api/download/models/3402541",
+      "trigger": "kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile",
+      "strength": 0.8
+    },
+    {
+      "id": "tifa",
+      "name": "Tifa",
+      "description": "Athletic heroine with ruby red eyes and tied dark hair",
+      "icon": "🗡️",
+      "filename": "tifa_lockhart_krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3095366",
+      "trigger": "tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait",
+      "strength": 0.8
+    },
+    {
+      "id": "alt",
+      "name": "Alt Girl",
+      "description": "Moody goth aesthetic with eyeliner, choker & colored hair",
+      "icon": "🖤",
+      "filename": "BSS_AJlbTyIIIKu_V20_Krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3357162",
+      "trigger": "alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere",
+      "strength": 0.75
+    },
+    {
+      "id": "influencer",
+      "name": "Influencer",
+      "description": "Candid lifestyle portrait with natural golden hour look",
+      "icon": "📱",
+      "filename": "Famegrid-Natural-V1-Krea-2.safetensors",
+      "url": "https://civitai.com/api/download/models/3248281",
+      "trigger": "famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed",
+      "strength": 0.7
+    }
+  ]
+}

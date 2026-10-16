@@ -4658,6 +4658,12 @@ async def get_persona_avatar_endpoint(persona_id: str, omd_key: str | None = Dep
     raise HTTPException(status_code=404, detail="Avatar not found")
 
 
+@app.get("/krea/presets")
+async def get_krea_presets_endpoint():
+    """Отдает единый реестр стилей и LoRA для Krea Studio из krea_presets.json."""
+    return core_service.get_krea_presets()
+
+
 
 
 
