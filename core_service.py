@@ -5162,9 +5162,12 @@ async def generate_random_creative_prompt(
     ctx: UserContext,
     persona_name: str = "",
     persona_prompt: str = "",
+    persona_lora: str = "",
     style: str = "",
     keywords: str = "",
-    archetypes: str = ""
+    archetypes: str = "",
+    loras: str = "",
+    **kwargs
 ) -> str:
     """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
     model = get_fast_model(ctx)
@@ -5193,9 +5196,17 @@ async def generate_random_creative_prompt(
         if persona_prompt:
             char_desc += f" ({persona_prompt})"
         user_parts.append(f"Depict character identity: {char_desc}.")
+    elif persona_lora:
+        clean_lora = persona_lora.replace(".safetensors", "").replace("_", " ")
+        user_parts.append(f"Depict character features matching {clean_lora}.")
 
     if style:
         user_parts.append(f"Visual style: {style}.")
+
+    if loras:
+        clean_loras = loras.strip()
+        if clean_loras:
+            user_parts.append(f"Visual elements: {clean_loras}.")
 
     # Only incorporate keywords if they are a brief user concept (<= 4 words, no sentences)
     clean_kw = (keywords or "").strip()
@@ -5249,6 +5260,8 @@ async def generate_random_creative_prompt(
 
     # Rich procedural fallback if LLM is completely unavailable
     char_lead = f"{persona_name}, " if persona_name else ""
+    if not char_lead and archetypes:
+        char_lead = f"{archetypes}, "
     actions = [
         "standing thoughtfully on an open balcony overlooking a misty skyline",
         "walking briskly through a rain-drenched alleyway lined with glowing paper lanterns",
