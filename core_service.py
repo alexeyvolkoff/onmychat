@@ -2736,9 +2736,11 @@ def save_persona_to_disk(persona_data: dict, ctx: UserContext | None = None) -> 
         except Exception as e:
             logging.warning(f"[Personas] Failed to save persona avatar: {e}")
 
-    # Сохраняем компактный JSON (без тяжелого base64 avatarData)
+    # Сохраняем компактный JSON (без тяжелого base64 avatarData и без чувствительных ключей)
     json_obj = dict(persona_data)
     json_obj.pop("avatarData", None)
+    json_obj.pop("omd_key", None)
+    json_obj.pop("save_local", None)
     if json_obj.get("avatar", "").startswith("data:"):
         json_obj["avatar"] = f"/personas/{p_id}/avatar"
     if not json_obj.get("avatar_url") and os.path.isfile(os.path.join(target_dir, f"{p_id}.png")):

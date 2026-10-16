@@ -4599,17 +4599,44 @@ async def get_personas_endpoint(omd_key: str | None = Depends(get_omd_key)):
 
 @app.post("/personas")
 async def save_persona_endpoint(request: Request, data: dict):
-    """Сохраняет персону (.json и .png) в папку personas рядом с generated."""
+    """Сохраняет персону (.json и .png) в папку personas рядом с generated только для владельца ноды при save_local=True."""
     omd_key = data.get("omd_key")
     ctx = get_ctx(omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+
+    is_owner = False
+    try:
+        is_owner = validated_node_owner(ctx)
+    except Exception:
+        is_owner = False
+
+    # Персоны гостей и персоны на удаленных накопителях НЕ сохраняются на диск ноды
+    if not is_owner or not data.get("save_local", False):
+        p_id = data.get("id") or "unnamed"
+        logging.info(
+            f"[Personas] Not saving on AI node: is_owner={is_owner}, save_local={data.get('save_local')} "
+            f"(persona='{p_id}', user='{ctx.user_id}')"
+        )
+        resp_persona = dict(data)
+        resp_persona.pop("omd_key", None)
+        return {"status": "ok", "persona": resp_persona, "saved_locally": False}
+
     saved = core_service.save_persona_to_disk(data, ctx)
-    return {"status": "ok", "persona": saved}
+    return {"status": "ok", "persona": saved, "saved_locally": True}
 
 
 @app.delete("/personas/{persona_id}")
 async def delete_persona_endpoint(persona_id: str, omd_key: str | None = Depends(get_omd_key)):
-    """Удаляет персону (.json и .png) из папки personas."""
+    """Удаляет персону (.json и .png) из папки personas владельца ноды."""
     ctx = get_ctx(omd_key)
+    is_owner = False
+    try:
+        is_owner = validated_node_owner(ctx)
+    except Exception:
+        is_owner = False
+    if not is_owner:
+        logging.info(f"[Personas] Rejecting delete on AI node: not owner (user='{ctx.user_id}')")
+        return {"status": "ok", "deleted": False, "reason": "not_owner"}
     success = core_service.delete_persona_from_disk(persona_id, ctx)
     return {"status": "ok", "deleted": success}
 
