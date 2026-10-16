@@ -4447,15 +4447,25 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             "archetype": "tifa",
             "lora": "tifa_lockhart_krea2.safetensors"
         }
-    }
+    krea_data = core_service.get_krea_presets()
+    krea_archetypes = {a["id"]: a for a in krea_data.get("archetypes", []) if "id" in a}
 
-    arch_key = data.archetype if data.archetype in archetype_presets else "alt"
-    arch = archetype_presets[arch_key]
+    arch_key = data.archetype if (data.archetype in krea_archetypes or data.archetype in archetype_presets) else "alt"
 
-    name = random.choice(arch["names"])
-    title = arch["title"]
-    passport = arch["passport"]
-    style = data.style or arch["style"]
+    if arch_key in krea_archetypes:
+        k_arch = krea_archetypes[arch_key]
+        name = k_arch.get("name", arch_key)
+        title = f"{k_arch.get('name', arch_key)} / {k_arch.get('description', '')}"
+        passport = k_arch.get("trigger", "")
+        style = data.style or "photorealistic"
+        arch_val = arch_key
+    else:
+        arch = archetype_presets[arch_key]
+        name = random.choice(arch["names"])
+        title = arch["title"]
+        passport = arch["passport"]
+        style = data.style or arch["style"]
+        arch_val = arch.get("archetype")
 
     timestamp = int(time.time())
     persona_id = f"persona_{arch_key}_{timestamp}"
