@@ -2943,12 +2943,19 @@ async def generate_krea2_image(
 
     comfy_ref_name = comfy_ref_names[0] if comfy_ref_names else None
 
-    # Объединяем словесный паспорт персоны и пользовательский сюжет
+    # Объединяем сюжет и словесный паспорт персоны.
+    # Промпт сюжета (ракурс, сцена, динамика) ставим ПЕРВЫМ, чтобы композиция кадра
+    # определяла начальный латентный шум и не схлопывалась в крупный портрет.
     full_parts = []
-    if persona_prompt and persona_prompt.strip():
-        full_parts.append(persona_prompt.strip())
     if prompt and prompt.strip():
         full_parts.append(prompt.strip())
+    if persona_prompt and persona_prompt.strip():
+        # Срезаем префиксы "portrait of / headshot of / close-up of" из паспорта,
+        # если задан сюжетный промпт, чтобы сохранить масштаб и ракурс сцены
+        cleaned_persona = persona_prompt.strip()
+        if prompt and prompt.strip():
+            cleaned_persona = re.sub(r'^(a\s+)?(portrait|close-up|headshot|bust\s+portrait)\s+of\s+', '', cleaned_persona, flags=re.IGNORECASE)
+        full_parts.append(cleaned_persona)
 
     # Применяем микро-слайдеры параметров
     sliders = sliders or {}
@@ -5157,6 +5164,42 @@ async def generate_general_image_prompt(ctx: UserContext, prompt, chat="default"
     return await generate_image_prompt(ctx, SYSTEM_INSTRUCTION_GENERAL, prompt, chat, history)
 
 
+DYNAMIC_COMPOSITIONS = [
+    {
+        "framing": "cinematic wide full-body shot",
+        "description": "Show the subject's entire body from head to shoes fully immersed within a vast, highly detailed physical environment or architecture."
+    },
+    {
+        "framing": "dynamic action shot in motion",
+        "description": "Capture the subject mid-movement with kinetic body posture: walking briskly, running, turning sharply, leaping, or navigating obstacles."
+    },
+    {
+        "framing": "dramatic low-angle ground perspective",
+        "description": "Camera positioned at foot or ground level looking upward, creating a towering heroic perspective against soaring architecture, trees, or sky."
+    },
+    {
+        "framing": "overhead high-angle crane shot",
+        "description": "Artistic bird's-eye perspective looking down from above, capturing the subject amidst intricate geometric floor patterns, stairs, and long shadows."
+    },
+    {
+        "framing": "candid storytelling scene",
+        "description": "Subject deeply absorbed in an intricate physical activity, craft, mechanical repair, navigation, or expedition, completely unposed and not looking at camera."
+    },
+    {
+        "framing": "cinematic Dutch angle frame",
+        "description": "Tilted dynamic framing with dramatic diagonal lines, foreground environmental layers, and deep three-dimensional space."
+    },
+    {
+        "framing": "three-quarter cowboy shot from knees up",
+        "description": "Framed from mid-thigh up with active hand gestures, interacting with tools, machinery, vehicles, architectural elements, or props."
+    },
+    {
+        "framing": "grand environmental panoramic shot",
+        "description": "Subject integrated into a majestic grand scale landscape, urban crosswalk, monumental bridge, or dramatic natural phenomenon."
+    }
+]
+
+
 async def generate_random_creative_prompt(
     ctx: UserContext,
     persona_name: str = "",
@@ -5168,26 +5211,32 @@ async def generate_random_creative_prompt(
     loras: str = "",
     **kwargs
 ) -> str:
-    """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
+    """Generate a truly creative, imaginative, dynamic and evocative visual prompt for Krea 2 using LLM."""
     model = get_fast_model(ctx)
 
+    # Randomly select a distinct composition & camera angle to guarantee diverse staging
+    comp = random.choice(DYNAMIC_COMPOSITIONS)
+
     system_instruction = (
-        "You are an avant-garde visual artist and AI cinematographer for state-of-the-art diffusion models.\n"
-        "Your mission is to invent a completely original, unexpected, visually breathtaking image prompt from scratch.\n"
-        "Explore infinite creative possibilities across any subject: candid human moments, exotic wildlife, architectural marvels, surreal dreams, historical eras, atmospheric sci-fi, culinary art, macro nature, or dramatic fashion.\n"
-        "Every single prompt must be a fresh, bold, distinctive visual concept unlike any other.\n\n"
-        "PROMPT RULES:\n"
-        "1. VISUAL ONLY: Describe physical subjects, pose, clothing, setting, lighting, camera framing, textures. Avoid abstract feelings, sounds, or poetry.\n"
-        "2. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
-        "3. NO BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece'. Use concrete photographic, optical, and lighting details.\n"
-        "4. OUTPUT FORMAT: Output ONLY the prompt text. No quotes, no intro, no labels."
+        "You are an avant-garde film director and AI cinematographer for state-of-the-art diffusion models.\n"
+        "Your mission is to invent a dynamic, unexpected, visually breathtaking cinematic scene from scratch.\n\n"
+        "CRITICAL COMPOSITION & DYNAMICS RULES:\n"
+        "1. STRICTLY FORBIDDEN: Static boring headshots, passport photos, simple bust studio portraits, or character staring passively at the camera.\n"
+        f"2. COMPOSITION MANDATE: You MUST build the scene around this exact framing: '{comp['framing']}'. {comp['description']}\n"
+        "3. ACTIVE DYNAMICS: The subject must be actively DOING something physical or exploring the world (walking briskly, repairing machinery, running through rain, climbing, painting, navigating, inspecting artifacts), fully integrated into a rich setting.\n"
+        "4. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
+        "5. NO META/BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece', and NEVER start with 'A photo of' or 'Capture the essence of'. Start directly with the subject, action, and shot framing.\n"
+        "6. OUTPUT ONLY the prompt text. No quotes, no intro, no labels."
     )
 
-    user_parts = []
+    user_parts = [
+        f"Framing: {comp['framing']}."
+    ]
+
     if archetypes:
         user_parts.append(
             f"The image MUST feature and portray the character archetype(s): {archetypes}. "
-            "Incorporate their distinctive appearance, aesthetic, hair, styling, and presence into the scene."
+            "Incorporate their distinctive aesthetic, hair, styling, and presence into the scene."
         )
 
     if persona_name or persona_prompt:
@@ -5205,7 +5254,7 @@ async def generate_random_creative_prompt(
     if loras:
         clean_loras = loras.strip()
         if clean_loras:
-            user_parts.append(f"Visual elements: {clean_loras}.")
+            user_parts.append(f"Visual motifs: {clean_loras}.")
 
     # Only incorporate keywords if they are a brief user concept (<= 4 words, no sentences)
     clean_kw = (keywords or "").strip()
@@ -5227,9 +5276,9 @@ async def generate_random_creative_prompt(
         "options": {
             "temperature": 1.0,
             "top_p": 0.95,
-            "presence_penalty": 1.0,
-            "frequency_penalty": 1.0,
-            "num_predict": 120
+            "presence_penalty": 1.1,
+            "frequency_penalty": 1.1,
+            "num_predict": 130
         }
     }
 
@@ -5244,6 +5293,7 @@ async def generate_random_creative_prompt(
         if prompt:
             # Clean up potential LLM prefixes or quotation marks
             prompt = re.sub(r'^(Prompt|Image|Description):\s*', '', prompt, flags=re.IGNORECASE).strip('"\n ')
+            prompt = re.sub(r'^(Capture\s+the\s+essence\s+of|A\s+(cinematic\s+)?(photo|photograph|shot)\s+of)\s+', '', prompt, flags=re.IGNORECASE)
             # Strip any accidental seed mentions if LLM hallucinates it
             prompt = re.sub(r'\b(in\s+seed\s*\d+|seed\s*\d+)\b', '', prompt, flags=re.IGNORECASE).strip(' ,')
             # If the prompt was abruptly truncated mid-sentence, trim back to the last complete sentence
@@ -5261,38 +5311,41 @@ async def generate_random_creative_prompt(
     char_lead = f"{persona_name}, " if persona_name else ""
     if not char_lead and archetypes:
         char_lead = f"{archetypes}, "
-    actions = [
-        "standing thoughtfully on an open balcony overlooking a misty skyline",
-        "walking briskly through a rain-drenched alleyway lined with glowing paper lanterns",
-        "adjusting vintage sunglasses while leaning against a polished chrome roadster",
-        "lost in contemplation inside a sunlit greenhouse surrounded by towering palms and monsteras",
-        "relaxing into a plush leather armchair beside a crackling hearth in a dimly lit library",
-        "glancing back over one shoulder with a confident smile under flickering neon signage",
-        "sipping hot coffee from a ceramic mug by a rain-streaked cafe window",
-        "standing at the bow of an antique wooden boat drifting through early morning lake mist",
-        "stepping through a minimalist concrete archway into bright dramatic desert sunlight",
-        "inspecting an intricate brass telescope in an astronomical observatory tower at night",
-        "laughing candidly at a rooftop gathering while golden twilight bathes the city",
-        "crouching with athletic poise on a wet rooftop ledge as city lights shimmer below"
+
+    dynamic_actions = [
+        "running swiftly across rain-slicked neon cobblestones, trench coat billowing in the wind",
+        "stepping purposefully down a monumental concrete spiral staircase in a brutalist art museum",
+        "kneeling on one knee to inspect intricate antique clockwork gears on a subterranean vault floor",
+        "leaning against the fender of a vintage roadster parked on an open coastal cliff overlooking crashing waves",
+        "walking full-stride through an overgrown sunlit botanical atrium surrounded by towering palms and ferns",
+        "working intently at a cluttered wooden workbench, soldering glowing vacuum tubes in a dimly lit workshop",
+        "leaping gracefully across an industrial rooftop gap against a panoramic twilight skyline",
+        "sitting cross-legged on a patterned kilim rug on an open desert terrace examining ancient star charts",
+        "perched casually on the stone balustrade of a bridge spanning a misty river in early morning light",
+        "hiking with dynamic energy along a wind-swept rocky mountain ridge as low clouds drift through the peaks",
+        "striding purposefully through a crowded neon-lit market alley under heavy rain with a transparent umbrella",
+        "skating fluidly down an oceanfront boulevard between swaying palm trees in warm afternoon light"
     ]
     lighting_list = [
         "bathed in warm golden hour rim lighting that casts long cinematic shadows",
         "illuminated by cool moody neon hues reflecting off slick wet surfaces",
-        "soft diffuse morning window light highlighting natural skin textures and hair strands",
-        "dramatic chiaroscuro lighting with deep rich blacks and vibrant highlights",
-        "dappled sunlight filtering through green foliage with gentle lens flare",
+        "soft diffuse morning skylight highlighting natural skin textures and hair strands",
+        "dramatic chiaroscuro lighting with deep rich blacks and vibrant warm highlights",
+        "dappled sunlight filtering through lush tree canopy with subtle lens flare",
         "dim atmospheric tungsten lighting creating an intimate nostalgic warmth"
     ]
     camera_list = [
-        "candid medium shot, 50mm f/1.4 lens, shallow depth of field, creamy soft bokeh",
-        "cinematic wide-angle perspective, dynamic diagonal composition, tactile surface textures",
-        "intimate close-up portrait with sharp crisp focus and subtle 35mm film grain",
-        "cinematic three-quarter profile shot, anamorphic lens flare, rich tonal depth"
+        "cinematic wide full-body shot, entire figure visible from head to boots, immersive environment",
+        "dynamic low-angle action shot looking up from near ground level, heroic architectural perspective",
+        "high-angle crane shot looking down from above, geometric floor shadows, artistic overhead framing",
+        "cinematic Dutch angle framing, dynamic diagonal composition, deep environmental layers",
+        "candid storytelling cowboy shot from mid-thigh up, natural unposed movement, deep atmospheric backdrop",
+        "panoramic establishing shot, subject integrated into monumental scale surroundings, 28mm lens"
     ]
     extra_keywords = f", {keywords.strip()}" if (keywords and keywords.strip()) else ""
     extra_style = f", {style} aesthetic" if style else ""
 
-    return f"{char_lead}{random.choice(actions)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
+    return f"{char_lead}{random.choice(dynamic_actions)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
 
 
 
