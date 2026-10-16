@@ -151,6 +151,16 @@
       "url": "https://civitai.com/api/download/models/3248281",
       "trigger": "famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed",
       "strength": 0.7
+    },
+    {
+      "id": "luna",
+      "name": "Luna",
+      "description": "Sweet, fresh, and flirtatious beauty with charming gaze",
+      "icon": "🌙",
+      "filename": "Krea_2_Luna_epoch_10.safetensors",
+      "url": "https://civitai.com/api/download/models/3382906",
+      "trigger": "Lun4, attractive young woman, sweet and flirtatious gaze, charming smile, alluring presence",
+      "strength": 0.8
     }
   ]
 }

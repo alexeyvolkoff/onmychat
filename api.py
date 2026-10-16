@@ -4446,7 +4446,16 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             "style": "photorealistic",
             "archetype": "tifa",
             "lora": "tifa_lockhart_krea2.safetensors"
+        },
+        "luna": {
+            "names": ["Луна", "Luna"],
+            "title": "Sweet & Flirtatious Beauty",
+            "passport": "Lun4, attractive young woman, sweet and flirtatious gaze, charming smile, alluring presence",
+            "style": "photorealistic",
+            "archetype": "luna",
+            "lora": "Krea_2_Luna_epoch_10.safetensors"
         }
+    }
     krea_data = core_service.get_krea_presets()
     krea_archetypes = {a["id"]: a for a in krea_data.get("archetypes", []) if "id" in a}
 
