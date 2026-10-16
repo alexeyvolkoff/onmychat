@@ -5172,7 +5172,12 @@ async def generate_random_creative_prompt(
         "grainy street photography in rainy London, steaming manhole covers, trench coat and black umbrella",
         "moody late-night jazz club booth, soft amber tungsten light, smoke haze and warm wood textures",
         "kinetic parkour action across brutalist rooftops against a stormy dramatic sky",
-        "ethereal underwater portrait with billowing silk fabrics and refracted sun caustic patterns"
+        "ethereal underwater portrait with billowing silk fabrics and refracted sun caustic patterns",
+        "Scandinavian minimalist cabin in snowy pine woods, floor-to-ceiling windows with warm fireplace glow",
+        "sunlit desert dunes at twilight with dramatic wind-swept sand ripples and deep blue starry sky",
+        "steampunk inventor workshop cluttered with brass gears, glowing vacuum tubes, and parchment sketches",
+        "vibrant bustling Moroccan bazaar with hanging woven carpets, brass lanterns, and shafts of sunlight",
+        "sleek black sports car parked on an empty wet mountain serpentine road, low-key headlights piercing mist"
     ]
     random_theme = random.choice(creative_themes)
 
@@ -5197,7 +5202,7 @@ async def generate_random_creative_prompt(
         "Output ONLY the final prompt text. No quotes, no intro, no labels."
     )
 
-    user_parts = [f"Theme idea: {random_theme}."]
+    user_parts = [f"Distinct visual theme: {random_theme}."]
     if persona_name or persona_prompt:
         char_desc = persona_name
         if persona_prompt:
@@ -5205,10 +5210,15 @@ async def generate_random_creative_prompt(
         user_parts.append(f"Subject to depict: {char_desc}.")
     if style:
         user_parts.append(f"Aesthetic style: {style}.")
-    if keywords and keywords.strip():
-        user_parts.append(f"Incorporate these user ideas: {keywords.strip()}.")
+
+    # Only incorporate keywords if they are a brief user concept (<= 4 words, no sentences)
+    # This prevents recycling previous full prompts when clicking the random button repeatedly
+    clean_kw = (keywords or "").strip()
+    words = clean_kw.split()
+    if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
+        user_parts.append(f"Incorporate this user topic: {clean_kw}.")
     else:
-        user_parts.append("Create a fresh, visually captivating, photographic scene.")
+        user_parts.append(f"Create a fresh, brand-new photographic scene (variation {random.randint(100, 999)}).")
 
     user_content = " ".join(user_parts)
 
@@ -5220,8 +5230,8 @@ async def generate_random_creative_prompt(
         "model": model,
         "stream": False,
         "options": {
-            "temperature": 0.75,
-            "top_p": 0.9,
+            "temperature": 0.92,
+            "top_p": 0.95,
             "num_predict": 160
         }
     }
