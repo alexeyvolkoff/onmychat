@@ -45,6 +45,7 @@ WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
 FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
 IMAGE_TAG_MODEL = SETTINGS.get("IMAGE_TAG_MODEL", WORK_MODEL)
+FAST_MODEL = SETTINGS.get("FAST_MODEL", "qwen2.5:1.5b")
 MCP_MODEL = DEFAULT_MODEL
 
 # AI Provider: 'local' (Ollama only), 'hybrid' (Ollama for Work/RAG, Horde for Fun/RP), 'horde' (always Horde)
@@ -128,6 +129,10 @@ def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
     if mode == "fun":
         return FUN_MODEL
     return WORK_MODEL
+
+def get_fast_model(ctx: UserContext | None = None) -> str:
+    """Returns a fast lightweight model for prompt generation, titles, and descriptions."""
+    return FAST_MODEL or (get_llm_model(ctx) if ctx else "qwen2.5:1.5b")
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -3305,13 +3310,24 @@ async def generate_krea2_image(
         filename = f"KREA_{timestamp}.png"
 
     clean_user_prompt = (prompt or persona_prompt or "").strip()
-    neutral_title, neutral_description = await generate_neutral_description_and_title(ctx, clean_user_prompt)
+    neutral_title, neutral_description = "", ""
+    try:
+        neutral_title, neutral_description = await asyncio.wait_for(
+            generate_neutral_description_and_title(ctx, clean_user_prompt),
+            timeout=8.0
+        )
+    except Exception as e:
+        logging.warning(f"[Krea2] generate_neutral_description_and_title timed out or failed: {e}")
+
+    if not neutral_description:
+        sentences = [s.strip() for s in clean_user_prompt.split(".") if s.strip()]
+        neutral_description = sentences[0] if sentences else (clean_user_prompt[:120] or "Generated image")
+
     if neutral_title:
         img_title = neutral_title
-    elif clean_user_prompt:
-        img_title = await generate_title_from_prompt(ctx, neutral_description or clean_user_prompt)
     else:
-        img_title = "Krea Creation"
+        words = [w for w in neutral_description.replace("<", "").replace(">", "").split() if not w.startswith("<")]
+        img_title = " ".join(words[:4]).strip(" ,.-#*") or "Krea Creation"
 
     readme_content = f"# {img_title}\n\n{neutral_description}\n"
     if clean_user_prompt:
@@ -3879,10 +3895,20 @@ async def llm_request(payload: dict, headers: dict = None):
             ) as resp:
                 if "application/json" in resp.headers.get("Content-Type", "").lower():
                     res_json = await resp.json()
-                    if isinstance(res_json, dict) and res_json.get("error") and "does not support thinking" in str(res_json.get("error")) and payload.get("think") is not None:
-                        logging.warning(f"Ollama error ({res_json['error']}), retrying without 'think'...")
-                        retry_payload = {k: v for k, v in payload.items() if k != "think"}
-                        return await llm_request(retry_payload, headers=headers)
+                    if isinstance(res_json, dict) and res_json.get("error"):
+                        err_msg = str(res_json.get("error"))
+                        if "does not support thinking" in err_msg and payload.get("think") is not None:
+                            logging.warning(f"Ollama error ({err_msg}), retrying without 'think'...")
+                            retry_payload = {k: v for k, v in payload.items() if k != "think"}
+                            return await llm_request(retry_payload, headers=headers)
+                        if "not found" in err_msg.lower():
+                            target_model = payload.get("model", "")
+                            fallback_candidates = [DEFAULT_MODEL, "gemma4:latest", "gemma4-work:latest", "gemma4:12b", "qwen3.5-32k:latest"]
+                            for alt in fallback_candidates:
+                                if alt and alt != target_model:
+                                    logging.warning(f"Ollama model '{target_model}' not found, falling back to '{alt}'...")
+                                    retry_payload = {**payload, "model": alt}
+                                    return await llm_request(retry_payload, headers=headers)
                     return res_json
                 else:
                     text = await resp.text()
@@ -5128,18 +5154,25 @@ async def generate_random_creative_prompt(
     keywords: str = ""
 ) -> str:
     """Generate a truly creative, imaginative, and evocative visual prompt for Krea 2 using LLM."""
-    mode = ctx.settings.get("content_mode", "work")
-    model = get_llm_model(ctx, mode)
+    model = get_fast_model(ctx)
 
     creative_themes = [
         "cinematic slice-of-life scene with striking natural lighting and vivid atmosphere",
-        "atmospheric retro-futurism or cyberpunk mystery with wet street reflections",
+        "atmospheric retro-futurism or cyberpunk mystery with wet street reflections and neon glow",
         "high-fashion avant-garde editorial portrait in an unexpected, moody architectural setting",
         "dreamy surreal landscape with poetic scale, drifting clouds, and golden twilight warmth",
-        "intimate candid film photograph, 35mm grain, lens flare, soft focus and cinematic depth",
+        "intimate candid film photograph, 35mm grain, subtle lens flare, soft focus and cinematic depth",
         "epic mythic or fantasy moment rich with tactile fabrics, ancient stones, and weather effects",
         "solitary contemplative moment in a bustling historic neon-lit quarter or night street",
-        "dramatic chiaroscuro portrait with deep shadows, rim lighting, and intense expression"
+        "dramatic chiaroscuro portrait with deep shadows, rim lighting, and intense expression",
+        "serene morning in an art-filled Parisian studio, dust motes floating in sunbeams",
+        "retro 1980s synthwave aesthetic, driving along a coastal highway during violet sunset",
+        "sun-drenched Mediterranean villa courtyard with terracotta tiles, lemon trees and linen curtains",
+        "futuristic botanical conservatory under a colossal geodesic glass dome with exotic bioluminescence",
+        "grainy street photography in rainy London, steaming manhole covers, trench coat and black umbrella",
+        "moody late-night jazz club booth, soft amber tungsten light, smoke haze and warm wood textures",
+        "kinetic parkour action across brutalist rooftops against a stormy dramatic sky",
+        "ethereal underwater portrait with billowing silk fabrics and refracted sun caustic patterns"
     ]
     random_theme = random.choice(creative_themes)
 
@@ -5177,8 +5210,9 @@ async def generate_random_creative_prompt(
         "model": model,
         "stream": False,
         "options": {
-            "temperature": 0.9,
-            "top_p": 0.95
+            "temperature": 0.95,
+            "top_p": 0.95,
+            "num_predict": 120
         }
     }
 
@@ -5197,14 +5231,40 @@ async def generate_random_creative_prompt(
     except Exception as e:
         logging.error(f"[generate_random_creative_prompt] LLM failed: {e}")
 
-    # Fallback if LLM is unavailable
-    fallback_scenes = [
-        "A cinematic portrait of a young woman standing on a misty bridge in Tokyo at twilight, neon reflections dancing across wet asphalt, warm bokeh and 35mm film grain",
-        "A candid moment inside a sun-drenched sunroom surrounded by lush monsteras and hanging ferns, soft golden hour sunlight cutting through dust motes",
-        "An avant-garde editorial photo in a minimalist concrete gallery, sharp directional shadows, vibrant silk attire contrasting with raw stone",
-        "A peaceful rooftop at dusk overlooking a sprawling vintage metropolis, gentle wind catching hair, soft pastel sunset palette, atmospheric depth"
+    # Rich procedural fallback if LLM is completely unavailable
+    char_lead = f"{persona_name}, " if persona_name else ""
+    actions = [
+        "standing thoughtfully on an open balcony overlooking a misty skyline",
+        "walking briskly through a rain-drenched alleyway lined with glowing paper lanterns",
+        "adjusting vintage sunglasses while leaning against a polished chrome roadster",
+        "lost in contemplation inside a sunlit greenhouse surrounded by towering palms and monsteras",
+        "relaxing into a plush leather armchair beside a crackling hearth in a dimly lit library",
+        "glancing back over one shoulder with a confident smile under flickering neon signage",
+        "sipping hot coffee from a ceramic mug by a rain-streaked cafe window",
+        "standing at the bow of an antique wooden boat drifting through early morning lake mist",
+        "stepping through a minimalist concrete archway into bright dramatic desert sunlight",
+        "inspecting an intricate brass telescope in an astronomical observatory tower at night",
+        "laughing candidly at a rooftop gathering while golden twilight bathes the city",
+        "crouching with athletic poise on a wet rooftop ledge as city lights shimmer below"
     ]
-    return random.choice(fallback_scenes)
+    lighting_list = [
+        "bathed in warm golden hour rim lighting that casts long cinematic shadows",
+        "illuminated by cool moody neon hues reflecting off slick wet surfaces",
+        "soft diffuse morning window light highlighting natural skin textures and hair strands",
+        "dramatic chiaroscuro lighting with deep rich blacks and vibrant highlights",
+        "dappled sunlight filtering through green foliage with gentle lens flare",
+        "dim atmospheric tungsten lighting creating an intimate nostalgic warmth"
+    ]
+    camera_list = [
+        "candid medium shot, 50mm f/1.4 lens, shallow depth of field, creamy soft bokeh",
+        "cinematic wide-angle perspective, dynamic diagonal composition, tactile surface textures",
+        "intimate close-up portrait with sharp crisp focus and subtle 35mm film grain",
+        "cinematic three-quarter profile shot, anamorphic lens flare, rich tonal depth"
+    ]
+    extra_keywords = f", {keywords.strip()}" if (keywords and keywords.strip()) else ""
+    extra_style = f", {style} aesthetic" if style else ""
+
+    return f"{char_lead}{random.choice(actions)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
 
 
 
@@ -5295,7 +5355,7 @@ async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
 async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) -> tuple[str, str]:
     """Generate a safe, neutral title and description for the image prompt."""
     mode = ctx.settings.get("content_mode", "work")
-    model = get_llm_model(ctx, mode)
+    model = get_fast_model(ctx)
     if ctx.private_mode and mode == "fun":
          # In fun mode, we must prime the model to accept the input prompt
          # but still instruct it to output a neutral, safe description.
@@ -5309,11 +5369,11 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
         ],
         "model": model,
         "stream": False,
-        "options": {"temperature": 0.3}
+        "options": {"temperature": 0.3, "num_predict": 100}
     }
     
     try:
-        data = await llm_request(payload)
+        data = await asyncio.wait_for(llm_request(payload), timeout=7.0)
         if data and "message" in data and "content" in data["message"]:
             raw_content = data["message"]["content"].strip()
             lines = [l.strip() for l in raw_content.split("\n") if l.strip()]
@@ -5329,9 +5389,13 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
             desc = " ".join(desc_lines).strip()
             return title, desc or raw_content
     except Exception as e:
-        logging.error(f"Failed to generate neutral description: {e}")
-        
-    return "", "Generated image"
+        logging.warning(f"Neutral description LLM call skipped/failed: {e}")
+
+    clean_words = [w for w in prompt.replace("<", "").replace(">", "").split() if not w.startswith("<")]
+    title = " ".join(clean_words[:4]).strip(" ,.-#*")
+    sentences = [s.strip() for s in prompt.split(".") if s.strip()]
+    desc = sentences[0] if sentences else (" ".join(clean_words[:15]) or "Generated image")
+    return title, desc
 
 
 async def generate_neutral_description(ctx: UserContext, prompt: str) -> str:

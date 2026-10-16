@@ -2220,7 +2220,7 @@ class GenerateInput(BaseModel):
 
 
 class KreaGenerateInput(BaseModel):
-    omd_key: str
+    omd_key: str | None = None
     prompt: str = ""
     persona_id: str | None = None
     persona_name: str | None = None
