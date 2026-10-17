@@ -870,6 +870,19 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
     if path_err:
         return path_err
 
+    # Real-document reading via the Craft engines (Word/Grid/Deck CLIs): full text
+    # with correct tables, lists and formatting, better than ?totext. Falls back
+    # to the gateway path below when a CLI is missing or fails.
+    try:
+        import craft_service as cs
+        name = path.rsplit("/", 1)[-1]
+        kind = cs.kind_for_filename(name)
+        if kind and cs._cli_path(kind):
+            data = await download_omd_file(ctx, path)
+            return cs.read_document_text(kind, data, name)
+    except Exception as craft_err:
+        print(f"[craft] read fallback for {path}: {craft_err}", flush=True)
+
     try:
         storage_id = ctx.storage.strip("/")
         base_url = GATEWAY_URL.rstrip("/")

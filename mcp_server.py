@@ -257,6 +257,152 @@ async def report_and_close_plane_issue(token: str, workspace: str, project_id: s
     return report
 
 
+# --- Craft editors: real .docx / .xlsx / .pptx for the agent (WordCraft / GridCraft / DeckCraft) ---
+
+def _craft_ext(filename: str) -> str:
+    import os as _os
+    return _os.path.splitext(filename or "")[1].lower()
+
+
+@mcp.tool()
+async def read_document(path: str, mode: str = "text") -> str:
+    """
+    Read a real office document with WordCraft/GridCraft (full fidelity, better than plain text).
+    mode="text" — plain text; mode="markdown" — Markdown (text documents only); mode="structure" — JSON.
+    Supported: .docx .odt .rtf .doc .md .html .txt (and .xlsx .csv as text).
+    
+    Args:
+        path: The absolute path of the document on OMD, e.g. /Linux-desktop/Private/reports/q3.docx
+        mode: "text" (default), "markdown" or "structure"
+    """
+    ctx = get_current_user_context()
+    import craft_service as cs
+    name = path.rsplit("/", 1)[-1]
+    kind = cs.kind_for_filename(name)
+    if not kind:
+        return f"Unsupported document type: {name!r} (supported: docx, odt, rtf, doc, md, html, txt, xlsx, csv)"
+    data = await core_service.download_omd_file(ctx, path)
+    if mode == "markdown":
+        return cs.read_document_markdown(kind, data, name)
+    if mode == "structure":
+        return cs.inspect_document(kind, data, name)
+    text = cs.read_document_text(kind, data, name)
+    if len(text) > 200_000:
+        text = text[:200_000] + "\n… [truncated, " + str(len(text)) + " chars total]"
+    return text
+
+
+@mcp.tool()
+async def create_document(path: str, content: str) -> str:
+    """
+    Create a REAL office document on OMD from text the agent wrote.
+    The file extension decides the format: .docx/.odt/.rtf → content is MARKDOWN
+    (# headings, **bold**, lists, tables all survive); .xlsx → content is CSV;
+    .pptx → content is an outline (one line = one slide title, indented lines are bullets).
+    The result opens in the OMD editor (WordCraft/GridCraft/DeckCraft) with full formatting.
+    
+    Args:
+        path: The absolute target path on OMD INCLUDING the file name, e.g. /Linux-desktop/Private/reports/q3-report.docx
+        content: Markdown / CSV / outline text as described above
+    """
+    ctx = get_current_user_context()
+    import craft_service as cs
+    name = path.rsplit("/", 1)[-1]
+    kind = cs.kind_for_filename(name)
+    if not kind:
+        return f"Unsupported target type: {name!r} (use .docx/.odt/.rtf for Markdown, .xlsx for CSV, .pptx for an outline)"
+    data = cs.create_document(kind, name, content)
+    return await core_service.upload_omd_file_binary(ctx, path, data)
+
+
+@mcp.tool()
+async def edit_document(path: str, commands: list, save_as: str = "", author: str = "OMD Agent") -> str:
+    """
+    Edit a REAL office document in place with engine commands, then save it back to OMD.
+    commands: a list of strings "id={json params}", e.g. ["caret.docEnd={}", "text.insert={\"text\":\"hi\"}"].
+    File-system commands (file.*, anything with a path) are NOT allowed — this tool itself
+    downloads and uploads the document. Tracked changes/comments are authored by `author`.
+    Use read_document(mode="structure") and list_document_commands to discover what is possible.
+    
+    Args:
+        path: The absolute path of the document on OMD
+        commands: list of "id={json}" command strings (max 200)
+        save_as: optional alternative absolute path to save under (defaults to the same path)
+        author: the name recorded for tracked changes and comments
+    """
+    ctx = get_current_user_context()
+    import craft_service as cs
+    name = path.rsplit("/", 1)[-1]
+    kind = cs.kind_for_filename(name)
+    if not kind:
+        return f"Unsupported document type: {name!r}"
+    if not isinstance(commands, list) or not commands:
+        return "commands must be a non-empty list of 'id={json}' strings"
+    data = await core_service.download_omd_file(ctx, path)
+    out_name = save_as.rsplit("/", 1)[-1] if save_as else name
+    edited = cs.edit_document(kind, data, name, [str(c) for c in commands], author=author, out_name=out_name)
+    return await core_service.upload_omd_file_binary(ctx, save_as or path, edited)
+
+
+@mcp.tool()
+async def convert_document(path: str, out_path: str) -> str:
+    """
+    Convert a document between formats with the real engines: docx→pdf, md→docx,
+    docx→odt, xlsx→csv, csv→xlsx… The output extension decides the format.
+    
+    Args:
+        path: The absolute path of the source document on OMD
+        out_path: The absolute target path on OMD (the extension decides the format)
+    """
+    ctx = get_current_user_context()
+    import craft_service as cs
+    name = path.rsplit("/", 1)[-1]
+    kind = cs.kind_for_filename(name)
+    if not kind:
+        return f"Unsupported source type: {name!r}"
+    data = await core_service.download_omd_file(ctx, path)
+    converted = cs.convert_document(kind, data, name, out_path.rsplit("/", 1)[-1])
+    return await core_service.upload_omd_file_binary(ctx, out_path, converted)
+
+
+@mcp.tool()
+async def list_document_commands(prefix: str = "") -> str:
+    """
+    List the engine commands an agent can run in edit_document (422 in WordCraft alone:
+    text, formatting, tables, references, review…). Filter by prefix, e.g. "table." or "review.".
+    
+    Args:
+        prefix: optional command prefix filter, e.g. "insert." or "format."
+    """
+    import craft_service as cs
+    import json
+    import subprocess
+    sections = []
+    total = 0
+    for kind, label in (("doc", "wordcraft (docx/odt/rtf)"), ("sheet", "gridcraft (xlsx/csv)"), ("deck", "deckcraft (pptx)")):
+        cli = cs._cli_path(kind)
+        if not cli:
+            continue
+        try:
+            r = subprocess.run([cli, "commands", "--json"], capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                continue
+            catalog = json.loads(r.stdout)
+            if isinstance(catalog, dict) and "commands" in catalog:
+                catalog = catalog["commands"]
+            ids = [c.get("id", "") for c in catalog if isinstance(c, dict)]
+        except Exception:
+            continue
+        if prefix:
+            ids = [i for i in ids if i.startswith(prefix)]
+        if ids:
+            total += len(ids)
+            sections.append(f"## {label}\n" + "\n".join(ids[:400]))
+    if not sections:
+        return f"no commands match prefix {prefix!r} (or no craft CLIs installed)"
+    return "\n\n".join(sections) + (f"\n… ({total} total)" if total > 400 else "")
+
+
 if __name__ == "__main__":
     # Start the MCP server using standard IO (suitable for Cursor, Claude Desktop, Hermes Agent)
     # Logging will go to stderr, MCP protocol messages to stdout.
