@@ -878,7 +878,12 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
         name = path.rsplit("/", 1)[-1]
         kind = cs.kind_for_filename(name)
         if kind and cs._cli_path(kind):
-            data = await download_omd_file(ctx, path)
+            local = cs.resolve_local_path(ctx, path)
+            if local:
+                with open(local, "rb") as f:
+                    data = f.read()
+            else:
+                data = await download_omd_file(ctx, path)
             return cs.read_document_text(kind, data, name)
     except Exception as craft_err:
         print(f"[craft] read fallback for {path}: {craft_err}", flush=True)

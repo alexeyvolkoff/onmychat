@@ -20,6 +20,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import zipfile
@@ -60,6 +61,76 @@ def _cli_path(kind: str) -> Optional[str]:
             return p
     p = _REPO_ROOTS[kind]
     return p if os.path.isfile(p) else None
+
+
+def node_name() -> str:
+    """This node's name: $CRAFT_NODE_NAME, then the onmydisk config's hostname
+    (`hostname=beelink` in /etc/onmydisk/onmydisk.conf.user), then the OS hostname."""
+    env = os.environ.get("CRAFT_NODE_NAME")
+    if env:
+        return env.strip().strip("/")
+    try:
+        conf = "/etc/onmydisk/onmydisk.conf.user"
+        if os.path.isfile(conf):
+            import configparser
+            cp = configparser.ConfigParser()
+            cp.read(conf)
+            host = cp.get("Settings", "hostname", fallback="").strip()
+            if host:
+                return host
+    except Exception:
+        pass
+    return socket.gethostname().split(".")[0]
+
+
+def storage_root() -> str:
+    """Local folder that backs this node's shares (onmychat config STORAGE_ROOT)."""
+    try:
+        from config import SETTINGS
+        root = SETTINGS.get("STORAGE_ROOT", "")
+        if root:
+            return os.path.realpath(root)
+    except Exception:
+        pass
+    return os.path.expanduser("~")
+
+
+def resolve_local_path(ctx, path: str) -> Optional[str]:
+    """The LOCAL case: the request is the node owner's (the MCP server is a
+    per-owner stdio server), the first path section names THIS node, and the
+    file would live under this node's STORAGE_ROOT. Returns the absolute local
+    path, or None when the P2P stack must be used (another node in the first
+    section, or a guest/public-mode request — see OMD_CRAFT_ALLOW_LOCAL)."""
+    if os.environ.get("OMD_CRAFT_ALLOW_LOCAL") == "0":
+        return None
+    # A guest/public-mode context never takes the local shortcut.
+    if getattr(ctx, "private_mode", False) is False and not getattr(ctx, "omd_key", ""):
+        return None
+    parts = [p for p in (path or "").split("/") if p]
+    if not parts:
+        return None
+    if parts[0].lower() != node_name().lower():
+        return None
+    root = storage_root()
+    rest = parts[1:]
+    # Two layouts exist in the wild: shares directly under STORAGE_ROOT
+    # (/beelink/Data/x → STORAGE_ROOT/Data/x) and the node folder itself
+    # (STORAGE_ROOT/beelink/Data/x). A path must resolve to exactly one of them.
+    candidates = [os.path.realpath(os.path.join(root, *rest)), os.path.realpath(os.path.join(root, parts[0], *rest))]
+    hits = [c for c in candidates if os.path.exists(c)]
+    if len(hits) == 1:
+        resolved = hits[0]
+    elif not hits:
+        # A new file: resolvable only when exactly one candidate folder exists.
+        existing_parents = [c for c in candidates if os.path.isdir(os.path.dirname(c))]
+        if len(existing_parents) != 1:
+            return None
+        resolved = existing_parents[0]
+    else:
+        return None
+    if not resolved.startswith(root + os.sep):
+        return None  # never escape STORAGE_ROOT
+    return resolved
 
 
 def kind_for_filename(filename: str) -> Optional[str]:

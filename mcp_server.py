@@ -259,6 +259,23 @@ async def report_and_close_plane_issue(token: str, workspace: str, project_id: s
 
 # --- Craft editors: real .docx / .xlsx / .pptx for the agent (WordCraft / GridCraft / DeckCraft) ---
 
+async def _craft_get_data(ctx, path: str, local: str | None) -> bytes:
+    """Bytes of the document: straight from the node's disk when it is local,
+    over the gateway/P2P stack when it lives on another node."""
+    if local:
+        with open(local, "rb") as f:
+            return f.read()
+    return await core_service.download_omd_file(ctx, path)
+
+
+async def _craft_put_data(ctx, path: str, local: str | None, data: bytes) -> str:
+    if local:
+        with open(local, "wb") as f:
+            f.write(data)
+        return f"Saved locally: {path} ({len(data)} bytes)"
+    return await core_service.upload_omd_file_binary(ctx, path, data)
+
+
 def _craft_ext(filename: str) -> str:
     import os as _os
     return _os.path.splitext(filename or "")[1].lower()
@@ -281,7 +298,8 @@ async def read_document(path: str, mode: str = "text") -> str:
     kind = cs.kind_for_filename(name)
     if not kind:
         return f"Unsupported document type: {name!r} (supported: docx, odt, rtf, doc, md, html, txt, xlsx, csv)"
-    data = await core_service.download_omd_file(ctx, path)
+    local = cs.resolve_local_path(ctx, path)
+    data = await _craft_get_data(ctx, path, local)
     if mode == "markdown":
         return cs.read_document_markdown(kind, data, name)
     if mode == "structure":
@@ -311,8 +329,9 @@ async def create_document(path: str, content: str) -> str:
     kind = cs.kind_for_filename(name)
     if not kind:
         return f"Unsupported target type: {name!r} (use .docx/.odt/.rtf for Markdown, .xlsx for CSV, .pptx for an outline)"
+    local = cs.resolve_local_path(ctx, path)
     data = cs.create_document(kind, name, content)
-    return await core_service.upload_omd_file_binary(ctx, path, data)
+    return await _craft_put_data(ctx, path, local, data)
 
 
 @mcp.tool()
@@ -338,10 +357,11 @@ async def edit_document(path: str, commands: list, save_as: str = "", author: st
         return f"Unsupported document type: {name!r}"
     if not isinstance(commands, list) or not commands:
         return "commands must be a non-empty list of 'id={json}' strings"
-    data = await core_service.download_omd_file(ctx, path)
+    local = cs.resolve_local_path(ctx, path)
+    data = await _craft_get_data(ctx, path, local)
     out_name = save_as.rsplit("/", 1)[-1] if save_as else name
     edited = cs.edit_document(kind, data, name, [str(c) for c in commands], author=author, out_name=out_name)
-    return await core_service.upload_omd_file_binary(ctx, save_as or path, edited)
+    return await _craft_put_data(ctx, save_as or path, local if not save_as else None, edited)
 
 
 @mcp.tool()
@@ -360,9 +380,11 @@ async def convert_document(path: str, out_path: str) -> str:
     kind = cs.kind_for_filename(name)
     if not kind:
         return f"Unsupported source type: {name!r}"
-    data = await core_service.download_omd_file(ctx, path)
+    local = cs.resolve_local_path(ctx, path)
+    data = await _craft_get_data(ctx, path, local)
+    local_out = cs.resolve_local_path(ctx, out_path) if out_path.rsplit("/", 1)[0] == path.rsplit("/", 1)[0] else None
     converted = cs.convert_document(kind, data, name, out_path.rsplit("/", 1)[-1])
-    return await core_service.upload_omd_file_binary(ctx, out_path, converted)
+    return await _craft_put_data(ctx, out_path, local_out, converted)
 
 
 @mcp.tool()
