@@ -36,6 +36,7 @@ def get_current_user_context() -> user_context.UserContext:
     # this machine, so craft_service.resolve_local_path may touch the local disk.
     # (HTTP contexts get private_mode only from api.trusted_private_access.)
     ctx.private_mode = True
+    ctx.trusted_owner = True  # own node, own disk: read/write files directly
     return ctx
 
 

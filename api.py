@@ -1802,6 +1802,7 @@ async def _build_ctx_from_request(request: Request):
         omd_key  = omd_key,
     )
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     return ctx
 
 
@@ -1985,6 +1986,18 @@ def trusted_private_access(request: Request, ctx: user_context.UserContext | Non
         return True
 
     return validated_node_owner(ctx)
+
+
+def trusted_owner_access(request: Request) -> bool:
+    """Вызовывающий — ВЛАДЕЛЕЦ ноды по доверенным заголовкам туннеля
+    (role=owner, или DID, спаренный на самой ноде). Тот же trust-базис, что и
+    в trusted_private_access, но уровень «владелец»: например, владелец читает
+    документы СВОЕЙ ноды напрямую с диска, а не через шлюз снаружи."""
+    if trusted_caller_role(request) == "owner":
+        return True
+    caller_did = (request.headers.get("X-OMD-Caller-DID") or request.headers.get("X-OMD-DID") or "").strip()
+    return bool(caller_did) and is_did_paired(caller_did)
+
 
 def get_omd_key(
     request: Request,
@@ -2835,6 +2848,7 @@ async def get_horde_models():
 async def get_loras(request: Request, mode: str | None = Query(None), omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     return core_service.get_available_loras(ctx, mode=mode)
 
 @app.get("/assistant/model/{lora_name}/avatar")
@@ -3644,6 +3658,7 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
 
     # В новой системе нет анонимов: определяем настоящее имя пользователя
     header_user = (request.headers.get("X-OMD-User") or "").strip()
@@ -4179,6 +4194,7 @@ async def recognize_endpoint(
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if settings:
         try:
             provided_settings = json.loads(settings)
@@ -4208,6 +4224,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -4258,6 +4275,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -4298,6 +4316,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -4622,6 +4641,7 @@ async def save_persona_endpoint(request: Request, data: dict):
     omd_key = data.get("omd_key")
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
 
     is_owner = False
     try:
@@ -4691,6 +4711,7 @@ async def generate_character_image_prompt(request: Request, data: GenerateInput)
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -4708,6 +4729,7 @@ async def generate_general_image_prompt(request: Request, data: GenerateInput):
     data.chat = data.chat or "default"
     ctx = get_ctx(data.omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
@@ -4730,6 +4752,7 @@ async def generate_random_prompt_endpoint(
     effective_key = data.omd_key or omd_key or ""
     ctx = get_ctx(effective_key)
     ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
     try:
         result = await core_service.generate_random_creative_prompt(
             ctx,

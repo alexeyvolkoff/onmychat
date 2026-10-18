@@ -2090,11 +2090,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         f"Execution status: {'SUCCESS' if success else 'FAILED'}\n"
         f"{error_context}\n"
         f"{files_context}\n\n"
-        "Write a short, friendly, and natural conversational response in Russian.\n"
+        "Write a short, precise, task-focused response in Russian.\n"
         "INSTRUCTIONS:\n"
         "1. If the execution failed (FAILED status), you MUST clearly, politely, and explicitly explain the error to the user in Russian, state exactly what went wrong, and ask how they want to proceed. Do NOT claim success under any circumstances!\n"
         "2. If everything was successful (SUCCESS status), summarize the actions you performed (in detail) and tell the user that everything is successfully saved in their storage.\n"
-        "3. NEVER use generic templates or hardcoded phrases. Make the response highly context-specific, warm, and professional."
+        "3. Never greet, apologize, introduce yourself or your persona, use emojis, exclamation marks or filler pleasantry. No small talk — go straight to the result of the task, and make the response highly context-specific."
     )
     payload = {
         "model": MCP_MODEL,

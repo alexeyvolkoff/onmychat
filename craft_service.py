@@ -124,11 +124,10 @@ def storage_root() -> str:
 
 
 def resolve_local_path(ctx, path: str) -> Optional[str]:
-    """The LOCAL case: a PRIVATE context (trusted owner / paired DID / pm=1),
-    the first path section names THIS node, and the file lives under this node's
-    STORAGE_ROOT — inside the session's declared storage. Returns the absolute
-    local path, or None when the gateway/P2P stack must be used (another node,
-    a guest, a wider path). OMD_CRAFT_ALLOW_LOCAL=0 disables the shortcut."""
+    """The LOCAL case: a PRIVATE context, the first path section names THIS node,
+    and the file lives under this node's STORAGE_ROOT. Returns the absolute local
+    path, or None when the gateway/P2P stack must be used (another node, a guest,
+    a wider path). OMD_CRAFT_ALLOW_LOCAL=0 disables the shortcut."""
     if os.environ.get("OMD_CRAFT_ALLOW_LOCAL") == "0":
         return None
     # Owner-only. api.trusted_private_access marks trusted requests
@@ -142,17 +141,20 @@ def resolve_local_path(ctx, path: str) -> Optional[str]:
         return None
     if parts[0].lower() != node_name().lower():
         return None
-    # Never wider than the storage this session declared: the whole subtree,
-    # not just its first section (core_service.validate_omd_path checks root only
-    # and leaves the finer ACL to the gateway, which the local shortcut skips).
-    storage = (getattr(ctx, "storage", "") or "").strip("/")
-    if storage:
-        sections = [s for s in storage.split("/") if s]
-        if parts[0].lower() != sections[0].lower():
-            return None
-        tail = [s.lower() for s in sections[1:]]
-        if [p.lower() for p in parts[1:1 + len(tail)]] != tail:
-            return None
+    # A NODE OWNER (tunnel role=owner / paired DID, api.trusted_owner_access)
+    # reads anywhere on their own node inside STORAGE_ROOT — bouncing through
+    # the gateway for the owner's own disk is pointless. Anyone else who got
+    # private mode (a pm=1 shared guest) stays inside the storage subtree they
+    # declared: the gateway enforces a finer ACL there, and this shortcut skips it.
+    if getattr(ctx, "trusted_owner", False) is not True:
+        storage = (getattr(ctx, "storage", "") or "").strip("/")
+        if storage:
+            sections = [s for s in storage.split("/") if s]
+            if parts[0].lower() != sections[0].lower():
+                return None
+            tail = [s.lower() for s in sections[1:]]
+            if [p.lower() for p in parts[1:1 + len(tail)]] != tail:
+                return None
     root = storage_root()
     rest = parts[1:]
     # Two layouts exist in the wild: shares directly under STORAGE_ROOT

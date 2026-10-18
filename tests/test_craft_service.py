@@ -24,10 +24,11 @@ import craft_service as cs
 class _Ctx:
     """Minimal UserContext stand-in."""
 
-    def __init__(self, private_mode=False, omd_key="", storage=""):
+    def __init__(self, private_mode=False, omd_key="", storage="", trusted_owner=False):
         self.private_mode = private_mode
         self.omd_key = omd_key
         self.storage = storage
+        self.trusted_owner = trusted_owner
 
 
 def expect_error(fn, needle):
@@ -95,12 +96,19 @@ def test_resolve_local_path_gate():
         # a client-supplied key without private_mode never opens the disk (the hole)
         guest = _Ctx(private_mode=False, omd_key="anything", storage="testnode")
         assert cs.resolve_local_path(guest, "/testnode/Private/note.docx") is None
-        # owner private context inside its declared storage → local file
-        owner = _Ctx(private_mode=True, omd_key="k", storage="testnode/Private")
+        # pm=1 shared guest: private, but confined to its declared storage subtree
+        shared = _Ctx(private_mode=True, omd_key="k", storage="testnode/Private")
+        assert cs.resolve_local_path(shared, "/testnode/Private/note.docx") == doc
+        assert cs.resolve_local_path(shared, "/testnode/other/file.txt") is None
+        # NODE OWNER (tunnel role=owner → api sets trusted_owner): any path of
+        # their own node inside STORAGE_ROOT — no pointless trip through the gateway
+        os.makedirs(os.path.join(tmp, "other"))
+        with open(os.path.join(tmp, "other", "file.txt"), "wb") as f:
+            f.write(b"y")
+        owner = _Ctx(private_mode=True, omd_key="k", storage="testnode/Private", trusted_owner=True)
         assert cs.resolve_local_path(owner, "/testnode/Private/note.docx") == doc
-        # wider than the declared storage → gateway
-        assert cs.resolve_local_path(owner, "/testnode/other/file.txt") is None
-        # other node's name → gateway
+        assert cs.resolve_local_path(owner, "/testnode/other/file.txt") == os.path.join(tmp, "other", "file.txt")
+        # other node's name → gateway even for the owner
         assert cs.resolve_local_path(owner, "/othernode/Private/note.docx") is None
         # traversal out of STORAGE_ROOT
         assert cs.resolve_local_path(owner, "/testnode/../etc/passwd") is None
