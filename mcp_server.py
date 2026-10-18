@@ -31,7 +31,12 @@ def get_current_user_context() -> user_context.UserContext:
     if not omd_key:
         raise ValueError("OMD_KEY environment variable is required to authenticate with OnMyDisk.")
         
-    return user_context.get_context_by_account(omd_key, storage)
+    ctx = user_context.get_context_by_account(omd_key, storage)
+    # This is the per-owner stdio server: it is launched by the node owner on
+    # this machine, so craft_service.resolve_local_path may touch the local disk.
+    # (HTTP contexts get private_mode only from api.trusted_private_access.)
+    ctx.private_mode = True
+    return ctx
 
 
 @mcp.tool()
@@ -268,11 +273,32 @@ async def _craft_get_data(ctx, path: str, local: str | None) -> bytes:
     return await core_service.download_omd_file(ctx, path)
 
 
+def _write_local_atomic(local: str, path: str, data: bytes) -> str:
+    """Replace the target atomically (tmp file in the same dir + os.replace):
+    a crash mid-write must not truncate the user's document, and missing parent
+    folders are created."""
+    parent = os.path.dirname(local)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{local}.{os.getpid()}.omd-tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, local)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return f"Saved locally: {path} ({len(data)} bytes)"
+
+
 async def _craft_put_data(ctx, path: str, local: str | None, data: bytes) -> str:
     if local:
-        with open(local, "wb") as f:
-            f.write(data)
-        return f"Saved locally: {path} ({len(data)} bytes)"
+        return await asyncio.to_thread(_write_local_atomic, local, path, data)
     return await core_service.upload_omd_file_binary(ctx, path, data)
 
 
@@ -298,13 +324,17 @@ async def read_document(path: str, mode: str = "text") -> str:
     kind = cs.kind_for_filename(name)
     if not kind:
         return f"Unsupported document type: {name!r} (supported: docx, odt, rtf, doc, md, html, txt, xlsx, csv)"
+    if mode not in ("text", "markdown", "structure"):
+        return f"Unknown mode {mode!r}: use \"text\", \"markdown\" or \"structure\""
     local = cs.resolve_local_path(ctx, path)
     data = await _craft_get_data(ctx, path, local)
+    # CLI runs block, so they go to a worker thread — never the MCP event loop.
     if mode == "markdown":
-        return cs.read_document_markdown(kind, data, name)
-    if mode == "structure":
-        return cs.inspect_document(kind, data, name)
-    text = cs.read_document_text(kind, data, name)
+        text = await asyncio.to_thread(cs.read_document_markdown, kind, data, name)
+    elif mode == "structure":
+        text = await asyncio.to_thread(cs.inspect_document, kind, data, name)
+    else:
+        text = await asyncio.to_thread(cs.read_document_text, kind, data, name)
     if len(text) > 200_000:
         text = text[:200_000] + "\n… [truncated, " + str(len(text)) + " chars total]"
     return text
@@ -330,7 +360,7 @@ async def create_document(path: str, content: str) -> str:
     if not kind:
         return f"Unsupported target type: {name!r} (use .docx/.odt/.rtf for Markdown, .xlsx for CSV, .pptx for an outline)"
     local = cs.resolve_local_path(ctx, path)
-    data = cs.create_document(kind, name, content)
+    data = await asyncio.to_thread(cs.create_document, kind, name, content)
     return await _craft_put_data(ctx, path, local, data)
 
 
@@ -360,8 +390,11 @@ async def edit_document(path: str, commands: list, save_as: str = "", author: st
     local = cs.resolve_local_path(ctx, path)
     data = await _craft_get_data(ctx, path, local)
     out_name = save_as.rsplit("/", 1)[-1] if save_as else name
-    edited = cs.edit_document(kind, data, name, [str(c) for c in commands], author=author, out_name=out_name)
-    return await _craft_put_data(ctx, save_as or path, local if not save_as else None, edited)
+    edited = await asyncio.to_thread(cs.edit_document, kind, data, name, [str(c) for c in commands],
+                                     author=author, out_name=out_name)
+    # save_as is resolved like any other target (it may be local or another node)
+    local_out = cs.resolve_local_path(ctx, save_as) if save_as else local
+    return await _craft_put_data(ctx, save_as or path, local_out, edited)
 
 
 @mcp.tool()
@@ -382,9 +415,56 @@ async def convert_document(path: str, out_path: str) -> str:
         return f"Unsupported source type: {name!r}"
     local = cs.resolve_local_path(ctx, path)
     data = await _craft_get_data(ctx, path, local)
-    local_out = cs.resolve_local_path(ctx, out_path) if out_path.rsplit("/", 1)[0] == path.rsplit("/", 1)[0] else None
-    converted = cs.convert_document(kind, data, name, out_path.rsplit("/", 1)[-1])
+    local_out = cs.resolve_local_path(ctx, out_path)
+    converted = await asyncio.to_thread(cs.convert_document, kind, data, name, out_path.rsplit("/", 1)[-1])
     return await _craft_put_data(ctx, out_path, local_out, converted)
+
+
+def _engine_command_ids(cli: str) -> list:
+    """Command ids of one engine: `commands --json` where supported, the plain
+    `commands` listing otherwise (deckcraft prints "id — label: params" lines)."""
+    import json
+    import subprocess
+    try:
+        r = subprocess.run([cli, "commands", "--json"], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0 and r.stdout.strip():
+            catalog = json.loads(r.stdout)
+            if isinstance(catalog, dict) and "commands" in catalog:
+                catalog = catalog["commands"]
+            if isinstance(catalog, list):
+                ids = [c.get("id", "") for c in catalog if isinstance(c, dict)]
+                ids = [i for i in ids if i]
+                if ids:
+                    return ids
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([cli, "commands"], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            return [ln.split(" ", 1)[0].strip() for ln in r.stdout.splitlines()
+                    if ln.strip() and not ln[0].isspace()]
+    except Exception:
+        pass
+    return []
+
+
+def _list_document_commands_sync(prefix: str) -> str:
+    import craft_service as cs
+    sections = []
+    total = 0
+    for kind, label in (("doc", "wordcraft (docx/odt/rtf)"), ("sheet", "gridcraft (xlsx/csv)"), ("deck", "deckcraft (pptx)")):
+        cli = cs._cli_path(kind)
+        if not cli:
+            continue
+        ids = _engine_command_ids(cli)
+        if prefix:
+            ids = [i for i in ids if i.startswith(prefix)]
+        if ids:
+            total += len(ids)
+            sections.append(f"## {label}\n" + "\n".join(ids[:400]))
+    if not sections:
+        return f"no commands match prefix {prefix!r} (or no craft CLIs installed)"
+    return "\n\n".join(sections) + (f"\n… ({total} total)" if total > 400 else "")
 
 
 @mcp.tool()
@@ -396,33 +476,7 @@ async def list_document_commands(prefix: str = "") -> str:
     Args:
         prefix: optional command prefix filter, e.g. "insert." or "format."
     """
-    import craft_service as cs
-    import json
-    import subprocess
-    sections = []
-    total = 0
-    for kind, label in (("doc", "wordcraft (docx/odt/rtf)"), ("sheet", "gridcraft (xlsx/csv)"), ("deck", "deckcraft (pptx)")):
-        cli = cs._cli_path(kind)
-        if not cli:
-            continue
-        try:
-            r = subprocess.run([cli, "commands", "--json"], capture_output=True, text=True, timeout=60)
-            if r.returncode != 0:
-                continue
-            catalog = json.loads(r.stdout)
-            if isinstance(catalog, dict) and "commands" in catalog:
-                catalog = catalog["commands"]
-            ids = [c.get("id", "") for c in catalog if isinstance(c, dict)]
-        except Exception:
-            continue
-        if prefix:
-            ids = [i for i in ids if i.startswith(prefix)]
-        if ids:
-            total += len(ids)
-            sections.append(f"## {label}\n" + "\n".join(ids[:400]))
-    if not sections:
-        return f"no commands match prefix {prefix!r} (or no craft CLIs installed)"
-    return "\n\n".join(sections) + (f"\n… ({total} total)" if total > 400 else "")
+    return await asyncio.to_thread(_list_document_commands_sync, prefix)
 
 
 if __name__ == "__main__":

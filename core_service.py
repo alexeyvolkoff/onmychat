@@ -872,7 +872,8 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
 
     # Real-document reading via the Craft engines (Word/Grid/Deck CLIs): full text
     # with correct tables, lists and formatting, better than ?totext. Falls back
-    # to the gateway path below when a CLI is missing or fails.
+    # to the gateway path below when a CLI is missing or fails. The CLI runs in a
+    # worker thread — a document conversion must not stall the API event loop.
     try:
         import craft_service as cs
         name = path.rsplit("/", 1)[-1]
@@ -884,7 +885,7 @@ async def read_omd_file(ctx: UserContext, path: str) -> str:
                     data = f.read()
             else:
                 data = await download_omd_file(ctx, path)
-            return cs.read_document_text(kind, data, name)
+            return await asyncio.to_thread(cs.read_document_text, kind, data, name)
     except Exception as craft_err:
         print(f"[craft] read fallback for {path}: {craft_err}", flush=True)
 
@@ -1227,11 +1228,28 @@ def clean_assistant_response(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "work", provided_history: list|None = None) -> AsyncGenerator[dict, None]:
-    if mode == "fun":
-        return
-        
     # Clean the routing prefix / slash command from the beginning of the message to prevent LLM confusion
     clean_message = message.strip()
+    if mode == "fun":
+        # An explicit tool command (/mcp, /tools, /doc…) overrides fun mode: the
+        # user asked for the agent on purpose. Without one, fun mode must still
+        # ANSWER — a bare `return` leaves the frontend spinning on 'executing'.
+        explicit = any(clean_message.lower().startswith(c) and
+                       (len(clean_message) == len(c) or clean_message[len(c)].isspace())
+                       for c in ("/mcp", "/tools", "/doc", "/docs"))
+        if not explicit:
+            logging.info("[MCP] content_mode=fun — tool agent skipped, telling the user")
+            ru = bool(re.search(r"[а-яё]", clean_message, re.IGNORECASE))
+            text = ("Режим Fun: файловый агент отключён, чтобы не ломать ролевую сцену. "
+                    "Переключи чат в режим Work — или вызови агента командой «/mcp …», "
+                    "и я сразу возьму документ."
+                    if ru else
+                    "Fun mode: the file agent is off to keep the roleplay intact. "
+                    "Switch the chat to Work mode — or call the agent explicitly with "
+                    "\"/mcp …\" and I will take the document right away.")
+            yield {"type": "result", "content": text}
+            return
+        logging.info("[MCP] fun mode + explicit tool command — running the agent anyway")
     for cmd in ["/doc", "/mcp", "/generate", "/sign", "/help", "/forget", "/forget_all", "/chat", "/code", "/import"]:
         if clean_message.lower().startswith(cmd) and (len(clean_message) == len(cmd) or clean_message[len(cmd)].isspace()):
             clean_message = clean_message[len(cmd):].strip()

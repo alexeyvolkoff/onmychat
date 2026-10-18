@@ -4,10 +4,12 @@ Bridges OMD documents to the ArtCraft command-line tools so the MCP agent can
 read, create and edit REAL .docx / .xlsx / .pptx files with full fidelity.
 
 Flow per call: download from OMD → run the CLI in a private tmpdir → upload back.
-The CLIs are confined to that tmpdir (`--automation-*` where the subcommand
-supports it; the edit tool additionally allowlists command ids and rejects any
-command that carries a `path` parameter, so agent text can never reach a real
-filesystem path).
+The CLIs are confined to that tmpdir by construction: `edit_document` allowlists
+command ids and parses each command's JSON to reject string parameters that name
+a filesystem path (`path`, `original`, `file`, …) — a raw string scan would be
+fooled by JSON escapes (`{"path": …}`), while the engine decodes them. The
+`--automation-read-root/--automation-write-root` roots exist only on the `mcp`
+subcommand (see `_run`), which is why this validation lives here.
 
 Kind → CLI mapping (binaries are looked up in $CRAFT_CLI_DIR or the repos'
 target/release next to this checkout):
@@ -50,6 +52,32 @@ EDIT_ALLOWLIST_PREFIXES = (
 )
 MAX_DOC_BYTES = 60 * 1024 * 1024
 DEFAULT_TIMEOUT = 90
+MAX_EDIT_TIMEOUT = 600
+
+# Parameter keys whose STRING value names a filesystem path — engine commands
+# that read a file by themselves while staying inside the id allowlist
+# (review.compare/combine `original`, font.add `path`, gridcraft data.* `path`…).
+# Only non-empty strings count: document.paragraph / shape.connect use `path`
+# as a story/geometry list, which is not a file.
+FS_PARAM_KEYS = {"path", "original", "file", "files", "filename", "filepath",
+                 "directory", "folder"}
+
+
+def _fs_param_key(value) -> Optional[str]:
+    """First denylisted key holding a non-empty string, searched recursively."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if str(k).lower() in FS_PARAM_KEYS and isinstance(v, str) and v.strip():
+                return str(k)
+            hit = _fs_param_key(v)
+            if hit:
+                return hit
+    elif isinstance(value, list):
+        for item in value:
+            hit = _fs_param_key(item)
+            if hit:
+                return hit
+    return None
 
 
 def _cli_path(kind: str) -> Optional[str]:
@@ -96,21 +124,35 @@ def storage_root() -> str:
 
 
 def resolve_local_path(ctx, path: str) -> Optional[str]:
-    """The LOCAL case: the request is the node owner's (the MCP server is a
-    per-owner stdio server), the first path section names THIS node, and the
-    file would live under this node's STORAGE_ROOT. Returns the absolute local
-    path, or None when the P2P stack must be used (another node in the first
-    section, or a guest/public-mode request — see OMD_CRAFT_ALLOW_LOCAL)."""
+    """The LOCAL case: a PRIVATE context (trusted owner / paired DID / pm=1),
+    the first path section names THIS node, and the file lives under this node's
+    STORAGE_ROOT — inside the session's declared storage. Returns the absolute
+    local path, or None when the gateway/P2P stack must be used (another node,
+    a guest, a wider path). OMD_CRAFT_ALLOW_LOCAL=0 disables the shortcut."""
     if os.environ.get("OMD_CRAFT_ALLOW_LOCAL") == "0":
         return None
-    # A guest/public-mode context never takes the local shortcut.
-    if getattr(ctx, "private_mode", False) is False and not getattr(ctx, "omd_key", ""):
+    # Owner-only. api.trusted_private_access marks trusted requests
+    # private_mode=True (tunnel role owner, paired DID, validated owner); a
+    # client-supplied omd_key is NOT proof of ownership — api.get_ctx builds it
+    # straight from request headers/payload — so it must not open the disk.
+    if getattr(ctx, "private_mode", False) is not True:
         return None
     parts = [p for p in (path or "").split("/") if p]
     if not parts:
         return None
     if parts[0].lower() != node_name().lower():
         return None
+    # Never wider than the storage this session declared: the whole subtree,
+    # not just its first section (core_service.validate_omd_path checks root only
+    # and leaves the finer ACL to the gateway, which the local shortcut skips).
+    storage = (getattr(ctx, "storage", "") or "").strip("/")
+    if storage:
+        sections = [s for s in storage.split("/") if s]
+        if parts[0].lower() != sections[0].lower():
+            return None
+        tail = [s.lower() for s in sections[1:]]
+        if [p.lower() for p in parts[1:1 + len(tail)]] != tail:
+            return None
     root = storage_root()
     rest = parts[1:]
     # Two layouts exist in the wild: shares directly under STORAGE_ROOT
@@ -265,7 +307,7 @@ def create_document(kind: str, target_name: str, content: str, title: Optional[s
                 raise RuntimeError(f"craft create failed: {r.stderr.strip()[:800]}")
         elif kind == "sheet":
             src = _tmpfile(wd, "content.csv")
-            out = _tmpfile(wd, "out.xlsx")
+            out = _tmpfile(wd, "out" + ext)  # .xlsx / .csv / .tsv — the target extension wins
             with open(src, "w", encoding="utf-8") as f:
                 f.write(content)
             r = _run(cli, ["convert", src, out], wd)
@@ -312,14 +354,30 @@ def edit_document(kind: str, data: bytes, source_name: str, commands: list, auth
     cleaned = []
     for c in commands:
         c = (c or "").strip()
-        if not c or "=" not in c:
+        if not c:
+            raise ValueError("empty command")
+        cid, sep, payload = c.partition("=")
+        cid = cid.strip()
+        if not cid:
             raise ValueError(f"bad command {c!r}: expected id={{json}}")
-        cid = c.split("=", 1)[0].strip()
         if not any(cid.startswith(p) for p in EDIT_ALLOWLIST_PREFIXES):
             raise ValueError(f"command {cid!r} is not allowed (file-system commands are handled by this service)")
-        if '"path"' in c or "'path'" in c:
-            raise ValueError(f"command {cid!r} carries a path parameter — not allowed; save/upload is done by this service")
-        cleaned.append(c)
+        # Parse the JSON instead of scanning the raw string: a raw scan is fooled
+        # by escapes ({"path": …} → the engine still sees "path").
+        if sep:
+            try:
+                params = json.loads(payload)
+            except ValueError:
+                raise ValueError(f"command {cid!r}: parameters are not valid JSON: {payload[:120]!r}")
+            if not isinstance(params, dict):
+                raise ValueError(f"command {cid!r}: parameters must be a JSON object")
+        else:
+            params = {}  # engines accept a bare id for commands without parameters
+        bad = _fs_param_key(params)
+        if bad:
+            raise ValueError(f"command {cid!r}: parameter {bad!r} names a file — not allowed; "
+                             "document files are downloaded and saved by this service")
+        cleaned.append(f"{cid}={json.dumps(params, ensure_ascii=False)}")
     if len(cleaned) > 200:
         raise ValueError("too many commands in one call (max 200)")
     with tempfile.TemporaryDirectory(prefix="omd-craft-") as wd:
@@ -338,7 +396,7 @@ def edit_document(kind: str, data: bytes, source_name: str, commands: list, auth
             # Only WordCraft names the author of tracked changes on the CLI.
             args += ["--author", author]
         args += [save_flag, out]
-        r = _run(cli, args, wd, timeout=max(DEFAULT_TIMEOUT, 30 * len(cleaned)))
+        r = _run(cli, args, wd, timeout=min(MAX_EDIT_TIMEOUT, max(DEFAULT_TIMEOUT, 30 * len(cleaned))))
         if r.returncode != 0:
             raise RuntimeError(f"craft edit failed: {r.stderr.strip()[:800]}")
         with open(out, "rb") as f:
