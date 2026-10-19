@@ -189,33 +189,42 @@ async def _fetch_workspace_projects(client: httpx.AsyncClient, base: str, worksp
     return []
 
 
-async def _resolve_project_id(client: httpx.AsyncClient, base: str, workspace: str, project_id: Optional[str], headers: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
+async def _resolve_project_info(client: httpx.AsyncClient, base: str, workspace: str, project_id: Optional[str], headers: Dict[str, str]) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Resolve project_id (UUID). If empty or given as name/identifier, fetch projects and resolve.
-    Returns (resolved_uuid, error_message).
+    Resolve project info: returns (resolved_uuid, identifier, project_name, error_message).
     """
     target = (project_id or "").strip()
-    if target and re.match(r'^[0-9a-fA-F-]{32,36}$', target):
-        return target, None
-
     projects = await _fetch_workspace_projects(client, base, workspace, headers)
     if not projects:
-        return None, f"No projects found in workspace '{workspace}'."
+        return None, None, None, f"No projects found in workspace '{workspace}'."
+
+    # If target is UUID, find its details in projects
+    if target and re.match(r'^[0-9a-fA-F-]{32,36}$', target):
+        proj = next((p for p in projects if p.get("id") == target), None)
+        ident = proj.get("identifier", "") if proj else ""
+        pname = proj.get("name", "") if proj else ""
+        return target, ident, pname, None
 
     if not target:
         if len(projects) == 1:
-            return projects[0].get("id"), None
-        names = ", ".join([f"**{p.get('name')}** (ID: `{p.get('id')}`)" for p in projects])
-        return None, f"Multiple projects found in workspace '{workspace}'. Please specify `project_id`:\n{names}"
+            p = projects[0]
+            return p.get("id"), p.get("identifier", ""), p.get("name", ""), None
+        names = ", ".join([f"**{p.get('name')}** [{p.get('identifier')}] (ID: `{p.get('id')}`)" for p in projects])
+        return None, None, None, f"Multiple projects found in workspace '{workspace}'. Please specify `project_id`:\n{names}"
 
     # Search by identifier or name (case-insensitive)
     t_lower = target.lower()
     for p in projects:
         if p.get("identifier", "").lower() == t_lower or p.get("name", "").lower() == t_lower:
-            return p.get("id"), None
+            return p.get("id"), p.get("identifier", ""), p.get("name", ""), None
 
     names = ", ".join([f"**{p.get('name')}** [{p.get('identifier')}]" for p in projects])
-    return None, f"Project '{target}' not found in workspace '{workspace}'. Available projects: {names}"
+    return None, None, None, f"Project '{target}' not found in workspace '{workspace}'. Available projects: {names}"
+
+
+async def _resolve_project_id(client: httpx.AsyncClient, base: str, workspace: str, project_id: Optional[str], headers: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
+    pid, _, _, err = await _resolve_project_info(client, base, workspace, project_id, headers)
+    return pid, err
 
 
 async def list_plane_workspaces(ctx: Any = None, token: Optional[str] = None) -> str:
@@ -278,7 +287,7 @@ async def list_plane_workspaces(ctx: Any = None, token: Optional[str] = None) ->
     lines = ["**Your Plane Workspaces:**\n"]
     for slug, projs in verified:
         if projs:
-            p_desc = ", ".join([f"**{p.get('name')}** (ID: `{p.get('id')}`)" for p in projs])
+            p_desc = ", ".join([f"**{p.get('name')}** [{p.get('identifier')}] (ID: `{p.get('id')}`)" for p in projs])
             lines.append(f"- **{slug}** (slug: `{slug}`) — {len(projs)} project(s): {p_desc}")
         else:
             lines.append(f"- **{slug}** (slug: `{slug}`) — 0 projects")
@@ -334,7 +343,7 @@ async def _fetch_project_states(client: httpx.AsyncClient, base: str, workspace:
 
 async def list_plane_issues(ctx: Any = None, workspace: str = "", project_id: str = "", state: Optional[str] = None, token: Optional[str] = None) -> str:
     """
-    List tasks/issues from a Plane project with their sequence ID, name, status, priority, and UUID.
+    List tasks/issues from a Plane project with their full identifier (e.g. KVIK10-38), name, status, priority, and UUID.
     Can filter by state (e.g. 'todo', 'in progress', 'done', 'backlog').
     """
     tok = resolve_plane_token(ctx, token)
@@ -346,7 +355,7 @@ async def list_plane_issues(ctx: Any = None, workspace: str = "", project_id: st
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
-        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        pid, p_ident, p_name, err = await _resolve_project_info(client, base, ws, project_id, headers)
         if err or not pid:
             return err or f"Error: Could not resolve project_id in workspace '{ws}'."
 
@@ -379,14 +388,21 @@ async def list_plane_issues(ctx: Any = None, workspace: str = "", project_id: st
         if not filtered:
             return f"No tasks found matching status filter '{state}' in project '{pid}'."
 
-        lines = [f"**Tasks in Plane project '{pid}' (Total: {len(filtered)}):**\n"]
+        proj_label = f"{p_name} [{p_ident}]" if p_ident else (p_name or pid)
+        lines = [f"**Tasks in Plane project '{proj_label}' (Total: {len(filtered)}):**\n"]
         for issue, st_name in filtered:
             name = issue.get("name", "Untitled")
             seq_id = issue.get("sequence_id")
-            seq_str = f"#{seq_id} " if seq_id else ""
+            if p_ident and seq_id:
+                issue_key = f"{p_ident}-{seq_id}"
+            elif seq_id:
+                issue_key = f"#{seq_id}"
+            else:
+                issue_key = ""
+            key_str = f"**[{issue_key}]** " if issue_key else ""
             iid = issue.get("id", "")
             priority = (issue.get("priority") or "none").capitalize()
-            lines.append(f"- **{seq_str}{name}** | Status: `{st_name}` | Priority: `{priority}` | ID: `{iid}`")
+            lines.append(f"- {key_str}**{name}** | Status: `{st_name}` | Priority: `{priority}` | ID: `{iid}`")
 
         return "\n".join(lines)
 
@@ -407,7 +423,7 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
-        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        pid, p_ident, p_name, err = await _resolve_project_info(client, base, ws, project_id, headers)
         if err or not pid:
             return err or f"Error: Could not resolve project_id in workspace '{ws}'."
 
@@ -415,7 +431,7 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
         actual_uuid = clean_target
 
         if not re.match(r'^[0-9a-fA-F-]{32,36}$', clean_target):
-            # List tasks to resolve sequence number or prefix
+            # List tasks to resolve sequence number or prefix (e.g. KVIK10-38 or 38)
             url_list = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
             url_list_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
             st_code, list_data = await _plane_get(client, url_list, headers, fallback_url=url_list_fb)
@@ -443,7 +459,12 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
 
         name = issue.get("name", "Untitled")
         seq_id = issue.get("sequence_id", "")
-        seq_str = f"#{seq_id} " if seq_id else ""
+        if p_ident and seq_id:
+            key_str = f"[{p_ident}-{seq_id}] "
+        elif seq_id:
+            key_str = f"#{seq_id} "
+        else:
+            key_str = ""
         priority = (issue.get("priority") or "none").capitalize()
         created_at = (issue.get("created_at") or "")[:10]
         target_date = issue.get("target_date") or "None"
@@ -468,7 +489,7 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
                 comments_text += f"- *{c_author} ({c_date}):* {c_body}\n"
 
         return (
-            f"### {seq_str}{name}\n"
+            f"### {key_str}{name}\n"
             f"- **Status:** `{st_name}`\n"
             f"- **Priority:** `{priority}`\n"
             f"- **Target Date:** `{target_date}` | Created: `{created_at}`\n"

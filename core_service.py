@@ -406,7 +406,7 @@ PLANE_TOOLS = [
     "type": "function",
     "function": {
       "name": "list_plane_issues",
-      "description": "List tasks/issues from a Plane project. Shows sequence IDs (e.g. #12), titles, status, and priorities. Can filter by state (e.g. 'todo', 'in progress', 'done').",
+      "description": "List tasks/issues from a Plane project. Shows task identifiers (e.g. KVIK10-38), titles, status, and priorities. In your answers, ALWAYS use the full task identifiers (e.g. KVIK10-38), never just plain sequence numbers. Can filter by state (e.g. 'todo', 'in progress', 'done').",
       "parameters": {
         "type": "object",
         "properties": {
@@ -434,7 +434,7 @@ PLANE_TOOLS = [
     "type": "function",
     "function": {
       "name": "get_plane_issue_details",
-      "description": "Get full details of a specific Plane task/issue, including complete description, status, priority, target dates, assignees, and comments.",
+      "description": "Get full details of a specific Plane task/issue (accepts identifier like 'KVIK10-38', sequence number, or UUID), including complete description, status, priority, target dates, assignees, and comments.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -448,7 +448,7 @@ PLANE_TOOLS = [
           },
           "issue_id": {
             "type": "string",
-            "description": "The task UUID, short ID, or sequence number (e.g. '12' or 'PROJ-12')"
+            "description": "The task identifier (e.g. 'KVIK10-38'), short ID, sequence number (e.g. '38'), or UUID"
           },
           "token": {
             "type": "string",
@@ -1467,6 +1467,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "You MUST formulate your thoughts and final answer in RUSSIAN (русский язык). "
             "Even when reading English documents or templates, provide all your explanations, section listings, "
             "and summaries in Russian. Only keep verbatim quotes in their original language if specifically requested."
+        )
+
+    has_plane_key = bool(
+        (ctx and hasattr(ctx, "mcp_keys") and ctx.mcp_keys and ctx.mcp_keys.get("plane"))
+        or os.environ.get("PLANE_API_KEY")
+        or os.environ.get("PLANE_TOKEN")
+    )
+    if has_plane_key or "plane" in clean_message.lower():
+        system_instruction += (
+            "\n\n- PLANE TASK IDENTIFIERS (CRITICAL): When listing, mentioning, or reporting Plane tasks/issues, "
+            "you MUST ALWAYS use their full project-scoped identifiers (e.g. `KVIK10-38`, `ONMYD-8`, `KVIK-1`), "
+            "NEVER plain numbers (like `#38` or `38`). Always output the identifier in format `[<PROJECT_IDENTIFIER>-<NUMBER>]` "
+            "or `<PROJECT_IDENTIFIER>-<NUMBER>` (e.g. `KVIK10-38`)."
         )
 
     # Initial Turn: Mandatory [PLAN] Phase
