@@ -4127,20 +4127,32 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 mode = ctx.settings.get("content_mode", "work")
                 async for chunk in core_service.check_and_execute_mcp(ctx, prompt, mode=mode, provided_history=provided_history):
                     if isinstance(chunk, dict):
-                        # Support direct forwarding of rich OpenCode-like events
-                        if any(k in chunk for k in ["id", "action", "state", "delta", "thought_delta", "tool_call_delta", "tool_result_delta"]):
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                        elif chunk.get("type") == "status":
+                        chunk_type = chunk.get("type")
+                        if chunk_type == "status":
                             yield f"data: {json.dumps({'status': chunk.get('content'), 'args': chunk.get('args')})}\n\n"
-                        elif chunk.get("type") == "result":
+                        elif chunk_type == "content_delta":
+                            # Live streamed token directly from LLM
+                            yield f"data: {json.dumps({'delta': chunk.get('delta', ''), 'role': 'assistant', 'done': False})}\n\n"
+                        elif chunk_type == "result":
                             res_content = chunk.get("content") or chunk.get("delta") or ""
-                            payload = {'content': res_content, 'delta': res_content, 'role': 'assistant', 'done': True}
+                            # Only fallback to simulated token typing if response was not streamed live
+                            if not chunk.get("streamed") and res_content:
+                                tokens = re.findall(r'\S+\s*|\n+', res_content)
+                                acc = ""
+                                for tok in tokens:
+                                    acc += tok
+                                    yield f"data: {json.dumps({'content': acc, 'delta': tok, 'role': 'assistant', 'done': False})}\n\n"
+                                    await asyncio.sleep(0.012)
+
+                            payload = {'content': res_content, 'role': 'assistant', 'done': True}
                             if chunk.get("changedFiles"):
                                 payload["changedFiles"] = chunk.get("changedFiles")
                             if chunk.get("sources"):
                                 payload["sources"] = chunk.get("sources")
                             yield f"data: {json.dumps(payload)}\n\n"
-                    await asyncio.sleep(0.05)
+                        elif any(k in chunk for k in ["id", "action", "state", "delta", "thought_delta", "tool_call_delta", "tool_result_delta"]):
+                            # Support direct forwarding of rich OpenCode-like events
+                            yield f"data: {json.dumps(chunk)}\n\n"
                 return
 
             # 3️⃣ основной стрим чата

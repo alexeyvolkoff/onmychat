@@ -1402,6 +1402,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     success = True
     tool_error_msg = ""
     final_agent_response = ""
+    streamed_to_user = False
     # 1. Path Extraction Heuristic (Help the model find the path)
     raw_paths = re.findall(r"(\/[\w\-\.\/]+)", clean_message)
     potential_paths = []
@@ -1569,25 +1570,65 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         payload = {
             "model": MCP_MODEL,
             "messages": current_messages,
-            "stream": False,
+            "stream": True,
             "tools": available_tools,
             "options": {
                 "temperature": 0.0 # Deterministic
             }
         }
         
-        response_data = await llm_request(payload)
-        if not response_data or "message" not in response_data:
+        raw_msg_content = ""
+        raw_msg_thinking = ""
+        tool_calls = []
+
+        # Can we stream content to the user in this turn?
+        # Turn 0 is strictly for [PLAN] checklist and initial tool call.
+        # Turns where mandatory file reading/writing hasn't happened yet should not stream to chat text.
+        can_stream_content = (turn > 0) and not (known_files and not has_read_file and requires_read) and not (was_write_planned and not changed_files)
+
+        async for chunk in llm_request_stream(payload):
+            if not isinstance(chunk, dict):
+                continue
+            msg_part = chunk.get("message", {})
+            th = msg_part.get("thinking")
+            cnt = msg_part.get("content")
+            tc = msg_part.get("tool_calls")
+
+            if th:
+                raw_msg_thinking += th
+                yield {
+                    "id": f"thought_turn_{turn}",
+                    "type": "reasoning",
+                    "delta": th
+                }
+
+            if cnt:
+                raw_msg_content += cnt
+                if can_stream_content:
+                    streamed_to_user = True
+                    yield {
+                        "type": "content_delta",
+                        "delta": cnt
+                    }
+
+            if tc:
+                tool_calls.extend(tc)
+
+        if not raw_msg_content and not raw_msg_thinking and not tool_calls:
             break
-            
-        msg = response_data["message"]
-        tool_calls = msg.get("tool_calls", [])
-        
+
         if len(tool_calls) > 1:
-             # Force pipelining: Only take the first tool call to avoid parallel execution conflicts
-             tool_calls = tool_calls[:1]
-             msg["tool_calls"] = tool_calls
-        
+            # Force pipelining: Only take the first tool call to avoid parallel execution conflicts
+            tool_calls = tool_calls[:1]
+
+        msg = {
+            "role": "assistant",
+            "content": raw_msg_content,
+            "thinking": raw_msg_thinking
+        }
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+
         messages.append(msg)
          
 
@@ -1634,13 +1675,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                   # Separate thoughts from final answer using split_mcp_output
                   reasoning_delta, final_candidate = split_mcp_output(clean_agent_text, has_tool_calls=bool(tool_calls))
                   
-                  if reasoning_delta:
+                  if reasoning_delta and not raw_msg_thinking:
                        all_tool_results += f"{reasoning_delta}\n\n"
                        yield {
                            "id": f"thought_turn_{turn}",
                            "type": "reasoning",
                            "delta": reasoning_delta
                        }
+                  elif reasoning_delta or raw_msg_thinking:
+                       all_tool_results += f"{(reasoning_delta or raw_msg_thinking)}\n\n"
                   
                   if final_candidate:
                        final_agent_response = final_candidate
@@ -2114,6 +2157,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "success": (tool_status == "success"),
             "action": "part_update"
         }
+        # Tool execution finished for this turn: notify frontend that model is processing / typing
+        yield {"type": "status", "content": "typing"}
 
         if tool_status == "error":
              success = False
@@ -2168,6 +2213,9 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
              },
              "action": "part_update"
          }
+
+    if not streamed_to_user:
+        yield {"type": "status", "content": "typing"}
          
     # Resolve final human response: prioritize agent's direct answer if generated
     final_output = clean_assistant_response(final_agent_response.strip())
@@ -2196,13 +2244,32 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "messages": [
                 {"role": "system", "content": f"{BASE_SYSTEM_PROMPT}\n\n{summary_prompt}"}
             ],
-            "stream": False,
+            "stream": True,
             "options": {"temperature": 0.5}
         }
-        logging.info("[MCP] Generating dynamic human response via LLM...")
-        summary_data = await llm_request(payload)
-        if summary_data and "message" in summary_data:
-            final_output = clean_assistant_response(summary_data["message"]["content"].strip())
+        logging.info("[MCP] Generating dynamic human response via LLM (streaming)...")
+        raw_summary = ""
+        async for chunk in llm_request_stream(payload):
+            if not isinstance(chunk, dict):
+                continue
+            msg_part = chunk.get("message", {})
+            th = msg_part.get("thinking")
+            cnt = msg_part.get("content")
+            if th:
+                yield {
+                    "id": "thought_summary",
+                    "type": "reasoning",
+                    "delta": th
+                }
+            if cnt:
+                raw_summary += cnt
+                streamed_to_user = True
+                yield {
+                    "type": "content_delta",
+                    "delta": cnt
+                }
+        if raw_summary:
+            final_output = clean_assistant_response(raw_summary.strip())
             
     # Safe technical fallback (strictly minimal and technical)
     if not final_output:
@@ -2272,10 +2339,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "mimetype": mimetype
         })
 
+    logging.info(f"[MCP] Completed. Streamed={streamed_to_user}, Output len={len(final_output)}")
     yield {
         "type": "result",
         "content": final_output,
         "delta": final_output,
+        "streamed": streamed_to_user,
         "changedFiles": changed_objects,
         "sources": changed_objects
     }
