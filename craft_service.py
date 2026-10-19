@@ -46,7 +46,7 @@ DECK_EXTS = {".pptx"}
 EDIT_ALLOWLIST_PREFIXES = (
     "text.", "caret.", "select.", "format.", "style.", "list.", "table.", "paragraph.",
     "page.", "section.", "insert.symbol", "insert.break", "insert.datetime", "insert.field",
-    "reference.", "review.", "font.", "clipboard.", "document.",
+    "reference.", "review.", "font.", "clipboard.", "document.", "edit.",
     "home.", "cell.", "row.", "column.", "sheet.", "range.", "formula.", "data.", "sort.",
     "slide.", "shape.", "layout.", "theme.", "transition.", "animation.",
 )

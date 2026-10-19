@@ -47,8 +47,8 @@ PUBLIC_TAGS: list[str] = [
 
 RAG_THRESHOLD   = float(SETTINGS.get("RAG_THRESHOLD",   "0.75"))
 SEARCH_THRESHOLD = float(SETTINGS.get("SEARCH_THRESHOLD", "0.75"))
-RAG_TOP_K       = int(SETTINGS.get("RAG_TOP_K",   "8"))
-SEARCH_TOP_K    = int(SETTINGS.get("SEARCH_TOP_K", "20"))
+RAG_TOP_K       = int(SETTINGS.get("RAG_TOP_K",   "15"))
+SEARCH_TOP_K    = int(SETTINGS.get("SEARCH_TOP_K", "30"))
 
 # Буст «свежести» файла при RAG-поиске (факт-инъекциях):
 # более новый файл получает усиление к оценке релевантности.
@@ -273,7 +273,7 @@ def search(
         if len(record_types) == 1:
             conditions.append({"type": {"$eq": record_types[0]}})
         else:
-            conditions.append({"$or": [{"type": {"$eq": t}} for t in record_types]})
+            conditions.append({"type": {"$in": record_types}})
 
     where = None
     if len(conditions) == 1:
@@ -315,25 +315,50 @@ def search(
         import re as _re
         tokens = set(_re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]{3,}", query.lower()))
         if tokens:
-            all_recs = coll.get(include=["metadatas"])
-            kw_ids = [
-                rid for rid, meta in zip(all_recs.get("ids", []), all_recs.get("metadatas", []))
-                if (
-                    (not document_id or meta.get("document_id") == document_id)
-                    and any(
-                        tok in f"{meta.get('document_id', '')} {meta.get('title', '')} {meta.get('tags', '')}".lower()
-                        or f"t_{tok}" in meta
-                        for tok in tokens
-                    )
-                )
-            ]
-            if kw_ids:
-                # не дублируем уже найденные векторной выдачей
-                got = set(ids)
-                kw_ids = [rid for rid in kw_ids if rid not in got]
+            search_terms = set(tokens)
+            COMMON_SYNONYMS = {
+                "кот": ["cat", "cats", "kitten", "kittens", "feline", "коты", "кошка", "кошки", "котик", "котики", "кошачий"],
+                "кош": ["cat", "cats", "kitten", "kittens", "feline", "кот", "коты", "кошка", "кошки", "котик", "котики"],
+                "cat": ["кот", "коты", "кошка", "кошки", "котик", "котики", "кошачий", "kitten", "kittens", "feline"],
+                "соб": ["dog", "dogs", "puppy", "puppies", "hound", "собака", "собаки", "пес", "пёс"],
+                "dog": ["собака", "собаки", "пес", "пёс", "щенок", "puppy", "puppies"],
+                "маш": ["car", "cars", "vehicle", "automobile", "авто", "машина", "автомобиль"],
+                "car": ["машина", "машины", "авто", "автомобиль", "vehicle"],
+                "доку": ["doc", "document", "contract", "invoice", "документ", "договор", "счет", "счёт"],
+                "фото": ["photo", "image", "picture", "фото", "снимок", "кадр"],
+            }
+            for tok in list(tokens):
+                for pfx, syn_list in COMMON_SYNONYMS.items():
+                    if tok.startswith(pfx):
+                        search_terms.update(syn_list)
+
+            # Бустим уже найденные векторные результаты, если в них совпали ключевые слова
+            for r in out:
+                r_text = f"{r.get('document_id', '')} {r.get('title', '')} {r.get('tags', '')} {r.get('text', '')}".lower()
+                hits = sum(1 for term in search_terms if _re.search(r'\b' + _re.escape(term) + r'\b', r_text))
+                if hits > 0:
+                    r["distance"] = max(0.0, r["distance"] * (0.65 ** min(hits, 3)))
+                    r["relevance"] = round((1.0 - r["distance"]) * 100, 1)
+                    r["score"] = r["relevance"]
+
+            all_recs = coll.get(include=["metadatas", "documents"])
+            got = set(ids)
+            kw_ids = []
+            for rid, meta, doc in zip(all_recs.get("ids", []), all_recs.get("metadatas", []), all_recs.get("documents", [])):
+                if rid in got:
+                    continue
+                if document_id and meta.get("document_id") != document_id:
+                    continue
+                d = doc or ""
+                if d.startswith("/9j/") or d.startswith("data:image"):
+                    d = ""
+                content = f"{meta.get('document_id', '')} {meta.get('title', '')} {meta.get('tags', '')} {d}".lower()
+                if any(_re.search(r'\b' + _re.escape(term) + r'\b', content) for term in search_terms):
+                    kw_ids.append(rid)
+
             if kw_ids:
                 kw_docs = coll.get(ids=kw_ids, include=["embeddings", "metadatas", "documents"])
-                kw_boost = float(SETTINGS.get("META_KEYWORD_BOOST", "0.8"))
+                kw_boost = float(SETTINGS.get("META_KEYWORD_BOOST", "0.6"))
                 for rid, emb, meta, doc in zip(
                     kw_docs.get("ids", []),
                     kw_docs.get("embeddings", []),
@@ -356,7 +381,7 @@ def search(
     # Relative score cutoff: filter out results that are much weaker than the top hit
     if out:
         best_score = max(r.get("relevance", 0.0) for r in out)
-        relative_ratio = float(SETTINGS.get("RAG_RELATIVE_RATIO", "0.65"))
+        relative_ratio = float(SETTINGS.get("RAG_RELATIVE_RATIO", "0.35"))
         min_rel_cutoff = best_score * relative_ratio
         out = [r for r in out if r.get("relevance", 0.0) >= min_rel_cutoff]
 

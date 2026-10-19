@@ -231,6 +231,62 @@ async def push_files_to_device(
             pass
 
 
+async def push_file_to_device_path(
+    omd_key: str,
+    device_push: Any,
+    rel_path: str,
+    data: bytes,
+    ctx: Any = None,
+) -> bool:
+    """Save a file to the granted folder or subpath on the user's device via P2P."""
+    ctx_info = _device_push_ctx(device_push)
+    if not ctx_info:
+        log.warning("device_push: missing/invalid device_push descriptor: %r", device_push)
+        return False
+    if not omd_key:
+        log.warning("device_push: no omd_key for signaling, skipping")
+        return False
+    if not data:
+        log.warning("device_push: refusing to push empty data to %r", rel_path)
+        return False
+
+    folder = ctx_info["folder"]
+    clean_rel = str(rel_path or "").strip().lstrip("/")
+    # If clean_rel begins with the granted folder name, strip it to avoid duplicates
+    if clean_rel == folder or clean_rel.startswith(folder + "/"):
+        full_dest = clean_rel
+    else:
+        full_dest = f"{folder}/{clean_rel}" if clean_rel else folder
+
+    parent_dir = os.path.dirname(full_dest)
+    link_id = ctx_info["linkId"]
+
+    settings = p2p_client.P2PSettings.from_settings(_settings())
+    settings.token = omd_key
+    client = p2p_client.P2PClient(settings)
+    try:
+        device = await client.device(
+            link_id,
+            ctx_info["consentToken"],
+            did_pub=ctx_info["didPub"],
+            scope_path=folder,
+            writable=True,
+        )
+        if parent_dir:
+            await device.ensure_dir(parent_dir)
+        await device.write_file(full_dest, bytes(data))
+        log.info("device_push: successfully wrote %d bytes to %s on %s", len(data), full_dest, link_id)
+        return True
+    except Exception as exc:
+        log.warning("device_push: failed to push %s to %s on %s: %s", full_dest, folder, link_id, exc)
+        return False
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+
 def _settings():
     from config import SETTINGS
     return SETTINGS

@@ -27,6 +27,8 @@ class UserContext:
     private_mode: bool = False
     is_unlimited: bool = False
     tokens_consumed: float = 0.0
+    device_push: dict = None
+    mcp_keys: dict = None
 
 def get_prompt(filename):
     prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")

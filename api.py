@@ -32,6 +32,15 @@ class DuplicateIDFilter(logging.Filter):
                 return False
         return True
 
+class AccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "/api/tags" in msg:
+            return False
+        if record.args and "/api/tags" in str(record.args):
+            return False
+        return True
+
 logging.basicConfig(level=logging.INFO)
 # Add filter to root logger and standard loggers
 for logger_name in [None, "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "chromadb", "chromadb.telemetry"]:
@@ -39,6 +48,11 @@ for logger_name in [None, "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi
     l.addFilter(DuplicateIDFilter())
     for handler in l.handlers:
         handler.addFilter(DuplicateIDFilter())
+
+access_logger = logging.getLogger("uvicorn.access")
+access_logger.addFilter(AccessLogFilter())
+for h in access_logger.handlers:
+    h.addFilter(AccessLogFilter())
 
 import hashlib
 import email.utils
@@ -141,7 +155,14 @@ AI_TOKEN = SETTINGS.get("AI_TOKEN", "")
 
 @app.on_event("startup")
 async def on_startup():
-    """Initialize unified_memory on startup."""
+    """Initialize unified_memory and logging filters on startup."""
+    try:
+        acc_log = logging.getLogger("uvicorn.access")
+        acc_log.addFilter(AccessLogFilter())
+        for handler in acc_log.handlers:
+            handler.addFilter(AccessLogFilter())
+    except Exception:
+        pass
     try:
         unified_memory.init()
     except Exception as e:
@@ -2190,6 +2211,7 @@ class ChatStreamInput(BaseModel):
     rag_focus: dict | None = None
     attached_docs: list | None = None
     device_push: dict | None = None
+    mcp_keys: dict | None = None
 
 class ImportInput(BaseModel):
     omd_key: str
@@ -3637,7 +3659,8 @@ async def chat_stream_post(request: Request, data: ChatStreamInput):
         client=data.client or (data.settings.get("client") if data.settings else None),
         rag_focus=data.rag_focus,
         attached_docs=data.attached_docs,
-        device_push=data.device_push
+        device_push=data.device_push,
+        mcp_keys=data.mcp_keys
     )
 
 @app.get("/chat/stream")
@@ -3652,13 +3675,16 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                       client: str|None = None,
                       rag_focus: dict|None = None,
                       attached_docs: list|None = None,
-                      device_push: dict|None = None):
+                      device_push: dict|None = None,
+                      mcp_keys: dict|None = None):
     agentic_tunnel.note_request(request, omd_key=omd_key, settings_payload=provided_settings)
     logging.info(f"Chat stream request: omd_key={omd_key[:10] if omd_key else 'None'}..., device_push={device_push}")
     chat = chat or "default"
     ctx = get_ctx(omd_key)
     ctx.private_mode = trusted_private_access(request, ctx)
     ctx.trusted_owner = trusted_owner_access(request)
+    ctx.device_push = device_push
+    ctx.mcp_keys = mcp_keys or (provided_settings.get("mcp_keys") if provided_settings else {}) or {}
 
     # В новой системе нет анонимов: определяем настоящее имя пользователя
     header_user = (request.headers.get("X-OMD-User") or "").strip()
@@ -4008,8 +4034,8 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                     "The user asked a question. Use the *Known facts* / *Strict facts* injected into the system prompt "
                     "to answer. Base your answer ONLY on that material where it is relevant.\n\n"
                     "CITATION AND FORMATTING RULES:\n"
-                    "1. FILE CITATIONS: When listing or mentioning files, photos, or documents from the facts, ALWAYS include their EXACT FILENAME (e.g. `IMG_20260926_175706.jpg`), NOT the folder path. The UI will automatically turn filenames into interactive photo cards with previews.\n"
-                    "2. MARKDOWN INTEGRITY: Keep formatting clean and readable. NEVER place Markdown header tags (`#`, `##`, `###`) inside list bullet items (do NOT write `• # Title:` or `- ## Title:`). Use section headers on their own line above lists (e.g. `### Section Name`), and use standard bold text for item names within lists (e.g. `• **IMG_...jpg** — description`).\n"
+                    "1. MANDATORY FULL PATHS: When listing, recommending, or presenting files, photos, or documents, you MUST ALWAYS write their EXACT FULL PATH from *Known facts* / *Strict facts* in bold (e.g. `- **/beelink/Data/Phone/IMG_20260926_175706.jpg**: description`). NEVER output bare filenames without their full directory path! NEVER invent files or use files from previous conversation turns that are not listed in the current *Known facts* / *Strict facts*.\n"
+                    "2. WARM & STRUCTURED STYLE: Keep formatting clean, lively and well-structured. Group items into natural thematic categories with emojis if appropriate (e.g. `✨ **Портреты и люди:**`). Use standard bullet lists with the full path in bold (e.g. `- **/path/to/file.ext**: description`).\n"
                     "3. ACCURACY: If the material does not actually answer the question, say so plainly. Do not invent links or ungrounded facts."
                 )
                 llm_message = search_query if (prompt.startswith("/") and search_query) else prompt
@@ -4107,9 +4133,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                         elif chunk.get("type") == "status":
                             yield f"data: {json.dumps({'status': chunk.get('content'), 'args': chunk.get('args')})}\n\n"
                         elif chunk.get("type") == "result":
-                            payload = {'delta': chunk.get('content'), 'role': 'assistant', 'done': True}
+                            res_content = chunk.get("content") or chunk.get("delta") or ""
+                            payload = {'content': res_content, 'delta': res_content, 'role': 'assistant', 'done': True}
                             if chunk.get("changedFiles"):
                                 payload["changedFiles"] = chunk.get("changedFiles")
+                            if chunk.get("sources"):
+                                payload["sources"] = chunk.get("sources")
                             yield f"data: {json.dumps(payload)}\n\n"
                     await asyncio.sleep(0.05)
                 return

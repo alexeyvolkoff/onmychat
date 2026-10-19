@@ -20,7 +20,7 @@ from typing import AsyncGenerator
 from config import SETTINGS
 from config import USER_DATA_DIR
 
-from utils import clean_response, upload_to_storage, upload_data_to_storage, get_image_from_source
+from utils import clean_response, upload_to_storage, upload_data_to_storage, get_image_from_source, _STOP_TOKENS_PATTERN
 
 
 import user_context
@@ -37,6 +37,7 @@ from memory_index import (
 
 import unified_memory
 import horde_client
+import plane_service
 
 # LLM and RAG settings #
 OLLAMA_URL = SETTINGS["OLLAMA_URL"]
@@ -240,24 +241,56 @@ MCP_TOOLS = [
       "type": "function",
       "function": {
           "name": "write_omd_file",
-          "description": "Write data to a file. NEVER use this to report errors or report that files were not found. Only write successfully gathered information.",
+          "description": "Write data or create brand new documents in OnMyDisk storage. Supports text files (.txt, .md, .csv) and real office documents (.docx, .odt, .xlsx, .pptx). For .docx/.odt write Markdown (# headings, tables, bold text); for .xlsx write CSV rows; for .pptx write slide outlines. NEVER use this to report errors. Only write successfully gathered information.",
           "parameters": {
               "type": "object",
               "properties": {
                   "path": {
                       "type": "string",
-                      "description": "The absolute path INCLUDING FILENAME, e.g. /Linux-desktop/Private/Data/invoice.txt"
+                      "description": "The absolute path INCLUDING FILENAME, e.g. /Linux-desktop/Private/Data/invoice.docx"
                   },
                   "content": {
                       "type": "string",
-                      "description": "The text content to write to the file"
+                      "description": "The content to write (Markdown for .docx/.odt, CSV for .xlsx, text for .txt)"
+                  },
+                  "template_path": {
+                      "type": "string",
+                      "description": "Optional: Path to base template file if copying from an existing document"
+                  },
+                  "replacements": {
+                      "type": "object",
+                      "description": "Optional: Key-value map of exact text replacements to perform on the template"
                   }
               },
               "required": ["path", "content"]
           }
       }
   },
-
+  {
+      "type": "function",
+      "function": {
+          "name": "create_document_from_template",
+          "description": "Create a new office document (.docx, .odt, .xlsx, .pptx) based on an existing template or document, preserving 100% of formatting, tables, styles, logos, and layout. Replaces specified text strings in the template with new values.",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "template_path": {
+                      "type": "string",
+                      "description": "The absolute path of the existing template/document to copy from, e.g. /beelink/Documents/Bineon_invoice.docx"
+                  },
+                  "target_path": {
+                      "type": "string",
+                      "description": "The absolute path for the new document to create, e.g. /beelink/Documents/Bineon_invoice_10.docx"
+                  },
+                  "replacements": {
+                      "type": "object",
+                      "description": "Dictionary of text replacements where keys are the exact original text in the template and values are the new replacement text, e.g. {'014/2026': '015/2026', '05.05.2026': '18.10.2026'}"
+                  }
+              },
+              "required": ["template_path", "target_path", "replacements"]
+          }
+      }
+  },
   {
       "type": "function",
       "function": {
@@ -329,49 +362,209 @@ MCP_TOOLS = [
               "required": ["fact"]
           }
       }
-  },
+  }
+]
+
+PLANE_TOOLS = [
   {
     "type": "function",
     "function": {
-      "name": "read_odt_placeholders",
-      "description": "Read an ODT template file and extract all unique placeholders of the form {{placeholder}}. MUST be called before modify_odt_file to discover actual placeholder names — do NOT guess them.",
+      "name": "list_plane_workspaces",
+      "description": "List all workspaces available to the user in Plane. Returns workspace names and slugs. Call this FIRST if you don't know the workspace slug.",
       "parameters": {
         "type": "object",
         "properties": {
-          "template_path": {
+          "token": {
             "type": "string",
-            "description": "REQUIRED. The absolute path of the ODT template file starting with the active storage root (e.g. /MyDevice/Documents/my_template.odt). Must end in .odt."
+            "description": "Optional: Plane API key. If omitted, automatically uses the key saved in user settings."
           }
-        },
-        "required": ["template_path"]
+        }
       }
     }
   },
   {
     "type": "function",
     "function": {
-      "name": "modify_odt_file",
-      "description": "Create a new ODT document by copying a template ODT and substituting placeholders. Call ONLY after read_odt_placeholders has returned the actual placeholder list. All three parameters are REQUIRED.",
+      "name": "list_plane_projects",
+      "description": "List all projects in a specific Plane workspace. Returns project names, identifiers, and UUIDs.",
       "parameters": {
         "type": "object",
         "properties": {
-          "template_path": {
+          "workspace": {
             "type": "string",
-            "description": "REQUIRED. The absolute path of the source ODT template file (same path used in read_odt_placeholders), e.g. /MyDevice/Documents/my_template.odt"
+            "description": "The workspace slug (e.g. from list_plane_workspaces)"
           },
-          "output_path": {
+          "token": {
             "type": "string",
-            "description": "REQUIRED. The absolute path where the resulting ODT file will be saved, e.g. /MyDevice/Documents/output_document.odt. Must include filename with .odt extension."
-          },
-          "replacements": {
-            "type": "object",
-            "description": "REQUIRED. A non-empty dictionary mapping each placeholder key (as returned by read_odt_placeholders, e.g. 'recipient_name') to its replacement string value (e.g. 'June'). Keys may be bare names or wrapped in {{}}.",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "description": "Optional: Plane API key."
           }
         },
-        "required": ["template_path", "output_path", "replacements"]
+        "required": ["workspace"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_plane_issues",
+      "description": "List tasks/issues from a Plane project. Shows sequence IDs (e.g. #12), titles, status, and priorities. Can filter by state (e.g. 'todo', 'in progress', 'done').",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace slug"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project ID or identifier"
+          },
+          "state": {
+            "type": "string",
+            "description": "Optional: Filter by state name or group (e.g. 'todo', 'in progress', 'done', 'backlog')"
+          },
+          "token": {
+            "type": "string",
+            "description": "Optional: Plane API key."
+          }
+        },
+        "required": ["workspace", "project_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_plane_issue_details",
+      "description": "Get full details of a specific Plane task/issue, including complete description, status, priority, target dates, assignees, and comments.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace slug"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project ID or identifier"
+          },
+          "issue_id": {
+            "type": "string",
+            "description": "The task UUID, short ID, or sequence number (e.g. '12' or 'PROJ-12')"
+          },
+          "token": {
+            "type": "string",
+            "description": "Optional: Plane API key."
+          }
+        },
+        "required": ["workspace", "project_id", "issue_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_plane_issue",
+      "description": "Create a new task/issue in a Plane project.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace slug"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Title of the task/issue"
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional: Detailed description of the task (Markdown or plain text)"
+          },
+          "priority": {
+            "type": "string",
+            "description": "Optional: Priority ('urgent', 'high', 'medium', 'low', 'none')"
+          },
+          "state_name": {
+            "type": "string",
+            "description": "Optional: Initial state name (e.g. 'Todo', 'Backlog')"
+          },
+          "token": {
+            "type": "string",
+            "description": "Optional: Plane API key."
+          }
+        },
+        "required": ["workspace", "project_id", "name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_plane_issue_state",
+      "description": "Update the workflow status of a Plane task/issue (e.g. move to 'In Progress', 'In Review', 'Done', 'Todo', 'Backlog').",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace slug"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project ID"
+          },
+          "issue_id": {
+            "type": "string",
+            "description": "The task UUID or sequence number (e.g. '12' or 'PROJ-12')"
+          },
+          "state_name": {
+            "type": "string",
+            "description": "Target state name (e.g. 'In Progress', 'In Review', 'Done', 'Todo', 'Backlog')"
+          },
+          "token": {
+            "type": "string",
+            "description": "Optional: Plane API key."
+          }
+        },
+        "required": ["workspace", "project_id", "issue_id", "state_name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_plane_issue_comment",
+      "description": "Post a comment, work progress report, or completion update to a Plane task/issue.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace slug"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project ID"
+          },
+          "issue_id": {
+            "type": "string",
+            "description": "The task UUID or sequence number (e.g. '12' or 'PROJ-12')"
+          },
+          "comment": {
+            "type": "string",
+            "description": "The comment text or report to attach to the task"
+          },
+          "token": {
+            "type": "string",
+            "description": "Optional: Plane API key."
+          }
+        },
+        "required": ["workspace", "project_id", "issue_id", "comment"]
       }
     }
   }
@@ -492,262 +685,7 @@ async def upload_omd_file_binary(ctx: UserContext, path: str, data: bytes) -> st
                 text = await resp.text()
                 return f"Error writing file: Status {resp.status} - {text}"
 
-def secure_extract_zip(z: zipfile.ZipFile, extract_dir: str):
-    """
-    Extracts all files from a ZIP archive securely while validating paths
-    against Zip Slip directory traversal vulnerabilities.
-    """
-    extract_dir_abs = os.path.abspath(extract_dir)
-    for member in z.infolist():
-        # Resolve absolute destination path
-        target_path = os.path.abspath(os.path.join(extract_dir_abs, member.filename))
-        # Enforce boundary check to prevent Zip Slip
-        if not target_path.startswith(extract_dir_abs + os.sep) and target_path != extract_dir_abs:
-            raise PermissionError(f"Security Block: Zip Slip directory traversal path detected: {member.filename}")
-        # Explicit validation for double dots or absolute path indicators
-        if ".." in member.filename or member.filename.startswith("/") or member.filename.startswith("\\"):
-            raise PermissionError(f"Security Block: Traversing or absolute filename in ZIP archive: {member.filename}")
-        z.extract(member, extract_dir_abs)
 
-async def read_odt_placeholders(ctx: UserContext, path: str) -> str:
-    """
-    Inspects an ODT document and extracts all unique placeholders of the form {{placeholder}}.
-    """
-    if not ctx.omd_key or not ctx.storage:
-        return "Error: OMD storage not linked."
-        
-    path_err = validate_omd_path(ctx, path)
-    if path_err:
-        return path_err
-        
-    try:
-        file_bytes = await download_omd_file(ctx, path)
-        
-        # Safe temp directories inside the workspace
-        import uuid
-        temp_id = str(uuid.uuid4())
-        workspace_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(workspace_dir, "user_data", f"temp_odt_{temp_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        local_odt_path = os.path.join(temp_dir, "temp.odt")
-        with open(local_odt_path, "wb") as f:
-            f.write(file_bytes)
-            
-        placeholders = set()
-        extract_dir = os.path.join(temp_dir, "extract")
-        os.makedirs(extract_dir, exist_ok=True)
-        
-        with zipfile.ZipFile(local_odt_path, 'r') as z:
-            # Secure unzipping with Zip Slip defense
-            secure_extract_zip(z, extract_dir)
-            
-            # Read content from the unzipped files
-            for name in ["content.xml", "styles.xml", "meta.xml"]:
-                xml_path = os.path.join(extract_dir, name)
-                if os.path.exists(xml_path):
-                    with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
-                        content = f_xml.read()
-                        found = re.findall(r"\{\{([^}]+)\}\}", content)
-                        for item in found:
-                            # Strip formatting XML tags inside the placeholder to get a clean name
-                            clean_item = re.sub(r'<[^>]+>', '', item).strip()
-                            if clean_item:
-                                placeholders.add(clean_item)
-                            
-        # Clean up temporary directory
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            
-        if not placeholders:
-            return "No placeholders (e.g. {{placeholder}}) found in this ODT document."
-            
-        return json.dumps(sorted(list(placeholders)), ensure_ascii=False)
-        
-    except PermissionError as se:
-        logging.error(f"Security error in read_odt_placeholders: {se}")
-        return f"Security Error: {se}"
-    except zipfile.BadZipFile:
-        logging.error(f"read_odt_placeholders: BadZipFile for path '{path}' — server returned non-ODT content (possibly 404 HTML).")
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        return (
-            f"Error: The file at '{path}' could not be opened as an ODT document (it is not a valid ZIP/ODT file). "
-            f"This usually means the file does not exist at that path, or the path is wrong. "
-            f"Check that the path exactly matches what the user specified and that the file exists in their storage. "
-            f"Do NOT retry with a guessed or modified filename."
-        )
-    except Exception as e:
-        logging.error(f"Error in read_odt_placeholders: {e}", exc_info=True)
-        return f"Error reading placeholders: {e}"
-
-async def modify_odt_file(ctx: UserContext, template_path: str, output_path: str, replacements: dict) -> str:
-    """
-    Reads a template ODT document from OMD storage, executes an XML-safe search-and-replace
-    using replacements, and uploads the resulting ODT document to output_path.
-    """
-    if not ctx.omd_key or not ctx.storage:
-        return "Error: OMD storage not linked."
-        
-    if not replacements:
-        return "Error: Replacements dictionary is empty."
-        
-    path_err1 = validate_omd_path(ctx, template_path)
-    if path_err1:
-        return path_err1
-        
-    path_err2 = validate_omd_path(ctx, output_path)
-    if path_err2:
-        return path_err2
-        
-    try:
-        file_bytes = await download_omd_file(ctx, template_path)
-        
-        # Safe temp directories inside the workspace
-        import uuid
-        temp_id = str(uuid.uuid4())
-        workspace_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(workspace_dir, "user_data", f"temp_odt_{temp_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        local_odt_path = os.path.join(temp_dir, "temp_in.odt")
-        with open(local_odt_path, "wb") as f:
-            f.write(file_bytes)
-            
-        extract_dir = os.path.join(temp_dir, "extract")
-        os.makedirs(extract_dir, exist_ok=True)
-        
-        with zipfile.ZipFile(local_odt_path, 'r') as z:
-            # Secure unzipping with Zip Slip defense
-            secure_extract_zip(z, extract_dir)
-            
-        # Validate replacements keys against actual placeholders
-        actual_placeholders = set()
-        for xml_name in ["content.xml", "styles.xml", "meta.xml"]:
-            xml_path = os.path.join(extract_dir, xml_name)
-            if os.path.exists(xml_path):
-                with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
-                    xml_content = f_xml.read()
-                    found = re.findall(r"\{\{([^}]+)\}\}", xml_content)
-                    for item in found:
-                        clean_item = re.sub(r'<[^>]+>', '', item).strip()
-                        if clean_item:
-                            actual_placeholders.add(clean_item)
-                            
-        if actual_placeholders:
-            logging.info(f"[ODT] Discovered placeholders in template: {sorted(list(actual_placeholders))}")
-            
-            invalid_keys = []
-            for k in replacements.keys():
-                k_str = str(k).strip()
-                if k_str.startswith("{{") and k_str.endswith("}}"):
-                    clean_k = k_str[2:-2].strip()
-                else:
-                    clean_k = k_str
-                if clean_k not in actual_placeholders:
-                    invalid_keys.append(k)
-            
-            if invalid_keys:
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                return f"Error: The replacements dictionary contains keys that do not exist in the template placeholders: {sorted(invalid_keys)}. The actual placeholders found in this template are: {sorted(list(actual_placeholders))}. Please only use these exact placeholder names as keys in your replacements dictionary."
-            
-        # XML-escape helpers to avoid breaking target XML markup (equivalent to invoice.py)
-        def escape_xml(s) -> str:
-            if s is None:
-                return ""
-            escaped = (
-                str(s).replace("&", "&amp;")
-                      .replace("<", "&lt;")
-                      .replace(">", "&gt;")
-                      .replace('"', "&quot;")
-                      .replace("'", "&apos;")
-            )
-            return escaped.replace("\n", "<text:line-break/>")
-            
-        
-        # Perform replacements on main files
-        xml_names = ["content.xml", "styles.xml", "meta.xml"]
-        for name in xml_names:
-            xml_path = os.path.join(extract_dir, name)
-            if os.path.exists(xml_path):
-                with open(xml_path, "r", encoding="utf-8", errors="ignore") as f_xml:
-                    content = f_xml.read()
-                    
-                modified = False
-                for key, val in replacements.items():
-                    escaped_val = escape_xml(val)
-                    
-                    # Clean the key to get the raw identifier (e.g. "customer_name")
-                    k_str = str(key).strip()
-                    if k_str.startswith("{{") and k_str.endswith("}}"):
-                        clean_key = k_str[2:-2].strip()
-                    else:
-                        clean_key = k_str
-                        
-                    # Advanced Formatting-Tolerant braced replacement:
-                    # We find all occurrences of {{...}} and match their text contents.
-                    # We then strip any XML formatting/styling tags inside to check if it matches clean_key.
-                    # If it matches, we substitute the entire {{...}} block (including formatting) with our value.
-                    def replace_braced(match):
-                        raw_block = match.group(0) # e.g. {{<text:span>customer_name</text:span>}}
-                        inner_content = match.group(1) # e.g. <text:span>customer_name</text:span>
-                        clean_inner = re.sub(r'<[^>]+>', '', inner_content).strip()
-                        if clean_inner == clean_key:
-                            return escaped_val
-                        return raw_block
-                        
-                    new_content = re.sub(r'\{\{([^}]+)\}\}', replace_braced, content)
-                    if new_content != content:
-                        content = new_content
-                        modified = True
-                    else:
-                        # Fallback: Literal search-and-replace of the original key string wrapped in braces
-                        braced_key = k_str if (k_str.startswith("{{") and k_str.endswith("}}")) else f"{{{{{k_str}}}}}"
-                        if braced_key in content:
-                            content = content.replace(braced_key, escaped_val)
-                            modified = True
-                        
-                if modified:
-                    with open(xml_path, "w", encoding="utf-8") as f_xml:
-                        f_xml.write(content)
-                        
-        # Repack everything securely into a new ODT zip container
-        # Note: According to ODF specifications, the 'mimetype' file MUST be the first file in the ZIP archive
-        # and MUST be stored uncompressed (ZIP_STORED) to ensure office suites recognize it and load native styling.
-        output_local_odt = os.path.join(temp_dir, "temp_out.odt")
-        with zipfile.ZipFile(output_local_odt, 'w') as z_out:
-            # 1. mimetype MUST be the very first file and stored uncompressed
-            mimetype_path = os.path.join(extract_dir, "mimetype")
-            if os.path.exists(mimetype_path):
-                z_out.write(mimetype_path, "mimetype", compress_type=zipfile.ZIP_STORED)
-                
-            # 2. All other files compressed
-            for root, _, files in os.walk(extract_dir):
-                for file in files:
-                    full_filepath = os.path.join(root, file)
-                    relative_path = os.path.relpath(full_filepath, extract_dir)
-                    if relative_path == "mimetype":
-                        continue
-                    z_out.write(full_filepath, relative_path, compress_type=zipfile.ZIP_DEFLATED)
-                    
-        # Read the generated modified ODT raw bytes
-        with open(output_local_odt, "rb") as f_out:
-            modified_bytes = f_out.read()
-            
-        # Clean up temporary directory
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            
-        # Upload the final raw binary to OMD storage
-        return await upload_omd_file_binary(ctx, output_path, modified_bytes)
-        
-    except PermissionError as se:
-        logging.error(f"Security error in modify_odt_file: {se}")
-        return f"Security Error: {se}"
-    except Exception as e:
-        logging.error(f"Error in modify_odt_file: {e}", exc_info=True)
-        return f"Error modifying ODT file: {e}"
 
 async def list_supported_tools(ctx: UserContext, mode: str = "work") -> str:
     if mode == "fun":
@@ -929,6 +867,7 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
                         "clickable":   True,
                         "document_id": doc_id,
                         "fullPath":    full_path,
+                        "path":        full_path,
                         "url":         f"https://onmydisk.net{full_path}",
                     })
         ctx.temp_sources = sources
@@ -941,8 +880,11 @@ async def search_memory_tool(ctx: UserContext, query: str) -> str:
             text    = res.get("text", "")
             doc_id  = res.get("document_id", "")
             title   = res.get("title", "") or (doc_id.split("/")[-1] if doc_id else "unknown")
+            clean_doc_id = str(doc_id).strip() if doc_id else ""
+            full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else (f"/{clean_doc_id}" if clean_doc_id else "")
             rec_type = res.get("type", "")
-            header  = f"{'File' if rec_type == 'file_chunk' else 'Memory'}: {title}"
+            file_ref = full_path or title
+            header  = f"{'File' if rec_type == 'file_chunk' else 'Memory'}: {file_ref}"
             output += f"{i}. [{header}]\n{text}\n\n"
 
         return output.strip()
@@ -961,85 +903,197 @@ async def search_memory_results(ctx: UserContext, query: str) -> list:
         tags_filter=prompt_tags or None,
     )
 
-async def write_omd_file(ctx: UserContext, path: str, content: str) -> str:
-    if not ctx.omd_key or not ctx.storage:
-        return "Error: OMD storage not linked."
-        
+def _write_local_atomic(local_path: str, data: bytes) -> None:
+    parent = os.path.dirname(local_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{local_path}.{os.getpid()}.omd-tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, local_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+async def _save_omd_binary_data(ctx: UserContext, path: str, data: bytes) -> str:
+    # 1. Check if local target on trusted node (direct atomic file write)
+    try:
+        import craft_service as cs
+        local_path = cs.resolve_local_path(ctx, path)
+        if local_path:
+            await asyncio.to_thread(_write_local_atomic, local_path, data)
+            logging.info(f"[_save_omd_binary_data] Saved locally: {local_path} ({len(data)} bytes)")
+            return f"Successfully wrote to {path}"
+    except Exception as e:
+        logging.error(f"[_save_omd_binary_data] Local write failed: {e}")
+        return f"Error writing file locally: {e}"
+
+    # 2. Remote / Guest mode: save strictly via P2P (device_push)
+    device_push = getattr(ctx, "device_push", None)
+    if not device_push:
+        return (
+            f"Error: Remote device storage requires active P2P consent (device_push). "
+            f"Unable to write to '{path}' without P2P tunnel."
+        )
+
+    try:
+        import device_push as dp
+        success = await dp.push_file_to_device_path(
+            omd_key=ctx.omd_key or "",
+            device_push=device_push,
+            rel_path=path,
+            data=data,
+            ctx=ctx,
+        )
+        if success:
+            return f"Successfully wrote to {path} via P2P"
+        else:
+            return f"Error: Failed to write to {path} over P2P tunnel"
+    except Exception as e:
+        logging.error(f"[_save_omd_binary_data] P2P write exception: {e}")
+        return f"Exception writing file over P2P: {e}"
+
+async def _read_omd_binary_data(ctx: UserContext, path: str) -> bytes:
+    import craft_service as cs
+    local = cs.resolve_local_path(ctx, path)
+    if local and os.path.isfile(local):
+        with open(local, "rb") as f:
+            return f.read()
+    data = await download_omd_file(ctx, path)
+    if not data or data.startswith(b"<!DOCTYPE") or data.startswith(b"<html") or data.startswith(b"Error"):
+        logging.warning(f"[_read_omd_binary_data] Download failed or returned non-binary for {path}")
+        return b""
+    return data
+
+async def create_document_from_template(
+    ctx: UserContext,
+    template_path: str,
+    target_path: str,
+    replacements: dict | list | str | None = None,
+    commands: list | None = None
+) -> str:
+    """Create a new office document based on an existing template, preserving 100% of formatting,
+    styles, tables, logos, and layout, while replacing specified texts or executing commands."""
+    template_path = str(template_path).strip()
+    target_path = str(target_path).strip()
+    if template_path and not template_path.startswith("/"):
+        template_path = "/" + template_path
+
+    # If target_path is relative or just a filename, place it in the same directory as template_path
+    if template_path and ("/" not in target_path.strip("/") or (ctx and ctx.storage and not target_path.startswith("/" + ctx.storage.strip("/").split("/")[0]))):
+        parent_dir = template_path.rsplit("/", 1)[0]
+        filename = os.path.basename(target_path) if os.path.basename(target_path) else "new_document" + os.path.splitext(template_path)[1]
+        target_path = f"{parent_dir}/{filename}"
+
+    if target_path and not target_path.startswith("/"):
+        target_path = "/" + target_path
+
+    path_err = validate_omd_path(ctx, target_path)
+    if path_err:
+        return path_err
+    template_err = validate_omd_path(ctx, template_path)
+    if template_err:
+        return template_err
+
+    try:
+        template_data = await _read_omd_binary_data(ctx, template_path)
+        if not template_data:
+            return f"Error: Template file '{template_path}' is empty or could not be read."
+
+        import craft_service as cs
+        source_name = os.path.basename(template_path)
+        target_name = os.path.basename(target_path)
+        kind = cs.kind_for_filename(target_name) or cs.kind_for_filename(source_name) or "doc"
+
+        if isinstance(replacements, str):
+            try:
+                replacements = json.loads(replacements)
+            except Exception:
+                pass
+
+        cmds = []
+        if replacements and isinstance(replacements, dict):
+            for old_txt, new_txt in replacements.items():
+                if old_txt is not None and new_txt is not None:
+                    old_s = str(old_txt).strip()
+                    new_s = str(new_txt).strip()
+                    if old_s:
+                        cmds.append(f'edit.replaceAll={json.dumps({"text": old_s, "with": new_s}, ensure_ascii=False)}')
+        elif replacements and isinstance(replacements, list):
+            for item in replacements:
+                if isinstance(item, dict):
+                    old_s = str(item.get("find") or item.get("text") or item.get("old") or "").strip()
+                    new_s = str(item.get("replace") or item.get("with") or item.get("new") or "").strip()
+                    if old_s:
+                        cmds.append(f'edit.replaceAll={json.dumps({"text": old_s, "with": new_s}, ensure_ascii=False)}')
+
+        if commands and isinstance(commands, list):
+            for c in commands:
+                if c and isinstance(c, str):
+                    cmds.append(c.strip())
+
+        if cmds:
+            logging.info(f"[create_document_from_template] Applying {len(cmds)} commands to {template_path} -> {target_path}")
+            result_data = await asyncio.to_thread(
+                cs.edit_document,
+                kind,
+                template_data,
+                source_name,
+                cmds,
+                author="OMD Agent",
+                out_name=target_name
+            )
+        else:
+            result_data = template_data
+
+        save_res = await _save_omd_binary_data(ctx, target_path, result_data)
+        if save_res.startswith("Successfully"):
+            return f"Successfully created {target_path} based on template {template_path}"
+        return save_res
+    except Exception as e:
+        logging.error(f"[create_document_from_template] Error: {e}")
+        return f"Error creating document from template: {e}"
+
+async def write_omd_file(ctx: UserContext, path: str, content: str = "", template_path: str = "", replacements: dict | None = None) -> str:
+    path = str(path).strip()
+
+    # If template_path is provided, route directly to create_document_from_template
+    if template_path:
+        return await create_document_from_template(ctx, template_path, path, replacements=replacements)
+
+    if path and not path.startswith("/"):
+        path = "/" + path
+
     path_err = validate_omd_path(ctx, path)
     if path_err:
         return path_err
 
-    try:
-        from utils import upload_data_to_storage
-        # Using the sync util function for now, but wrapping might be better. 
-        # Given it's a "tool" that might take time, we accept it might block slightly 
-        # or we could rely on OMD being fast. For proper async, should rewrite upload in aiohttp.
-        # But to be safe and consistent with existing upload logic including headers construction:
-        
-        # We need to construct 'dest'. upload_data_to_storage takes (omd_key, dest, filename, data)
-        # It constructs url as GATEWAY_URL/dest/filename
-        # So we need to split path.
-        
-        storage_id = ctx.storage.strip("/")
-        full_path = f"{storage_id}/{path}" # e.g. storage/user/docs/file.txt
-        
-        directory = os.path.dirname(full_path)
-        filename = os.path.basename(full_path)
-        
-        # upload_data_to_storage(omd_key, dest, filename, data)
-        # It does PUT {GATEWAY_URL}/{dest}/{filename}
-        
-        # CAUTION: core_service is async, upload_data_to_storage is sync and uses requests.
-        # If this blocks too long, it's bad. But for now, let's use it directly to reuse logic.
-        
-        # Need to separate storage_id from the rest for 'dest' argument if needed?
-        # upload_data_to_storage doc says: dest — полный путь (например "storage/user123/history/chat1.json")
-        # And constructs: url = f"{GATEWAY_URL}/{dest}/{filename}?jsonResponse=true"
-        # So 'dest' should be the directory path relative to gateway root (which includes storage id)
-        
-        # Wait, if I pass directory as dest, it appends filename.
-        # directory e.g. "storage/user123/docs"
-        
-        # We can implement a simple async put here to avoid blocking.
-        storage_key = ctx.omd_key
-        base_url = GATEWAY_URL.rstrip("/")
-        if not storage_key or not storage_id:
-             return "Error: OMD storage not linked."
-             
-        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
-        clean_path = path if not path.startswith("/") else path[1:]
-        root_folder = storage_id.split("/")[0] if "/" in storage_id else storage_id
-        
-        if path.startswith("/") or path.startswith(root_folder):
-            url_path = path.lstrip("/")
-            dest_url = f"{base_url}/{url_path}"
-            path = "/" + url_path
-        else:
-            dest_url = f"{base_url}/{storage_id}/{clean_path}"
-            path = f"/{storage_id}/{clean_path}"
-             
-        # Fallback if path looks like a directory
-        if not os.path.splitext(path)[1]:
-             dest_url = dest_url.rstrip("/") + "/new_file.txt"
-             path = path.rstrip("/") + "/new_file.txt"
-             logging.info(f"[write_omd_file] No extension found, appending default filename: {path}")
-        
-        headers = {
-            "Authorization": f"token:{storage_key}",
-            "Response": "json",
-            "Content-Type": "text/plain; charset=utf-8"
-        }
-        
-        async with aiohttp.ClientSession() as session:
-             async with session.put(dest_url, data=content.encode("utf-8"), headers=headers) as resp:
-                 if resp.status in [200, 201, 204]:
-                     return f"Successfully wrote to {path}"
-                 else:
-                     text = await resp.text()
-                     return f"Error writing file: Status {resp.status} - {text}"
+    # Fallback if path looks like a directory
+    if not os.path.splitext(path)[1]:
+        path = path.rstrip("/") + "/new_file.txt"
+        logging.info(f"[write_omd_file] No extension found, appending default filename: {path}")
 
+    filename = os.path.basename(path)
+
+    # 1. Compile document bytes (Office documents via Craft, plain text as UTF-8)
+    try:
+        import craft_service as cs
+        kind = cs.kind_for_filename(filename)
+        if kind and cs._cli_path(kind):
+            data = await asyncio.to_thread(cs.create_document, kind, filename, content)
+        else:
+            data = content.encode("utf-8")
     except Exception as e:
-        return f"Exception writing file: {e}"
+        logging.error(f"[write_omd_file] Error generating content for {path}: {e}")
+        return f"Error preparing document content: {e}"
+
+    return await _save_omd_binary_data(ctx, path, data)
 
 def extract_plan_steps(text: str) -> list:
     steps = []
@@ -1085,46 +1139,43 @@ def extract_plan_steps(text: str) -> list:
                     steps.append(content)
     return steps
 
-def get_non_plan_reasoning(text: str) -> str:
+def clean_reasoning_text(text: str) -> str:
+    """
+    Cleans intermediate reasoning/thought text for the UI reasoning block.
+    Removes channel delimiters, thought tags, plan tags, and stop tokens,
+    while preserving actual multi-line reasoning bullets.
+    """
     if not text:
         return ""
+    text = re.sub(r'<\|?channel\|?[^>\n]*>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?(?:thought|think)>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\[/?(?:PLAN|THOUGHT|CHECKLIST)\]', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
+    text = _STOP_TOKENS_PATTERN.sub('', text)
+
     lines = text.split('\n')
-    non_plan_lines = []
-    in_plan = False
+    cleaned_lines = []
+    in_plan_block = False
     for line in lines:
         line_strip = line.strip()
         if not line_strip:
-            non_plan_lines.append("")
-            continue
-        # Skip tags and formatting wrapper lines entirely from reasoning
-        if any(tag in line_strip.upper() for tag in ["[PLAN]", "[/PLAN]", "[THOUGHT]", "[/THOUGHT]", "<THOUGHT>", "</THOUGHT>", "[CHECKLIST]", "[/CHECKLIST]"]):
+            cleaned_lines.append(line)
             continue
         if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
-            in_plan = True
+            in_plan_block = True
             continue
-        
-        is_step = False
-        # Matches: "- [ ]", "- [x]", "- [X]", "* Step 1:", "Step 1:", "1.", "- ", "* "
-        if re.match(r'^(?:-\s*\[\s*[ xX]?\s*\]\s*|-\s*|\*\s*|Step\s*\d+\s*:\s*|\d+\.\s+)(.*)', line_strip, re.IGNORECASE):
-            is_step = True
-        elif line_strip.lower().startswith("step") or (line_strip and line_strip[0].isdigit() and len(line_strip) > 1 and line_strip[1:2] in ['.', ' ', ':']):
-            is_step = True
-            
-        if in_plan:
-            if line_strip.startswith("[") and not line_strip.upper().startswith("[PLAN"):
-                in_plan = False
+        if in_plan_block:
+            is_checkbox = re.match(r'^(?:-\s*\[\s*[ xX]?\s*\]\s*|Step\s*\d+|\d+\.\s+\[)', line_strip, re.IGNORECASE)
+            if not is_checkbox and not line_strip.startswith(("- [", "* [")):
+                in_plan_block = False
             else:
-                is_step = True
-                
-        if is_step:
-            continue
-            
-        non_plan_lines.append(line)
+                continue
+        cleaned_lines.append(line)
         
-    # Reconstruct while stripping consecutive empty lines
     cleaned = []
     last_empty = False
-    for line in non_plan_lines:
+    for line in cleaned_lines:
         if not line.strip():
             if not last_empty:
                 cleaned.append("")
@@ -1135,17 +1186,107 @@ def get_non_plan_reasoning(text: str) -> str:
             
     return "\n".join(cleaned).strip()
 
+def get_non_plan_reasoning(text: str) -> str:
+    return clean_reasoning_text(text)
+
+def split_mcp_output(text: str, has_tool_calls: bool = False) -> tuple[str, str]:
+    """
+    Splits agent output into (reasoning, final_content).
+    Detects channel markers (<channel|>), thinking blocks (<thought>...</thought>), 
+    and output generation markers.
+    """
+    if not text:
+        return "", ""
+
+    # 1. Explicit channel marker (e.g. <channel|>, <|channel|>, <|channel|>main)
+    channel_split = re.split(r'<\|?channel\|?(?:main|response|chat|final)?>', text, maxsplit=1, flags=re.IGNORECASE)
+    if len(channel_split) == 2:
+        reasoning_part, content_part = channel_split[0], channel_split[1]
+        return clean_reasoning_text(reasoning_part), clean_assistant_response(content_part)
+
+    # 2. Explicit <thought>...</thought> or <think>...</think>
+    thought_match = re.search(r'<(?:thought|think)>(.*?)</(?:thought|think)>', text, flags=re.DOTALL | re.IGNORECASE)
+    if thought_match:
+        reasoning_part = thought_match.group(1)
+        content_part = text[:thought_match.start()] + text[thought_match.end():]
+        return clean_reasoning_text(reasoning_part), clean_assistant_response(content_part)
+
+    # 3. If there are tool calls in this turn, all accompanying text is reasoning
+    if has_tool_calls:
+        return clean_reasoning_text(text), ""
+
+    # 4. Known section headers separating analysis/planning from the actual response
+    markers = [
+        r'\*\*Final Output Generation:\*\*',
+        r'\*\*Final Response:\*\*',
+        r'\*\*Response:\*\*',
+        r'\*\*Conclusion:\*\*',
+        r'\*\*Final Answer:\*\*',
+        r'### Final Response',
+        r'### Response',
+        r'### Answer'
+    ]
+    for marker in markers:
+        parts = re.split(marker, text, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) == 2 and parts[1].strip():
+            return clean_reasoning_text(parts[0]), clean_assistant_response(parts[1])
+
+    # 5. If the turn had no tool calls and didn't match markers:
+    # If text starts with a plan or analysis block, split off the answering body
+    lines = text.split('\n')
+    reasoning_lines = []
+    content_lines = []
+    in_analysis = False
+    reached_answer = False
+
+    for line in lines:
+        l_strip = line.strip()
+        if not l_strip:
+            if reached_answer:
+                content_lines.append(line)
+            else:
+                reasoning_lines.append(line)
+            continue
+
+        if any(tag in l_strip.upper() for tag in ["[PLAN]", "**ANALYSIS:", "**ANALYSIS**"]):
+            in_analysis = True
+            reasoning_lines.append(line)
+            continue
+
+        if in_analysis:
+            if l_strip.startswith(("- [", "* [", "- Step", "* Step")):
+                reasoning_lines.append(line)
+                continue
+            elif not l_strip.startswith(("-", "*", "[")) and len(l_strip) > 0:
+                in_analysis = False
+                reached_answer = True
+                content_lines.append(line)
+                continue
+
+        if reached_answer:
+            content_lines.append(line)
+        else:
+            reasoning_lines.append(line)
+
+    content_candidate = "\n".join(content_lines).strip()
+    reasoning_candidate = "\n".join(reasoning_lines).strip()
+
+    if content_candidate and (reasoning_candidate != content_candidate):
+        return clean_reasoning_text(reasoning_candidate), clean_assistant_response(content_candidate)
+
+    # If it's a direct natural language response with no plan/thinking tags
+    if not any(tag in text.upper() for tag in ["[PLAN]", "[THOUGHT]", "<THOUGHT>", "<THINK>"]):
+        return "", clean_assistant_response(text)
+
+    return clean_reasoning_text(text), ""
+
 def clean_final_content(text: str) -> str:
     if not text:
         return ""
-    # Remove any debug/agent labels
     text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
-    
-    # Strip plan blocks
-    text = get_non_plan_reasoning(text)
-    
-    return text.strip()
+    return clean_reasoning_text(text)
+
 
 def clean_mimetype(filename: str, raw_mimetype: str = None) -> str:
     """
@@ -1258,8 +1399,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     todos = []
     has_initialized_todos = False
     changed_files = []
+    requires_read = False
+    was_write_planned = False
     success = True
     tool_error_msg = ""
+    final_agent_response = ""
     # 1. Path Extraction Heuristic (Help the model find the path)
     raw_paths = re.findall(r"(\/[\w\-\.\/]+)", clean_message)
     potential_paths = []
@@ -1285,22 +1429,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         # Check if any path looks like a specific file with an extension
         files = [p for p in potential_paths if any(p.lower().endswith(ext) for ext in [".odt", ".pdf", ".txt", ".docx", ".csv", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".html", ".css", ".js", ".cpp", ".py"])]
         if files:
-            odt_files = [f for f in files if f.lower().endswith(".odt")]
-            other_files = [f for f in files if not f.lower().endswith(".odt")]
-            
-            if odt_files:
-                # ODT paths are MANDATORY — model must not invent or alter them
-                mandatory_block = (
-                    f"\n\nMANDATORY PATH LOCK: The user explicitly provided the following ODT file path(s) in their request: "
-                    f"{', '.join(odt_files)}. "
-                    f"You MUST use EXACTLY these path(s) character-by-character. "
-                    f"Do NOT invent, guess, abbreviate, or modify the filename in any way. "
-                    f"Passing any other path to read_odt_placeholders or modify_odt_file is strictly forbidden."
-                )
-                path_hint += mandatory_block
-            
-            if other_files:
-                path_hint += f"\nSYSTEM HINT: Detected exact file paths: {', '.join(other_files)}. Access/read these files directly using appropriate tools. Do NOT use `list_omd_files` if you already know the exact file path."
+            path_hint += f"\nSYSTEM HINT: Detected exact file paths: {', '.join(files)}. Access/read/write these files directly using appropriate tools. Do NOT use `list_omd_files` if you already know the exact file path."
         else:
             path_hint = f"\nSYSTEM HINT: Detected paths: {', '.join(potential_paths)}. \nSTRATEGY: You MUST use `list_omd_files` first to see what's inside before trying to read."
     
@@ -1333,6 +1462,15 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             storage_root = "/" + storage_id.split("/")[0] if "/" in storage_id else "/" + storage_id
             system_instruction += f"\n\n- ACTIVE SESSION STORAGE ROOT: '{storage_root}'. All absolute paths you access, list, search inside, or write to MUST start with this root directory. Do NOT guess or use fake directories like '/OnMyDisk' or '/Linux-desktop'."
 
+    is_russian = bool(re.search(r"[а-яё]", clean_message, re.IGNORECASE))
+    if is_russian:
+        system_instruction += (
+            "\n\n- MANDATORY LANGUAGE LOCK: The user's request is in RUSSIAN. "
+            "You MUST formulate your thoughts and final answer in RUSSIAN (русский язык). "
+            "Even when reading English documents or templates, provide all your explanations, section listings, "
+            "and summaries in Russian. Only keep verbatim quotes in their original language if specifically requested."
+        )
+
     # Initial Turn: Mandatory [PLAN] Phase
     # We use a more permissive system prompt for the planning turn.
     messages = [
@@ -1357,30 +1495,24 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         # Keep status as 'performing' throughout the turns
         yield {"type": "status", "content": "performing"}
         
-        # Determine if reading is required dynamically based on the agent's own planned checklist steps (fully multilingual)
-        requires_read = any("read_omd_file" in str(t.get("content", "")) or "read_odt_placeholders" in str(t.get("content", "")) for t in todos) if todos else False
-
-        # Check if read_odt_placeholders was successfully called and extract its output
-        discovered_placeholders_str = ""
-        for m in reversed(messages):
-            if m.get("role") == "tool":
-                content_str = m.get("content", "").strip()
-                if content_str.startswith("[") and content_str.endswith("]"):
-                    try:
-                        parsed = json.loads(content_str)
-                        if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
-                            discovered_placeholders_str = ", ".join(f"'{x}'" for x in parsed)
-                            break
-                    except Exception:
-                        pass
+        # Dynamically determine if read or write tools were planned in todos
+        requires_read = any("read_omd_file" in str(t.get("content", "")) for t in todos) if todos else False
+        was_write_planned = any(k in str(t.get("content", "")) for t in todos for k in ("write_omd_file", "create_document_from_template")) if todos else False
 
         # [TURN-SPECIFIC GUIDANCE]
         guidance = "You are an autonomous agent. "
-        if discovered_placeholders_str:
-             guidance += f"CRITICAL ODT TEMPLATE REMINDER: The template you are modifying has EXACTLY these placeholders: [{discovered_placeholders_str}]. Your `replacements` dictionary for `modify_odt_file` MUST ONLY use keys from this list. Do NOT use any other keys under any circumstances. Map all required document content specifically into these placeholders! "
         # [PROACTIVE DISCOVERY GATE]
         # If Turn 0 and we have a path that looks like a directory, only allow list_omd_files
-        available_tools = MCP_TOOLS
+        has_plane_key = bool(
+            (ctx and hasattr(ctx, "mcp_keys") and ctx.mcp_keys and ctx.mcp_keys.get("plane"))
+            or os.environ.get("PLANE_API_KEY")
+            or os.environ.get("PLANE_TOKEN")
+        )
+        is_plane_related = any("plane" in str(m.get("content", "")).lower() for m in messages[-3:])
+        if has_plane_key or is_plane_related:
+            available_tools = list(MCP_TOOLS) + list(PLANE_TOOLS)
+        else:
+            available_tools = list(MCP_TOOLS)
         if turn == 0:
              guidance += "MANDATORY: Analyze the request and create a detailed `[PLAN]` checklist. Your plan MUST cover every part of the user's request (e.g., if they ask to 'extract' or 'find amount', your plan MUST include `read_omd_file`). You MUST also call the first tool in your plan if possible."
              # [PROACTIVE DISCOVERY GATE]
@@ -1396,19 +1528,24 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                  {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
              ] + messages[1:]
         else:
-             if known_files:
-                  guidance = "Proceed executing your `[PLAN]`. Use the absolute file paths already discovered."
+             if was_write_planned and not changed_files:
+                  guidance = "Continue executing your `[PLAN]`. Use `create_document_from_template` (or `write_omd_file`) to create or save documents."
+             elif known_files or has_read_file:
+                  guidance = "Proceed executing your `[PLAN]`. All required file data has been retrieved. Now formulate your final comprehensive answer to the user in RUSSIAN (на русском языке)." if is_russian else "Proceed executing your `[PLAN]`. If all required data has been retrieved, formulate your final comprehensive answer to the user."
              else:
-                  guidance += "Continue executing your `[PLAN]`. Mark steps as [x] once done."
+                  guidance += " Continue executing your `[PLAN]`. Mark steps as [x] once done."
              
-             # Turn 1+ is strict tool calling
+             # Turn 1+: allow either tool calls or final answer
+             lang_instruction = "strictly in RUSSIAN (на русском языке)" if is_russian else "in the language of their prompt"
              current_messages = [
                  {
                      "role": "system", 
                      "content": (
                          messages[0]["content"] + 
-                         "\nCRITICAL: Respond ONLY with tool calls. Do NOT explain or output conversational text in your response. "
-                         "You are 100% allowed and expected to write full natural language content, letters, and text inside the JSON arguments of your tool calls (e.g. inside `replacements` or `content` fields).\n\n"
+                         f"\nGUIDELINES: If more file operations or tools are needed according to your plan, execute the next tool call. "
+                         f"If all required file tools have already been executed and you have obtained the needed file content or information, "
+                         f"provide your complete, detailed answer to the user {lang_instruction}. "
+                         f"You may write full natural language content, letters, and text inside the JSON arguments of your tool calls when modifying files.\n\n"
                          f"CURRENT GUIDANCE: {guidance}"
                      )
                  }
@@ -1442,39 +1579,13 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         
         messages.append(msg)
          
-        # [ODT WORKFLOW NUDGE]
-        # If we have run read_odt_placeholders but have not yet run modify_odt_file,
-        # we MUST ensure the model proceeds to modify the document and does not prematurely stop or output text.
-        # This check is placed outside agent_text block so it catches empty/failed tool-calling responses.
-        has_read_placeholders = "read_odt_placeholders" in all_tool_results
-        has_modified_odt = "modify_odt_file" in all_tool_results
-        is_modifying_now = any(tc.get("function", {}).get("name") == "modify_odt_file" for tc in tool_calls) if tool_calls else False
-        
-        already_nudged = any(
-            isinstance(m.get("content"), str) and "Wait! You have successfully read the ODT placeholders" in m["content"]
-            for m in messages
-        )
-        
-        # Determine if the user request actually intends/plans to modify the document based on the planner's todos
-        was_write_planned = any("modify_odt_file" in str(t.get("content", "")) or "write_omd_file" in str(t.get("content", "")) for t in todos) if todos else False
-        
-        if was_write_planned and not already_nudged and has_read_placeholders and not has_modified_odt and not is_modifying_now:
-              messages.append({
-                  "role": "user", 
-                  "content": (
-                      "Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet! "
-                      "You MUST now calculate the required replacement values and execute `modify_odt_file` to generate the final document. "
-                      "Do NOT output markdown invoice templates, text representations, or explanations. You MUST call `modify_odt_file` to save the document."
-                  )
-              })
-              logging.warning(f"[MCP][Turn {turn+1}] Placeholders read but modify_odt_file not called. Injecting ODT Workflow Nudge.")
-              tool_calls = []
-              msg["tool_calls"] = []
-              continue
+
         
         # [REASONING CAPTURE]
         # Ensure that plans, thoughts, and checklists are preserved and visible to the main assistant.
         agent_text = msg.get("content", "").strip()
+        if not agent_text and msg.get("thinking"):
+            agent_text = msg.get("thinking", "").strip()
         
         # [REPETITIVE GENERATION GUARD]
         # Detect token-looping issues in local LLM output (e.g., endlessly repeating templates/ or words)
@@ -1509,16 +1620,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
              clean_agent_text = "\n".join(filtered_lines).strip()
              
              if clean_agent_text:
-                  all_tool_results += f"{clean_agent_text}\n\n"
+                  # Separate thoughts from final answer using split_mcp_output
+                  reasoning_delta, final_candidate = split_mcp_output(clean_agent_text, has_tool_calls=bool(tool_calls))
                   
-                  # Show thought block only if there's non-plan reasoning
-                  non_plan_reasoning = get_non_plan_reasoning(clean_agent_text)
-                  if non_plan_reasoning:
+                  if reasoning_delta:
+                       all_tool_results += f"{reasoning_delta}\n\n"
                        yield {
                            "id": f"thought_turn_{turn}",
                            "type": "reasoning",
-                           "delta": non_plan_reasoning
+                           "delta": reasoning_delta
                        }
+                  
+                  if final_candidate:
+                       final_agent_response = final_candidate
                   
                   # Parse and initialize checklist todos on turn 0
                   if turn == 0 and not has_initialized_todos:
@@ -1543,7 +1657,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                   if turn == 0:
                        logging.info(f"\n{'='*20} [MCP] GENERATED PLAN {'='*20}\n{clean_agent_text}\n{'='*61}")
                   else:
-                       logging.info(f"[MCP][Turn {turn+1}] Agent Reasoning/Plan: {clean_agent_text}")
+                       logging.info(f"[MCP][Turn {turn+1}] Reasoning: {reasoning_delta[:80]}... | Final: {final_candidate[:80]}...")
              
              # [PLAN-BASED LOGGING]
              # We log whether the agent's plan mentions reading, but we do NOT override requires_read.
@@ -1561,7 +1675,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                                  "Wait! You did NOT provide a detailed `[PLAN]` checklist or call any tools! "
                                  "To fulfill the request, you MUST start your response with a detailed `[PLAN]` checklist "
                                  "describing each step (using tool_name in parentheses) and execute the first tool call "
-                                 "(e.g., `read_odt_placeholders` or `list_omd_files`) immediately in Turn 0. "
+                                 "(e.g., `read_omd_file` or `list_omd_files`) immediately in Turn 0. "
                                  "Do NOT output raw JSON data, markdown templates, or conversational text. Redo your response now."
                             )
                        elif not has_plan_text:
@@ -1602,8 +1716,18 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                        logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without reading (User Intent: READ). Blocking.")
                        continue
                   
-                  all_tool_results += f"\n{agent_text}\n"
+                  if was_write_planned and not changed_files and turn < max_turns - 1:
+                       messages.append({"role": "user", "content": "Wait! Your plan includes creating or modifying a document (`create_document_from_template` or `write_omd_file`), but no document has been created or saved yet. You MUST call `create_document_from_template` now with template_path, target_path, and replacements."})
+                       logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without writing document. Blocking.")
+                       continue
+                  
+                  if final_candidate:
+                       final_agent_response = final_candidate
+                       all_tool_results += f"\nFinal Response:\n{final_candidate}\n"
+                  else:
+                       all_tool_results += f"\n{clean_agent_text}\n"
                   break
+
 
             
         # If there are no tool calls and no agent_text (e.g., just an empty message or "NO_TOOL" without content)
@@ -1616,27 +1740,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                  # Add a system nudge to actually start tool calls if they haven't yet.
                  messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now."})
                  continue
-            # [STUCK/EMPTY RESPONSE RECOVERY FOR ODT]
-            # If we successfully read placeholders but have not called modify_odt_file yet, 
-            # and the model is stuck/returned an empty response, we force it to proceed.
-            has_read_placeholders = "Tool Output (read_odt_placeholders):" in all_tool_results
-            has_modified_odt = "Tool Output (modify_odt_file):" in all_tool_results
-            
-            if has_read_placeholders and not has_modified_odt and turn < max_turns - 1:
-                p_list_str = discovered_placeholders_str if discovered_placeholders_str else "content, title"
-                logging.warning(f"[MCP][Turn {turn+1}] ODT Stuck Recovery: placeholders read but modify_odt_file not called. Injecting Stuck Nudge.")
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"Wait! You have successfully read the ODT placeholders, but you have NOT modified the document yet!\n"
-                        f"Discovered placeholders: [{p_list_str}].\n\n"
-                        f"You MUST now:\n"
-                        f"1. First perform a 'Data Calculation & Mapping' analysis in your reasoning block to map the user's request details specifically into these placeholders.\n"
-                        f"2. Immediately execute the `modify_odt_file` tool to generate and save the final document.\n\n"
-                        f"Respond with both your analysis and the tool call to `modify_odt_file`."
-                    )
-                })
-                continue
+
+
+            if was_write_planned and not changed_files and turn < max_turns - 1:
+                 messages.append({"role": "user", "content": "Wait! You have not created the requested document yet. Execute the next step: call `create_document_from_template` with template_path, target_path, and replacements."})
+                 logging.warning(f"[MCP][Turn {turn+1}] Agent stopped with no tool calls before document creation. Nudging.")
+                 continue
 
             # If we reach here and there are no tool calls, and it wasn't a plan on turn 0,
             # then the agent is done or stuck. Break the loop.
@@ -1661,11 +1770,17 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "read_omd_file": "reading",
             "find_omd_file": "searching",
             "write_omd_file": "writing",
+            "create_document_from_template": "writing",
             "search_web": "searching",
             "search_memory": "searching",
             "save_user_fact": "learning",
-            "read_odt_placeholders": "reading",
-            "modify_odt_file": "writing"
+            "list_plane_workspaces": "connecting",
+            "list_plane_projects": "listing",
+            "list_plane_issues": "listing",
+            "get_plane_issue_details": "reading",
+            "create_plane_issue": "writing",
+            "update_plane_issue_state": "writing",
+            "add_plane_issue_comment": "writing",
         }
         status_msg = status_map.get(name, "executing")
         
@@ -1675,16 +1790,16 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
              status_args["path"] = os.path.basename(args.get('path', 'directory').rstrip('/'))
         elif name == "read_omd_file":
              status_args["path"] = os.path.basename(args.get('path', 'file'))
-        elif name == "read_odt_placeholders":
-             status_args["path"] = os.path.basename(args.get('path', 'file'))
-        elif name == "modify_odt_file":
-             status_args["path"] = os.path.basename(args.get('output_path', 'file'))
         elif name == "find_omd_file":
              status_args["path"] = os.path.basename(args.get('root_directory', 'root').rstrip('/'))
         elif name == "write_omd_file":
              status_args["path"] = os.path.basename(args.get('path', 'file'))
+        elif name == "create_document_from_template":
+             status_args["path"] = os.path.basename(args.get('target_path') or args.get('path') or 'document')
         elif name == "search_web":
              status_args["path"] = args.get('query', '')
+        elif name.startswith("list_plane_") or name.endswith("_plane_issue") or name.endswith("_plane_issue_comment") or name == "get_plane_issue_details":
+             status_args["path"] = args.get("name") or args.get("issue_id") or args.get("workspace") or "Plane"
 
         # Yield status event
         yield {"type": "status", "content": status_msg, "args": status_args}
@@ -1825,6 +1940,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                       res = await read_omd_file(ctx, path_arg)
                       if not res.startswith("Error"):
                            has_read_file = True
+                           known_files.add(path_arg)
                       elif "DIRECTORY" in res:
                            # If it failed because it was a directory, we need to mark it
                            listed_paths.add(path_arg.rstrip("/"))
@@ -1836,6 +1952,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                        # Extract only the path part, ignoring any SYSTEM NOTICE that might be appended
                        raw_res = res.split("\n\nSYSTEM NOTICE:")[0]
                        file_path = raw_res.replace("[FILE]:", "").strip()
+                       if file_path and not file_path.startswith("/"):
+                           file_path = "/" + file_path
                        known_files.add(file_path)
                        # Inject nudge
                        
@@ -1848,11 +1966,21 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                  else:
                      content = args.get("content", "")
                      path_arg = (args.get("path") or args.get("file_path") or args.get("filePath") or "").strip()
+                     template_p = (args.get("template_path") or args.get("template") or "").strip()
+                     replacements = args.get("replacements") or {}
                      
                      # [ROBUST WRITE SHIELD]
-                     # If the content looks like an error, placeholder, or failure report, reject it.
-                     forbidden_patterns = ["[", "...", "Failed to fetch", "Error reading", "No information", "Access denied", "403", "DIRECTORY", "cannot read"]
-                     is_invalid = any(pattern.lower() in content.lower() for pattern in forbidden_patterns)
+                     # Only reject if content is empty (and no template specified), an explicit error report, or a placeholder stub.
+                     stripped = content.strip()
+                     is_invalid = False
+                     if not stripped and not template_p:
+                         is_invalid = True
+                     elif stripped in ("...", "[...]", "TODO", "[TODO]"):
+                         is_invalid = True
+                     elif len(stripped) < 60 and stripped.startswith("[") and stripped.endswith("]"):
+                         is_invalid = True
+                     elif len(stripped) < 200 and stripped.lower().startswith(("error:", "failed to fetch", "access denied", "cannot read")):
+                         is_invalid = True
                      
                      # [DIRECTORY WRITE BLOCK]
                      is_dir_write = path_arg.rstrip("/") in listed_paths
@@ -1862,9 +1990,33 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                      elif is_dir_write:
                           res = f"Error: '{path_arg}' is a confirmed DIRECTORY. You cannot write a file to this path. Use a full filename (e.g., {path_arg.rstrip('/')}/report.txt)."
                      else:
-                          res = await write_omd_file(ctx, path_arg, content)
+                          res = await write_omd_file(ctx, path_arg, content, template_path=template_p, replacements=replacements)
                           if not res.startswith("Error") and not res.startswith("Exception"):
                                changed_files.append(path_arg)
+             elif name == "create_document_from_template":
+                 tmpl_path = (args.get("template_path") or args.get("template") or args.get("source_path") or args.get("source") or "").strip()
+                 target_path = (args.get("target_path") or args.get("target") or args.get("path") or args.get("output_path") or args.get("file_path") or "").strip()
+                 replacements = args.get("replacements") or args.get("replace") or {}
+                 commands = args.get("commands") or []
+                 
+                 # [TURN 1 SHIELD]
+                 # Encourage reading the template file first if not yet read so model knows exact strings
+                 if turn == 0 and potential_paths and not has_read_file:
+                     res = "Error: You MUST call `read_omd_file` on the template file first to inspect its existing values, numbers, and dates before creating a document from it."
+                     logging.warning(f"[MCP] Turn 1 Template Creation Blocked: {tmpl_path}")
+                 elif not target_path or not tmpl_path:
+                     res = "Error: Both template_path and target_path are required."
+                 elif target_path.rstrip("/") in listed_paths:
+                     res = f"Error: '{target_path}' is a confirmed DIRECTORY. You cannot write a file to this path."
+                 else:
+                     res = await create_document_from_template(ctx, tmpl_path, target_path, replacements=replacements, commands=commands)
+                     if not res.startswith("Error") and not res.startswith("Exception"):
+                         real_target = target_path
+                         if tmpl_path and ("/" not in target_path.strip("/") or (ctx and ctx.storage and not target_path.startswith("/" + ctx.storage.strip("/").split("/")[0]))):
+                             parent_dir = tmpl_path.rsplit("/", 1)[0]
+                             filename = os.path.basename(target_path) if os.path.basename(target_path) else "new_document" + os.path.splitext(tmpl_path)[1]
+                             real_target = f"{parent_dir}/{filename}"
+                         changed_files.append(real_target)
              elif name == "search_web":
                  res = await search_web(ctx, args.get("query", ""))
              elif name == "search_memory":
@@ -1886,98 +2038,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                          res = f"Success. Memorized: {fact}"
                      except Exception as e:
                          res = f"Error saving memory: {e}"
-             elif name == "read_odt_placeholders":
-                  path_arg = (args.get("template_path") or args.get("odt_file_path") or args.get("path") or args.get("template") or args.get("templatePath") or args.get("file_path") or args.get("filePath") or "").strip()
-                  if not path_arg:
-                      res = "Error: Missing required parameter 'template_path'. You must specify the absolute path to the ODT template file (e.g., '/MyDevice/Documents/my_template.odt')."
-                  else:
-                      # [PATH HEALER] If the model hallucinated a path that doesn't match any ODT
-                      # explicitly provided in the user's prompt, auto-correct to the known template.
-                      # We only override if potential_paths has ODT files AND the model's path is NOT
-                      # one of them (i.e. the model invented something).
-                      known_odt_paths = [p for p in potential_paths if p.lower().endswith(".odt")]
-                      if known_odt_paths and path_arg not in known_odt_paths:
-                          # Prefer paths that look like templates (not output paths from the prompt)
-                          # Heuristic: output path usually ends with a user-named result file,
-                          # template path was explicitly quoted as the source in the user message
-                          corrected = known_odt_paths[0]
-                          logging.warning(
-                              f"[MCP PATH HEALER] read_odt_placeholders: model used hallucinated path "
-                              f"'{path_arg}' — auto-correcting to user-specified path '{corrected}'"
-                          )
-                          path_arg = corrected
-                      res = await read_odt_placeholders(ctx, path_arg)
-
-             elif name == "modify_odt_file":
-                    template_path = (args.get("template_path") or args.get("path") or args.get("template_file_path") or args.get("templatePath") or args.get("template") or "").strip()
-                    
-                    # Proactive template path recovery/healing: find verified path from previous read_odt_placeholders call
-                    discovered_template = ""
-                    for call in list(call_history):
-                        if "read_odt_placeholders" in call:
-                            try:
-                                args_str = call.split(":", 1)[1]
-                                args_parsed = json.loads(args_str)
-                                path_val = (args_parsed.get("template_path") or args_parsed.get("path") or "").strip()
-                                if path_val:
-                                    discovered_template = path_val
-                                    break
-                            except:
-                                pass
-                                 
-                    if discovered_template and (not template_path or template_path != discovered_template or "template.odt" in template_path.lower()):
-                        logging.info(f"[MCP HEALER] Auto-corrected template_path from '{template_path}' to verified path '{discovered_template}'")
-                        template_path = discovered_template
-                         
-                    if not template_path and potential_paths:
-                        odt_files = [p for p in potential_paths if p.lower().endswith(".odt")]
-                        if odt_files:
-                            template_path = odt_files[0]
-                            logging.info(f"[MCP HEALER] Restored missing template_path from potential prompt paths: '{template_path}'")
-                    
-                    # --- Fail-fast: required parameter checks before any path validation ---
-                    storage_root = f"/{ctx.storage.strip('/').split('/')[0]}" if ctx.storage else "your active storage root"
-                    if not template_path:
-                        res = (f"Error: Missing required parameter 'template_path' in modify_odt_file call. "
-                               f"You must supply the absolute path to the source ODT template "
-                               f"(e.g. modify_odt_file(template_path='{storage_root}/Documents/Bineon_template.odt', "
-                               f"output_path='{storage_root}/Documents/result.odt', replacements={{...}})). "
-                               f"Use the same path you passed to read_odt_placeholders.")
-                    else:
-                        output_path = (args.get("output_path") or args.get("output_file_path") or args.get("outputPath") or args.get("output") or "").strip()
-                        if not output_path:
-                            res = (f"Error: Missing required parameter 'output_path' in modify_odt_file call. "
-                                   f"You must supply the absolute path for the resulting ODT file "
-                                   f"(e.g. output_path='{storage_root}/Documents/result.odt'). "
-                                   f"Must include a filename ending in .odt.")
-                        else:
-                            replacements = args.get("replacements")
-                            if not isinstance(replacements, dict):
-                                replacements = {}
-                                 
-                            # Proactive ODT replacements healer: catch flattened custom arguments and move them to replacements
-                            excluded_keys = {
-                                "template_path", "path", "template_file_path", "templatepath", "template",
-                                "output_path", "output_file_path", "outputpath", "output", "replacements"
-                            }
-                            for k, v in args.items():
-                                if k.lower() not in excluded_keys and v is not None:
-                                    # Clean the key to map output_content -> content, output_title -> title
-                                    clean_k = k
-                                    if k.lower().startswith("output_"):
-                                        clean_k = k[7:]
-                                    elif k.lower().startswith("output"):
-                                        clean_k = k[6:]
-                                    replacements[clean_k] = v
-                                    
-                            if replacements and not args.get("replacements"):
-                                logging.info(f"[MCP HEALER] Auto-reconstructed replacements from flattened top-level arguments: {replacements}")
-                                
-                            res = await modify_odt_file(ctx, template_path, output_path, replacements)
-                            if not res.startswith("Error") and not res.startswith("Exception"):
-                                changed_files.append(output_path)
+             elif name == "list_plane_workspaces":
+                 res = await plane_service.list_plane_workspaces(ctx, token=args.get("token"))
+             elif name == "list_plane_projects":
+                 res = await plane_service.list_plane_projects(ctx, workspace=args.get("workspace", ""), token=args.get("token"))
+             elif name == "list_plane_issues":
+                 res = await plane_service.list_plane_issues(ctx, workspace=args.get("workspace", ""), project_id=args.get("project_id", ""), state=args.get("state"), token=args.get("token"))
+             elif name == "get_plane_issue_details":
+                 res = await plane_service.get_plane_issue_details(ctx, workspace=args.get("workspace", ""), project_id=args.get("project_id", ""), issue_id=args.get("issue_id", ""), token=args.get("token"))
+             elif name == "create_plane_issue":
+                 res = await plane_service.create_plane_issue(ctx, workspace=args.get("workspace", ""), project_id=args.get("project_id", ""), name=args.get("name", ""), description=args.get("description", ""), priority=args.get("priority", "none"), state_name=args.get("state_name"), token=args.get("token"))
+             elif name == "update_plane_issue_state":
+                 res = await plane_service.update_plane_issue_state(ctx, workspace=args.get("workspace", ""), project_id=args.get("project_id", ""), issue_id=args.get("issue_id", ""), state_name=args.get("state_name", ""), token=args.get("token"))
+             elif name == "add_plane_issue_comment":
+                 res = await plane_service.add_plane_issue_comment(ctx, workspace=args.get("workspace", ""), project_id=args.get("project_id", ""), issue_id=args.get("issue_id", ""), comment=args.get("comment", ""), token=args.get("token"))
              else:
-                   supported_names = [t["function"]["name"] for t in MCP_TOOLS]
+                   all_tools_reg = list(MCP_TOOLS) + list(PLANE_TOOLS)
+                   supported_names = [t["function"]["name"] for t in all_tools_reg]
                    res = f"Error: Tool '{name}' is not supported. Supported tools are: {supported_names}. Please only call supported tools."
                    logging.warning(f"[MCP HALLUCINATION GUARD] Blocked hallucinated tool: {name}")
 
@@ -2055,15 +2132,24 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         if requires_read:
              all_tool_results += "\nSYSTEM NOTICE: Discovery succeeded, but no file content was read. The requested details (totals/items) are NOT in this tool output."
         
-    # Mark all remaining todos completed when finished
+    # Strict validation: if document generation was planned or requested, but no files were actually modified, mark as failure.
+    was_write_planned = any(k in str(t.get("content", "")) for t in todos for k in ("write_omd_file", "create_document_from_template")) if todos else False
+    is_modify_attempted = "write_omd_file" in all_tool_results or "create_document_from_template" in all_tool_results
+    if (was_write_planned or is_modify_attempted) and not changed_files and success:
+        success = False
+        tool_error_msg = "The document was not modified or saved. Please ensure all required parameters are provided."
+
+    # Mark remaining todos completed when finished ONLY if successful
     if todos:
-         for t_item in todos:
-              t_item["status"] = "completed"
+         todo_st = "success" if success else "error"
+         if success:
+              for t_item in todos:
+                   t_item["status"] = "completed"
          yield {
              "id": "mcp_todo",
              "type": "tool",
              "state": {
-                 "status": "success",
+                 "status": todo_st,
                  "tool": "todo",
                  "input": {
                      "todos": todos
@@ -2072,45 +2158,42 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
              "action": "part_update"
          }
          
-    # Strict validation: if document generation was planned or requested, but no files were actually modified, mark as failure.
-    was_write_planned = any("modify_odt_file" in str(t.get("content", "")) or "write_omd_file" in str(t.get("content", "")) for t in todos) if todos else False
-    is_modify_attempted = "modify_odt_file" in all_tool_results
-    if (was_write_planned or is_modify_attempted) and not changed_files and success:
-        success = False
-        tool_error_msg = "The document was not modified or saved. Please ensure all required parameters are provided."
-         
-    # Always generate the final human response dynamically via the LLM based on actual execution results,
-    # ensuring zero hardcoded templates or concrete conversational Russian phrases are baked into the Python code.
-    error_context = f"\nCRITICAL: The operation failed with the following error:\n- {tool_error_msg}" if not success else ""
-    files_context = f"\nModified/Created files saved in OnMyDisk storage: {', '.join(changed_files)}" if changed_files else ""
+    # Resolve final human response: prioritize agent's direct answer if generated
+    final_output = clean_assistant_response(final_agent_response.strip())
     
-    summary_prompt = (
-        "You are a helpful file system assistant. The requested file system operations have finished.\n"
-        f"User's request was: '{clean_message}'\n"
-        f"Execution status: {'SUCCESS' if success else 'FAILED'}\n"
-        f"{error_context}\n"
-        f"{files_context}\n\n"
-        "Write a short, precise, task-focused response in Russian.\n"
-        "INSTRUCTIONS:\n"
-        "1. If the execution failed (FAILED status), you MUST clearly, politely, and explicitly explain the error to the user in Russian, state exactly what went wrong, and ask how they want to proceed. Do NOT claim success under any circumstances!\n"
-        "2. If everything was successful (SUCCESS status), summarize the actions you performed (in detail) and tell the user that everything is successfully saved in their storage.\n"
-        "3. Never greet, apologize, introduce yourself or your persona, use emojis, exclamation marks or filler pleasantry. No small talk — go straight to the result of the task, and make the response highly context-specific."
-    )
-    payload = {
-        "model": MCP_MODEL,
-        "messages": [
-            {"role": "system", "content": f"{BASE_SYSTEM_PROMPT}\n\n{summary_prompt}"}
-        ],
-        "stream": False,
-        "options": {"temperature": 0.5}
-    }
-    logging.info("[MCP] Generating dynamic human response via LLM...")
-    final_output = ""
-    summary_data = await llm_request(payload)
-    if summary_data and "message" in summary_data:
-        final_output = summary_data["message"]["content"].strip()
+    # If the agent already provided a substantial response, use it
+    if not final_output:
+        error_context = f"\nCRITICAL: The operation failed with the following error:\n- {tool_error_msg}" if not success else ""
+        files_context = f"\nModified/Created files saved in OnMyDisk storage: {', '.join(changed_files)}" if changed_files else ""
+        tool_results_summary = all_tool_results[:3000] if all_tool_results else ""
         
-    # Safe technical fallback (strictly minimal and technical, no hardcoded conversational Russian text!)
+        summary_prompt = (
+            "You are a helpful file system assistant. The requested file operations have finished.\n"
+            f"User's request was: '{clean_message}'\n"
+            f"Execution status: {'SUCCESS' if success else 'FAILED'}\n"
+            f"{error_context}\n"
+            f"{files_context}\n"
+            f"Tool execution results:\n{tool_results_summary}\n\n"
+            "Write a short, precise, task-focused response in Russian.\n"
+            "INSTRUCTIONS:\n"
+            "1. If the execution failed (FAILED status), you MUST clearly explain the error to the user in Russian, state exactly what went wrong, and ask how they want to proceed.\n"
+            "2. If everything was successful (SUCCESS status), answer the user's request directly based on the tool results or summarize what was done.\n"
+            "3. Never greet, apologize, introduce yourself or your persona, use emojis, exclamation marks or filler pleasantry. Go straight to the result of the task."
+        )
+        payload = {
+            "model": MCP_MODEL,
+            "messages": [
+                {"role": "system", "content": f"{BASE_SYSTEM_PROMPT}\n\n{summary_prompt}"}
+            ],
+            "stream": False,
+            "options": {"temperature": 0.5}
+        }
+        logging.info("[MCP] Generating dynamic human response via LLM...")
+        summary_data = await llm_request(payload)
+        if summary_data and "message" in summary_data:
+            final_output = clean_assistant_response(summary_data["message"]["content"].strip())
+            
+    # Safe technical fallback (strictly minimal and technical)
     if not final_output:
         if not success:
             final_output = f"Error: {tool_error_msg}"
@@ -2119,9 +2202,51 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         else:
             final_output = "Completed successfully."
 
-    # Build changed files objects
+    # Safety net: if user asked in Russian but the model output is purely in English without Russian letters,
+    # translate the response to Russian while preserving quoted verbatim excerpts.
+    if is_russian and final_output and not re.search(r"[а-яё]", final_output, re.IGNORECASE):
+        try:
+            logging.info("[MCP] Model responded in English to a Russian prompt. Translating response to Russian...")
+            translate_payload = {
+                "model": MCP_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional assistant. Translate the following text into natural, fluent Russian. "
+                            "Do NOT translate exact quoted text inside quotation marks (keep original verbatim quotes intact). "
+                            "Translate all headings, bullet explanations, and conversational framing into Russian. "
+                            "Output ONLY the translated text without introductory remarks or small talk."
+                        )
+                    },
+                    {"role": "user", "content": final_output}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2}
+            }
+            trans_res = await llm_request(translate_payload)
+            if trans_res and "message" in trans_res and trans_res["message"].get("content"):
+                translated = trans_res["message"]["content"].strip()
+                if re.search(r"[а-яё]", translated, re.IGNORECASE):
+                    final_output = clean_assistant_response(translated)
+        except Exception as e:
+            logging.warning(f"[MCP] Auto-translation to Russian failed: {e}")
+
+    # Build changed & accessed files objects (sources for frontend chips)
+    temp_source_paths = []
+    if hasattr(ctx, "temp_sources") and isinstance(ctx.temp_sources, list):
+        for s in ctx.temp_sources:
+            if isinstance(s, dict):
+                p = s.get("path") or s.get("fullPath") or s.get("document_id")
+                if p:
+                    if not p.startswith("/"):
+                        p = "/" + p
+                    temp_source_paths.append(p)
+        ctx.temp_sources = []
+
+    all_accessed_paths = list(dict.fromkeys(changed_files + list(known_files) + temp_source_paths))
     changed_objects = []
-    for path in changed_files:
+    for path in all_accessed_paths:
         filename = os.path.basename(path)
         mimetype = clean_mimetype(filename)
         
@@ -2131,6 +2256,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             "clickable": True,
             "url": f"https://onmydisk.net{path}",
             "fullPath": path,
+            "path": path,
             "size": 0,
             "mimetype": mimetype
         })
@@ -2138,8 +2264,11 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
     yield {
         "type": "result",
         "content": final_output,
-        "changedFiles": changed_objects
+        "delta": final_output,
+        "changedFiles": changed_objects,
+        "sources": changed_objects
     }
+
 
 # === Онбординг успешен - перенос песрональных данных ===
 def bind_account(ctx: UserContext, omd_key: str):
@@ -3552,8 +3681,8 @@ async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_m
             logging.info(f"[inject_facts] hub card matched but body is empty: {doc_filter}")
             continue
         clean_body = re.sub(r'^\s*#+\s*', '', body).strip()
-        card_title = str(card.get("title") or "").strip() or want_fn
-        facts.append(f"• [File: {want_fn}] {clean_body[:limit]}")
+        full_path = doc_filter if doc_filter.startswith("/") or doc_filter.startswith("http") else f"/{doc_filter}"
+        facts.append(f"• [File: {full_path}] {clean_body[:limit]}")
         key = f"{tag}:{doc_filter}"
         if key not in sources_map:
             sources_map[key] = {
@@ -3561,8 +3690,9 @@ async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_m
                 "owner":       ctx.user_id or user_context.node_owner(),
                 "clickable":   True,
                 "document_id": doc_filter,
-                "fullPath":    doc_filter,
-                "url":         doc_filter,
+                "fullPath":    full_path,
+                "path":        full_path,
+                "url":         f"https://onmydisk.net{full_path}" if not full_path.startswith("http") else full_path,
             }
         logging.info(f"[inject_facts] card from hub ({tag}): {doc_filter} ({len(clean_body)} chars)")
         return True
@@ -3573,7 +3703,7 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
     facts = []
     sources_map = {}
 
-    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
+    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "15"))
 
     # /learn focus: граничим факты конкретно этим путём/файлом/карточкой
     focus_doc = ""
@@ -3708,28 +3838,35 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 max_len = focus_max if is_focus_record else 300
                 if len(clean_text) > max_len:
                     clean_text = clean_text[:max_len - 3] + "..."
-                fn = doc_id.split("/")[-1] if doc_id else (m.get("title") if isinstance(m, dict) else "")
+                clean_doc_id = str(doc_id).strip() if doc_id else ""
+                full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else (f"/{clean_doc_id}" if clean_doc_id else "")
+                fn = clean_doc_id.split("/")[-1] if clean_doc_id else (m.get("title") if isinstance(m, dict) else "")
                 fn = re.sub(r'^\s*#+\s*', '', fn).strip() if fn else ""
-                if fn:
-                    facts.append(f"• [File: {fn}] {clean_text}")
+                file_ref = full_path or fn
+                if file_ref:
+                    facts.append(f"• [File: {file_ref}] {clean_text}")
                 else:
                     facts.append(f"• {clean_text}")
 
                 if doc_id:
                     key = f"provided:{doc_id}"
                     if key not in sources_map:
-                        clickable = doc_id.startswith("/") or doc_id.startswith("http")
+                        clean_doc_id = str(doc_id).strip()
+                        clickable = clean_doc_id.startswith("/") or clean_doc_id.startswith("http") or ("." in clean_doc_id and "/" in clean_doc_id)
+                        full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else f"/{clean_doc_id}"
                         card_title = ((m.get("title") or "").strip() if isinstance(m, dict) else "")
                         card_title = re.sub(r'^\s*#+\s*', '', card_title).strip()
                         if not card_title and isinstance(m, dict):
                             card_title = clean_text[:48]
-                        src_title = fn if (fn and "." in fn) else (card_title or fn or doc_id.split("/")[-1])
+                        src_title = fn if (fn and "." in fn) else (card_title or fn or clean_doc_id.split("/")[-1])
                         sources_map[key] = {
                             "title":       src_title,
                             "owner":       ctx.user_id or user_context.node_owner(),
-                            "clickable":   clickable,
-                            "document_id": doc_id,
-                            "fullPath":    doc_id if clickable else "",
+                            "clickable":   True,
+                            "document_id": full_path,
+                            "fullPath":    full_path,
+                            "path":        full_path,
+                            "url":         f"https://onmydisk.net{full_path}" if not full_path.startswith("http") else full_path,
                         }
 
         # 1b. Chunk-level relevance: fetch chunks from hub for top cards (только при поиске по базе)
@@ -3787,8 +3924,11 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 raw_title = r.get("title", doc_id.split("/")[-1] if doc_id else "")
                 title     = re.sub(r'^\s*#+\s*', '', raw_title).strip()
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
-                fn        = doc_id.split("/")[-1] if doc_id else title
+                clean_doc_id = str(doc_id).strip() if doc_id else ""
+                full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else (f"/{clean_doc_id}" if clean_doc_id else "")
+                fn        = clean_doc_id.split("/")[-1] if clean_doc_id else title
                 fn        = re.sub(r'^\s*#+\s*', '', fn).strip()
+                file_ref  = full_path or fn
 
                 raw_text   = (r.get("text") or "").strip()
                 clean_text = re.sub(r'^\s*#+\s*', '', raw_text).strip()
@@ -3798,12 +3938,14 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 chunk_limit = 1500 if (focus_doc and doc_id == focus_doc) else 400
 
                 if rec_type == "file_chunk":
-                    line = f"• [File: {fn}]" if fn else "• [File]"
+                    line = f"• [File: {full_path}]" if full_path else (f"• [File: {fn}]" if fn else "• [File]")
                     if clean_text:
                         line += f"\n  {clean_text[:chunk_limit]}"
                     facts.append(line)
                 else:
-                    if fn:
+                    if full_path:
+                        facts.append(f"• [File: {full_path}] {clean_text[:chunk_limit]}")
+                    elif fn:
                         facts.append(f"• [File: {fn}] {clean_text[:chunk_limit]}")
                     else:
                         facts.append(f"• {clean_text[:chunk_limit]}")
@@ -3811,16 +3953,22 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 if doc_id:
                     key = f"{owner_val}:{doc_id}"
                     if key not in sources_map:
-                        clickable = doc_id.startswith("/") or doc_id.startswith("http")
-                        full_path = doc_id if doc_id.startswith("/") else ""
-                        src_title = fn if (fn and "." in fn) else (title or fn)
+                        clean_doc_id = str(doc_id).strip()
+                        if clean_doc_id.startswith("http://") or clean_doc_id.startswith("https://"):
+                            full_path = clean_doc_id
+                            clickable = True
+                        else:
+                            full_path = clean_doc_id if clean_doc_id.startswith("/") else f"/{clean_doc_id}"
+                            clickable = bool(clean_doc_id and not clean_doc_id.startswith("user:note:") and not clean_doc_id.startswith("kb:"))
+                        src_title = fn if (fn and "." in fn) else (title or fn or clean_doc_id.split("/")[-1])
                         sources_map[key] = {
                             "title":       src_title,
                             "owner":       owner_val,
-                            "clickable":   clickable,
-                            "document_id": doc_id,
+                            "clickable":   True,
+                            "document_id": full_path,
                             "fullPath":    full_path,
-                            "url":         full_path if clickable else "",
+                            "path":        full_path,
+                            "url":         full_path,
                         }
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")
@@ -3850,24 +3998,33 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     text = r.get("text", "")
                     title = r.get("title") or adoc["title"]
                     rec_type = r.get("type", "")
+                    clean_doc_id = str(doc_id).strip() if doc_id else ""
+                    full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else (f"/{clean_doc_id}" if clean_doc_id else "")
+                    file_ref = full_path or title
                     if text:
                         if rec_type == "file_chunk":
-                            facts.append(f"• [Attached file {title}] {text}")
+                            facts.append(f"• [Attached file: {file_ref}] {text}")
                         else:
-                            facts.append(f"• [Attached: {title}] {text}")
+                            facts.append(f"• [Attached: {file_ref}] {text}")
                     doc_id = r.get("document_id") or doc_filter
                     if doc_id:
                         key = f"attached:{doc_id}"
                         if key not in sources_map:
-                            clickable = doc_id.startswith("/") or doc_id.startswith("http")
-                            full_path = doc_id if doc_id.startswith("/") else ""
+                            clean_doc_id = str(doc_id).strip()
+                            if clean_doc_id.startswith("http://") or clean_doc_id.startswith("https://"):
+                                full_path = clean_doc_id
+                                clickable = True
+                            else:
+                                full_path = clean_doc_id if clean_doc_id.startswith("/") else f"/{clean_doc_id}"
+                                clickable = bool(clean_doc_id)
                             sources_map[key] = {
                                 "title":       title,
                                 "owner":       r.get("owner") or ctx.user_id or user_context.node_owner(),
-                                "clickable":   clickable,
-                                "document_id": doc_id,
+                                "clickable":   True,
+                                "document_id": full_path,
                                 "fullPath":    full_path,
-                                "url":         full_path if clickable else "",
+                                "path":        full_path,
+                                "url":         full_path,
                             }
                 logging.info(f"[inject_facts] attached chunks for {doc_filter}: {len(attach_results)}")
                 if not attach_results:
@@ -4019,7 +4176,7 @@ async def _perform_prompt_gen(ctx: UserContext,
     facts_text = ""
     # RAG 3.0: kb_id — это тег в unified index, не отдельная база
     kb_tag = ctx.settings.get("kb_id", "omd")
-    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "5"))
+    rag_top_k = int(SETTINGS.get("RAG_TOP_K", "15"))
     rag_query = (search_query or message).strip()
     logging.debug(f"Loading facts: tag={kb_tag} is_rag={is_rag} rag_query={rag_query}")
     import time as _time
@@ -4078,12 +4235,17 @@ async def _perform_prompt_gen(ctx: UserContext,
         yield {"status": "summarizing"}
         await asyncio.sleep(0.02)
         prep_prompt = (
-            "You are a fact-checking assistant. Based on *Known facts* only, respond to the question using the provided knowledge base. "
-            "Do not guess. If nothing is found, reply with 'No information'.\n\n"
-            "FORMATTING RULES:\n"
-            "- For each relevant file or photo, ALWAYS explicitly include its exact filename (e.g. `IMG_20260926_175706.jpg`), NOT the folder path.\n"
-            "- Format as a clean list using standard Markdown: `• **filename.jpg**: Description`.\n"
-            "- NEVER nest Markdown header tags (`#`, `##`, `###`) inside list items or bullets."
+            "You are a fact-checking and retrieval assistant. Based on *Known facts*, extract and summarize ALL relevant facts, files, and candidates that answer or relate to the user's question.\n\n"
+            "RETRIEVAL & MATCHING RULES:\n"
+            "- When listing files, photos, or documents, include their exact full path without extra markdown formatting.\n"
+            "- Format each file item simply as: `• /path/to/filename.ext: Description`.\n"
+            "  Example: `• /beelink/Data/Phone/IMG_20260918_134813_1.jpg: Посещение художественной галереи в Ужгороде...`\n"
+            "- Include ALL files matching the requested topic, location, event, or timeframe.\n"
+            "- When searching for photos or media of a person (e.g. by name such as 'Наташа' or 'Алексей') in a place or event: include BOTH exact name mentions AND candidate photos depicting a matching person (e.g. 'woman', 'girl', 'portrait of woman', 'man', etc.) in that requested location, setting, or timeframe. Do NOT omit relevant candidate photos just because the caption uses generic terms like 'woman' or 'portrait' instead of the specific name.\n"
+            "- Be comprehensive: do NOT arbitrarily truncate or drop relevant candidate photos or files found in *Known facts*. List all matching items.\n"
+            "- Do NOT add bold, stars, or markdown headers around filenames or paths in the facts summary.\n"
+            "- NEVER output bare filenames without their full directory path.\n"
+            "- If nothing relevant is found at all, reply with 'No information'."
         )
 
         rag_system_prompt = prep_prompt
@@ -4127,6 +4289,11 @@ async def _perform_prompt_gen(ctx: UserContext,
         if strict_fact:
             # Strip any accidental heading marks inside bullet points (e.g. '• # Title' -> '• Title')
             strict_fact = re.sub(r'([•\-\*]\s*)#+\s*', r'\1', strict_fact)
+            # Strip redundant asterisks and doubled slashes from filenames/paths (e.g. '• ****//path**: desc' -> '• /path: desc')
+            strict_fact = re.sub(r'([•\-\*]\s*)\*+\/*([^*:\n]+?)\*+:\s*(.*)', r'\1/\2: \3', strict_fact)
+            strict_fact = re.sub(r'([•\-\*]\s*)\*+\/*([^*\n]+?)\*+', r'\1/\2', strict_fact)
+            strict_fact = re.sub(r'(?<=[\s•\-\*])/{2,}(?=[a-zA-Z0-9_])', '/', strict_fact)
+            strict_fact = re.sub(r'([•\-\*]\s*)(/[^:\n]+?)\*+:\s*', r'\1\2: ', strict_fact)
             facts_text += f"\n\n*Strict facts:*\n{strict_fact}"
 
         yield {"status": "typing"}
@@ -4176,6 +4343,15 @@ async def _perform_prompt_gen(ctx: UserContext,
 
     # Инструкция
     instruction_prompt = "*Instruction:*\n" + instruction
+
+    if facts_text:
+        instruction_prompt += (
+            "\n\nCRITICAL MANDATORY RULES FOR FILES AND PHOTOS:\n"
+            "1. When listing, describing, or referring to ANY file, photo, or document, you MUST ONLY mention files listed in the current *Strict facts* / *Known facts* above. NEVER mention or re-use filenames from previous conversation history or your memory!\n"
+            "2. You MUST ALWAYS write its EXACT FULL PATH in bold (e.g. `**/beelink/Data/Phone/IMG_20260926_175706.jpg**: description`).\n"
+            "3. NEVER output bare filenames without their full directory path!\n"
+            "4. NEVER invent files or mention files that are not explicitly present in current *Strict facts*."
+        )
 
     user_lang = ctx.settings.get("language")
     if user_lang:

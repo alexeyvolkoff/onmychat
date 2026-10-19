@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 import core_service
 import user_context
+import plane_service
 
 # Create the FastMCP server
 mcp = FastMCP("OnMyDisk MCP Server")
@@ -67,16 +68,33 @@ async def read_omd_file(path: str) -> str:
 
 
 @mcp.tool()
-async def write_omd_file(path: str, content: str) -> str:
+async def write_omd_file(path: str, content: str = "", template_path: str = "", replacements: dict | None = None) -> str:
     """
-    Write data to a file. 
+    Write data to a file or create documents in OnMyDisk storage.
     
     Args:
         path: The absolute path INCLUDING FILENAME, e.g. /Linux-desktop/Private/Data/invoice.txt
-        content: The text content to write to the file
+        content: The text or markdown content to write to the file
+        template_path: Optional path to template document if copying/modifying an existing document
+        replacements: Optional key-value dictionary of string replacements to perform on the template
     """
     ctx = get_current_user_context()
-    return await core_service.write_omd_file(ctx, path, content)
+    return await core_service.write_omd_file(ctx, path, content, template_path=template_path, replacements=replacements)
+
+
+@mcp.tool()
+async def create_document_from_template(template_path: str, target_path: str, replacements: dict) -> str:
+    """
+    Create a new office document (.docx, .odt, .xlsx, .pptx) based on an existing template or document,
+    preserving 100% of formatting, tables, styles, logos, and layout. Replaces specified text strings in the template with new values.
+    
+    Args:
+        template_path: The absolute path of the existing template/document to copy from, e.g. /beelink/Documents/Bineon_invoice.docx
+        target_path: The absolute path for the new document to create, e.g. /beelink/Documents/Bineon_invoice_10.docx
+        replacements: Dictionary of text replacements where keys are the exact original text in the template and values are the new replacement text, e.g. {'014/2026': '015/2026', '05.05.2026': '18.10.2026'}
+    """
+    ctx = get_current_user_context()
+    return await core_service.create_document_from_template(ctx, template_path, target_path, replacements=replacements)
 
 
 @mcp.tool()
@@ -105,162 +123,128 @@ async def search_memory(query: str) -> str:
     return await core_service.search_memory_tool(ctx, query)
 
 
-@mcp.tool()
-async def read_odt_placeholders(template_path: str) -> str:
-    """
-    Read an ODT file and extract all unique placeholders of the form {{placeholder}}.
-    This is useful for discovering what fields need to be replaced in a template.
-    
-    Args:
-        template_path: The absolute path of the ODT template file on OMD, e.g. /Linux-desktop/Private/Templates/contract.odt
-    """
-    ctx = get_current_user_context()
-    return await core_service.read_odt_placeholders(ctx, template_path)
 
+
+
+# --- Plane.so Tools (Project & Task Management for Developers) ---
 
 @mcp.tool()
-async def modify_odt_file(template_path: str, output_path: str, replacements: dict) -> str:
+async def list_plane_workspaces(token: Optional[str] = None) -> str:
     """
-    Create a new ODT document by copying a template ODT document and replacing specified placeholders or strings.
-    All replacement values are automatically XML-escaped to ensure the document remains valid.
-    
-    Args:
-        template_path: The absolute path of the source template ODT file, e.g. /Linux-desktop/Private/Templates/contract.odt
-        output_path: The absolute path of the new ODT file to be written, e.g. /Linux-desktop/Private/Contracts/contract_new.odt
-        replacements: A dictionary of key-value pairs to replace in the document. Keys are target strings/placeholders, and values are the new texts.
-    """
-    ctx = get_current_user_context()
-    return await core_service.modify_odt_file(ctx, template_path, output_path, replacements)
-
-
-def _make_plane_headers(token: str) -> dict:
-    return {
-        "X-API-Key": token,
-        "Content-Type": "application/json"
-    }
-
-
-def _make_plane_urls(workspace: str, project_id: str) -> tuple:
-    base_url = "https://api.plane.so/api/v1"
-    return f"{base_url}/workspaces/{workspace}/projects/{project_id}/work-items/", f"{base_url}/workspaces/{workspace}/projects/{project_id}/states/"
-
-@mcp.tool()
-async def list_plane_workspaces(token: str) -> str:
-    """
-    List all workspaces available for the user in Plane.
+    List all workspaces available to the user in Plane.
     Use this FIRST when you need to work with Plane but don't know the workspace slug.
     After getting the list, use the workspace slug to list projects.
 
     Args:
-        token: Plane API key (Personal Access Token)
+        token: Optional Plane API key (Personal Access Token). If omitted, automatically uses the key configured in settings.
     """
-    headers = _make_plane_headers(token)
-    url = "https://api.plane.so/api/v1/workspaces/"
-    response = requests.get(url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        return f"Error getting workspaces from Plane: {response.status_code}"
-    
-    workspaces = response.json().get("results", [])
-    if not workspaces:
-        return "You have no workspaces in Plane."
-    
-    return "Your workspaces in Plane:\n\n" + "\n".join(
-        f"{ws['name']} (slug: {ws['slug']})" for ws in workspaces
-    )
+    ctx = get_current_user_context()
+    return await plane_service.list_plane_workspaces(ctx, token=token)
 
 
 @mcp.tool()
-async def list_plane_projects(token: str, workspace: str) -> str:
+async def list_plane_projects(workspace: str, token: Optional[str] = None) -> str:
     """
     List all projects in a specific Plane workspace.
     Use this when you know the workspace slug but need to choose a project.
-    After getting the list, use the project ID to list issues.
+    After getting the list, use the project ID to list tasks.
 
     Args:
-        token: Plane API key (Personal Access Token)
         workspace: The workspace slug
+        token: Optional Plane API key
     """
-    headers = _make_plane_headers(token)
-    url = f"https://api.plane.so/api/v1/workspaces/{workspace}/projects/"
-    response = requests.get(url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        return f"Error getting projects from Plane: {response.status_code}"
-    
-    projects = response.json().get("results", [])
-    if not projects:
-        return f"You have no projects in workspace '{workspace}'."
-    
-    return f"Your projects in '{workspace}':\n\n" + "\n".join(
-        f"{project['name']} (ID: {project['id']})" for project in projects
-    )
+    ctx = get_current_user_context()
+    return await plane_service.list_plane_projects(ctx, workspace=workspace, token=token)
+
 
 @mcp.tool()
-async def list_plane_issues(token: str, workspace: str, project_id: str) -> str:
+async def list_plane_issues(workspace: str, project_id: str, state: Optional[str] = None, token: Optional[str] = None) -> str:
     """
-    List all tasks from a Plane project.
-    Use this when the user asks about their tasks or what to do next.
+    List tasks/issues from a Plane project with their sequence ID, name, status, priority, and UUID.
+    Can filter by state (e.g. 'todo', 'in progress', 'done', 'backlog').
 
     Args:
-        token: Plane API key (Personal Access Token)
         workspace: The workspace slug
-        project_id: The project ID
+        project_id: The project ID or identifier
+        state: Optional state filter (e.g. 'todo', 'in progress', 'done')
+        token: Optional Plane API key
     """
-    headers = _make_plane_headers(token)
-    issues_url, _ = _make_plane_urls(workspace, project_id)
-    response = requests.get(issues_url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        return f"Error getting tasks from Plane: {response.status_code}"
-    
-    issues = response.json().get("results", [])
-    if not issues:
-        return "You have no tasks in this Plane project."
-    
-    return "Your tasks in Plane:\n" + "\n".join(
-        f"{issue['name']} (ID: {issue['id']})" for issue in issues
-    )
+    ctx = get_current_user_context()
+    return await plane_service.list_plane_issues(ctx, workspace=workspace, project_id=project_id, state=state, token=token)
+
 
 @mcp.tool()
-async def report_and_close_plane_issue(token: str, workspace: str, project_id: str, issue_id: str) -> str:
+async def get_plane_issue_details(workspace: str, project_id: str, issue_id: str, token: Optional[str] = None) -> str:
     """
-    Generate a report for a Plane task and then close it (move to Done).
-    Use this when the user asks to write a report for a task, complete it, or close it.
+    Get complete details of a specific Plane task/issue, including full description, status, priority, target dates, assignees, and recent comments.
 
     Args:
-        token: Plane API key (Personal Access Token)
+        workspace: The workspace slug
+        project_id: The project ID or identifier
+        issue_id: The task UUID, short ID, or sequence number (e.g. '12' or 'PROJ-12')
+        token: Optional Plane API key
+    """
+    ctx = get_current_user_context()
+    return await plane_service.get_plane_issue_details(ctx, workspace=workspace, project_id=project_id, issue_id=issue_id, token=token)
+
+
+@mcp.tool()
+async def create_plane_issue(workspace: str, project_id: str, name: str, description: str = "", priority: str = "none", state_name: Optional[str] = None, token: Optional[str] = None) -> str:
+    """
+    Create a new task/issue in a Plane project.
+
+    Args:
         workspace: The workspace slug
         project_id: The project ID
-        issue_id: The ID of the task, e.g. "4bb74be5"
+        name: Title of the task/issue
+        description: Optional detailed description of the task (Markdown or plain text)
+        priority: Optional priority ('urgent', 'high', 'medium', 'low', 'none')
+        state_name: Optional initial state name (e.g. 'Todo', 'Backlog')
+        token: Optional Plane API key
     """
-    headers = _make_plane_headers(token)
-    issues_url, states_url = _make_plane_urls(workspace, project_id)
-    issues_response = requests.get(issues_url, headers=headers, timeout=10)
-    if issues_response.status_code != 200:
-        return f"Error getting tasks from Plane: {issues_response.status_code}"
-    issues = issues_response.json().get("results", [])
+    ctx = get_current_user_context()
+    return await plane_service.create_plane_issue(ctx, workspace=workspace, project_id=project_id, name=name, description=description, priority=priority, state_name=state_name, token=token)
 
-    issue = next((i for i in issues if i["id"].startswith(issue_id)), None)
-    if issue is None:
-        return f"Task with code '{issue_id}' not found."
 
-    states_response = requests.get(states_url, headers=headers, timeout=10)
-    if states_response.status_code != 200:
-        return f"Error getting statuses: {states_response.status_code}"
-    states = states_response.json().get("results", [])
+@mcp.tool()
+async def update_plane_issue_state(workspace: str, project_id: str, issue_id: str, state_name: str, token: Optional[str] = None) -> str:
+    """
+    Update the workflow status of an issue (e.g. 'In Progress', 'In Review', 'Done', 'Backlog', 'Todo').
 
-    done_state = next((s for s in states if s["group"] == "completed"), None)
-    if done_state is None:
-        return "Done status not found, cannot close the task."
+    Args:
+        workspace: The workspace slug
+        project_id: The project ID
+        issue_id: The task UUID or sequence number (e.g. '12' or 'PROJ-12')
+        state_name: Target state name (e.g. 'In Progress', 'In Review', 'Done', 'Todo', 'Backlog')
+        token: Optional Plane API key
+    """
+    ctx = get_current_user_context()
+    return await plane_service.update_plane_issue_state(ctx, workspace=workspace, project_id=project_id, issue_id=issue_id, state_name=state_name, token=token)
 
-    close_response = requests.patch(f"{issues_url}{issue['id']}/", headers=headers, json={"state": done_state["id"]}, timeout=10)
-    if close_response.status_code not in (200, 201):
-        return f"Error closing the task: {close_response.status_code}"
 
-    report = (
-        f"Name: {issue.get('name', 'No name')}\n"
-        f"ID: {issue.get('id')}\n"
-        "Result: the task has been closed (moved to Done)."
-    )
-    return report
+@mcp.tool()
+async def add_plane_issue_comment(workspace: str, project_id: str, issue_id: str, comment: str, token: Optional[str] = None) -> str:
+    """
+    Add a comment, progress update, or completion report to a Plane task/issue.
+
+    Args:
+        workspace: The workspace slug
+        project_id: The project ID
+        issue_id: The task UUID or sequence number (e.g. '12' or 'PROJ-12')
+        comment: The comment text or report to attach
+        token: Optional Plane API key
+    """
+    ctx = get_current_user_context()
+    return await plane_service.add_plane_issue_comment(ctx, workspace=workspace, project_id=project_id, issue_id=issue_id, comment=comment, token=token)
+
+
+@mcp.tool()
+async def report_and_close_plane_issue(workspace: str, project_id: str, issue_id: str, token: Optional[str] = None) -> str:
+    """
+    Legacy helper: Mark a Plane task as Done/Closed.
+    """
+    ctx = get_current_user_context()
+    return await plane_service.update_plane_issue_state(ctx, workspace=workspace, project_id=project_id, issue_id=issue_id, state_name="Done", token=token)
 
 
 # --- Craft editors: real .docx / .xlsx / .pptx for the agent (WordCraft / GridCraft / DeckCraft) ---
