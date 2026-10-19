@@ -392,14 +392,13 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug (e.g. from list_plane_workspaces)"
+            "description": "Optional: The workspace slug (e.g. from list_plane_workspaces, defaults to user's configured/discovered workspace)"
           },
           "token": {
             "type": "string",
             "description": "Optional: Plane API key."
           }
-        },
-        "required": ["workspace"]
+        }
       }
     }
   },
@@ -413,11 +412,11 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug"
+            "description": "Optional: The workspace slug (auto-resolves if omitted)"
           },
           "project_id": {
             "type": "string",
-            "description": "The project ID or identifier"
+            "description": "Optional: The project ID, identifier, or name (auto-resolves if omitted and workspace has 1 project)"
           },
           "state": {
             "type": "string",
@@ -427,8 +426,7 @@ PLANE_TOOLS = [
             "type": "string",
             "description": "Optional: Plane API key."
           }
-        },
-        "required": ["workspace", "project_id"]
+        }
       }
     }
   },
@@ -442,11 +440,11 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug"
+            "description": "Optional: The workspace slug (auto-resolves if omitted)"
           },
           "project_id": {
             "type": "string",
-            "description": "The project ID or identifier"
+            "description": "Optional: The project ID or identifier (auto-resolves if omitted)"
           },
           "issue_id": {
             "type": "string",
@@ -457,7 +455,7 @@ PLANE_TOOLS = [
             "description": "Optional: Plane API key."
           }
         },
-        "required": ["workspace", "project_id", "issue_id"]
+        "required": ["issue_id"]
       }
     }
   },
@@ -471,11 +469,11 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug"
+            "description": "Optional: The workspace slug"
           },
           "project_id": {
             "type": "string",
-            "description": "The project ID"
+            "description": "Optional: The project ID"
           },
           "name": {
             "type": "string",
@@ -498,7 +496,7 @@ PLANE_TOOLS = [
             "description": "Optional: Plane API key."
           }
         },
-        "required": ["workspace", "project_id", "name"]
+        "required": ["name"]
       }
     }
   },
@@ -512,11 +510,11 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug"
+            "description": "Optional: The workspace slug"
           },
           "project_id": {
             "type": "string",
-            "description": "The project ID"
+            "description": "Optional: The project ID"
           },
           "issue_id": {
             "type": "string",
@@ -531,7 +529,7 @@ PLANE_TOOLS = [
             "description": "Optional: Plane API key."
           }
         },
-        "required": ["workspace", "project_id", "issue_id", "state_name"]
+        "required": ["issue_id", "state_name"]
       }
     }
   },
@@ -545,11 +543,11 @@ PLANE_TOOLS = [
         "properties": {
           "workspace": {
             "type": "string",
-            "description": "The workspace slug"
+            "description": "Optional: The workspace slug"
           },
           "project_id": {
             "type": "string",
-            "description": "The project ID"
+            "description": "Optional: The project ID"
           },
           "issue_id": {
             "type": "string",
@@ -564,7 +562,7 @@ PLANE_TOOLS = [
             "description": "Optional: Plane API key."
           }
         },
-        "required": ["workspace", "project_id", "issue_id", "comment"]
+        "required": ["issue_id", "comment"]
       }
     }
   }

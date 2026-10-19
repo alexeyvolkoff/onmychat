@@ -60,9 +60,41 @@ def resolve_plane_base_url(ctx: Any = None, base_url: Optional[str] = None) -> s
         url = DEFAULT_PLANE_BASE_URL
 
     url = str(url).strip().rstrip("/")
+    # Normalize Plane cloud web frontend SPA URL (app.plane.so) to API endpoint (api.plane.so)
+    if "app.plane.so" in url or url in ("https://plane.so", "http://plane.so"):
+        return DEFAULT_PLANE_BASE_URL
     if url.endswith("/api/v1") or url.endswith("/api/v2"):
         url = url.rsplit("/api/", 1)[0]
     return url
+
+
+def resolve_plane_workspace(ctx: Any = None, workspace: Optional[str] = None) -> str:
+    """
+    Resolve workspace slug:
+    1. Explicit parameter (if URL, extracts slug)
+    2. ctx.mcp_keys['plane_workspace']
+    3. Slug extracted from ctx.mcp_keys['plane_url'] if present (e.g. https://app.plane.so/my-workspace)
+    4. Environment variable PLANE_WORKSPACE
+    5. Default 'onmydisk'
+    """
+    if workspace and isinstance(workspace, str) and workspace.strip():
+        ws = workspace.strip()
+        if "plane.so/" in ws:
+            ws = ws.split("plane.so/")[1].split("/")[0]
+        return ws.strip("/")
+    if ctx and hasattr(ctx, "mcp_keys") and isinstance(ctx.mcp_keys, dict):
+        ws = ctx.mcp_keys.get("plane_workspace")
+        if ws and str(ws).strip():
+            return str(ws).strip()
+        url = ctx.mcp_keys.get("plane_url") or ""
+        if "plane.so/" in url:
+            parts = url.split("plane.so/")[1].split("/")
+            if parts and parts[0] and parts[0] not in ("api", "auth", "spaces", "instances"):
+                return parts[0].strip("/")
+    env_ws = os.environ.get("PLANE_WORKSPACE")
+    if env_ws and env_ws.strip():
+        return env_ws.strip()
+    return "onmydisk"
 
 
 def _make_headers(token: str) -> Dict[str, str]:
@@ -70,6 +102,7 @@ def _make_headers(token: str) -> Dict[str, str]:
         "X-API-Key": token,
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": "OnMyChat-MCP/1.0",
     }
 
 
@@ -89,6 +122,12 @@ async def _plane_get(client: httpx.AsyncClient, url: str, headers: Dict[str, str
         resp = await client.get(url, headers=headers, timeout=12.0)
         if resp.status_code == 404 and fallback_url and fallback_url != url:
             resp = await client.get(fallback_url, headers=headers, timeout=12.0)
+        
+        # Check if response is HTML instead of JSON
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" in content_type or resp.text.strip().startswith("<!DOCTYPE") or resp.text.strip().startswith("<html"):
+            return 502, "Error: Plane returned HTML instead of JSON. Ensure your API URL is https://api.plane.so (not app.plane.so)."
+
         try:
             data = resp.json()
         except Exception:
@@ -104,6 +143,11 @@ async def _plane_post(client: httpx.AsyncClient, url: str, headers: Dict[str, st
         resp = await client.post(url, headers=headers, json=json_data, timeout=12.0)
         if resp.status_code == 404 and fallback_url and fallback_url != url:
             resp = await client.post(fallback_url, headers=headers, json=json_data, timeout=12.0)
+        
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" in content_type or resp.text.strip().startswith("<!DOCTYPE") or resp.text.strip().startswith("<html"):
+            return 502, "Error: Plane returned HTML instead of JSON. Ensure your API URL is https://api.plane.so (not app.plane.so)."
+
         try:
             data = resp.json()
         except Exception:
@@ -119,6 +163,11 @@ async def _plane_patch(client: httpx.AsyncClient, url: str, headers: Dict[str, s
         resp = await client.patch(url, headers=headers, json=json_data, timeout=12.0)
         if resp.status_code == 404 and fallback_url and fallback_url != url:
             resp = await client.patch(fallback_url, headers=headers, json=json_data, timeout=12.0)
+        
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" in content_type or resp.text.strip().startswith("<!DOCTYPE") or resp.text.strip().startswith("<html"):
+            return 502, "Error: Plane returned HTML instead of JSON. Ensure your API URL is https://api.plane.so (not app.plane.so)."
+
         try:
             data = resp.json()
         except Exception:
@@ -129,37 +178,114 @@ async def _plane_patch(client: httpx.AsyncClient, url: str, headers: Dict[str, s
         return 500, str(e)
 
 
+async def _fetch_workspace_projects(client: httpx.AsyncClient, base: str, workspace: str, headers: Dict[str, str]) -> List[dict]:
+    url = f"{base}/api/v1/workspaces/{workspace}/projects/"
+    st, data = await _plane_get(client, url, headers)
+    if st == 200:
+        if isinstance(data, dict):
+            return data.get("results", [])
+        if isinstance(data, list):
+            return data
+    return []
+
+
+async def _resolve_project_id(client: httpx.AsyncClient, base: str, workspace: str, project_id: Optional[str], headers: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Resolve project_id (UUID). If empty or given as name/identifier, fetch projects and resolve.
+    Returns (resolved_uuid, error_message).
+    """
+    target = (project_id or "").strip()
+    if target and re.match(r'^[0-9a-fA-F-]{32,36}$', target):
+        return target, None
+
+    projects = await _fetch_workspace_projects(client, base, workspace, headers)
+    if not projects:
+        return None, f"No projects found in workspace '{workspace}'."
+
+    if not target:
+        if len(projects) == 1:
+            return projects[0].get("id"), None
+        names = ", ".join([f"**{p.get('name')}** (ID: `{p.get('id')}`)" for p in projects])
+        return None, f"Multiple projects found in workspace '{workspace}'. Please specify `project_id`:\n{names}"
+
+    # Search by identifier or name (case-insensitive)
+    t_lower = target.lower()
+    for p in projects:
+        if p.get("identifier", "").lower() == t_lower or p.get("name", "").lower() == t_lower:
+            return p.get("id"), None
+
+    names = ", ".join([f"**{p.get('name')}** [{p.get('identifier')}]" for p in projects])
+    return None, f"Project '{target}' not found in workspace '{workspace}'. Available projects: {names}"
+
+
 async def list_plane_workspaces(ctx: Any = None, token: Optional[str] = None) -> str:
     """
     List all workspaces available to the user in Plane.
-    Returns names and slugs (e.g. slug: 'team-workspace').
+    Returns workspace names, slugs, and projects.
     """
     tok = resolve_plane_token(ctx, token)
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
     base = resolve_plane_base_url(ctx)
-    url = f"{base}/api/v1/workspaces/"
     headers = _make_headers(tok)
 
+    # In Plane REST API, Personal Access Tokens (X-API-Key) operate with workspace-scoped endpoints.
+    # We probe candidate slugs: configured workspace, URL slug, known defaults, and user profile.
+    candidates: List[str] = []
+
+    # 1. From ctx.mcp_keys
+    if ctx and hasattr(ctx, "mcp_keys") and isinstance(ctx.mcp_keys, dict):
+        ws = ctx.mcp_keys.get("plane_workspace")
+        if ws and str(ws).strip():
+            candidates.append(str(ws).strip())
+        url = ctx.mcp_keys.get("plane_url") or ""
+        if "plane.so/" in url:
+            part = url.split("plane.so/")[1].split("/")[0]
+            if part and part not in ("api", "auth", "spaces", "instances") and part not in candidates:
+                candidates.append(part)
+
+    # 2. Known default slugs
+    for default_slug in ["onmydisk", "kvik", "omd"]:
+        if default_slug not in candidates:
+            candidates.append(default_slug)
+
+    verified: List[Tuple[str, List[dict]]] = []
     async with httpx.AsyncClient() as client:
-        status, data = await _plane_get(client, url, headers)
-        if status != 200:
-            return f"Error retrieving workspaces from Plane (HTTP {status}): {data}"
+        # Check user profile
+        user_status, user_data = await _plane_get(client, f"{base}/api/v1/users/me/", headers)
+        if user_status == 200 and isinstance(user_data, dict):
+            disp = (user_data.get("display_name") or user_data.get("first_name") or "").lower().strip()
+            if disp and disp not in candidates:
+                candidates.append(disp)
 
-        results = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        if not results:
-            return "No workspaces found in this Plane account."
+        for slug in candidates:
+            projects = await _fetch_workspace_projects(client, base, slug, headers)
+            if projects:
+                verified.append((slug, projects))
+            else:
+                m_st, m_data = await _plane_get(client, f"{base}/api/v1/workspaces/{slug}/members/", headers)
+                if m_st == 200 and isinstance(m_data, list):
+                    verified.append((slug, []))
 
-        lines = ["**Your Plane Workspaces:**\n"]
-        for ws in results:
-            name = ws.get("name", "Untitled")
-            slug = ws.get("slug", "")
-            ws_id = ws.get("id", "")
-            lines.append(f"- **{name}** (slug: `{slug}` | id: `{ws_id}`)")
+    if not verified:
+        return (
+            "Plane API requires specifying the workspace slug (from your URL: `https://app.plane.so/{workspace_slug}`).\n"
+            "None of the default workspace slugs could be verified. "
+            "Please provide your workspace slug (e.g. `list_plane_projects(workspace='...')`)."
+        )
 
-        lines.append("\n*Use the workspace slug for further project requests.*")
-        return "\n".join(lines)
+    lines = ["**Your Plane Workspaces:**\n"]
+    for slug, projs in verified:
+        if projs:
+            p_desc = ", ".join([f"**{p.get('name')}** (ID: `{p.get('id')}`)" for p in projs])
+            lines.append(f"- **{slug}** (slug: `{slug}`) — {len(projs)} project(s): {p_desc}")
+        else:
+            lines.append(f"- **{slug}** (slug: `{slug}`) — 0 projects")
+
+    lines.append("\n*Note: Plane Personal Access Tokens require workspace slugs. "
+                 "If you have another workspace, specify its slug (e.g. `workspace='your-other-workspace'`).*")
+    return "\n".join(lines)
 
 
 async def list_plane_projects(ctx: Any = None, workspace: str = "", token: Optional[str] = None) -> str:
@@ -170,23 +296,19 @@ async def list_plane_projects(ctx: Any = None, workspace: str = "", token: Optio
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace:
+    ws = resolve_plane_workspace(ctx, workspace)
+    if not ws:
         return "Error: workspace slug is required. Call `list_plane_workspaces` first if unknown."
 
     base = resolve_plane_base_url(ctx)
-    url = f"{base}/api/v1/workspaces/{workspace}/projects/"
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
-        status, data = await _plane_get(client, url, headers)
-        if status != 200:
-            return f"Error retrieving projects from workspace '{workspace}' (HTTP {status}): {data}"
-
-        results = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        results = await _fetch_workspace_projects(client, base, ws, headers)
         if not results:
-            return f"No projects found in workspace '{workspace}'."
+            return f"No projects found in workspace '{ws}'."
 
-        lines = [f"**Projects in Plane workspace '{workspace}':**\n"]
+        lines = [f"**Projects in Plane workspace '{ws}':**\n"]
         for p in results:
             name = p.get("name", "Untitled")
             identifier = p.get("identifier", "")
@@ -219,26 +341,29 @@ async def list_plane_issues(ctx: Any = None, workspace: str = "", project_id: st
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace or not project_id:
-        return "Error: Both workspace and project_id are required."
-
+    ws = resolve_plane_workspace(ctx, workspace)
     base = resolve_plane_base_url(ctx)
     headers = _make_headers(tok)
-    url_items = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/"
-    url_legacy = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/"
 
     async with httpx.AsyncClient() as client:
+        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        if err or not pid:
+            return err or f"Error: Could not resolve project_id in workspace '{ws}'."
+
         # Fetch states map in parallel/beforehand for human-readable state names
-        states = await _fetch_project_states(client, base, workspace, project_id, headers)
+        states = await _fetch_project_states(client, base, ws, pid, headers)
         state_map = {s.get("id"): s.get("name", "") for s in states}
+
+        url_items = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
+        url_legacy = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
 
         status, data = await _plane_get(client, url_items, headers, fallback_url=url_legacy)
         if status != 200:
-            return f"Error retrieving tasks from Plane project '{project_id}' (HTTP {status}): {data}"
+            return f"Error retrieving tasks from Plane project '{pid}' (HTTP {status}): {data}"
 
         results = data.get("results", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
         if not results:
-            return f"No tasks found in project '{project_id}'."
+            return f"No tasks found in project '{pid}'."
 
         # Filter by state if requested
         filter_state = (state or "").strip().lower()
@@ -252,9 +377,9 @@ async def list_plane_issues(ctx: Any = None, workspace: str = "", project_id: st
             filtered.append((issue, st_name))
 
         if not filtered:
-            return f"No tasks found matching status filter '{state}' in project '{project_id}'."
+            return f"No tasks found matching status filter '{state}' in project '{pid}'."
 
-        lines = [f"**Tasks in Plane project (Total: {len(filtered)}):**\n"]
+        lines = [f"**Tasks in Plane project '{pid}' (Total: {len(filtered)}):**\n"]
         for issue, st_name in filtered:
             name = issue.get("name", "Untitled")
             seq_id = issue.get("sequence_id")
@@ -274,21 +399,25 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace or not project_id or not issue_id:
-        return "Error: workspace, project_id, and issue_id are all required."
+    if not issue_id:
+        return "Error: issue_id is required."
 
+    ws = resolve_plane_workspace(ctx, workspace)
     base = resolve_plane_base_url(ctx)
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
-        # Resolve issue ID if user passed sequence number (e.g. "12" or "PROJ-12")
+        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        if err or not pid:
+            return err or f"Error: Could not resolve project_id in workspace '{ws}'."
+
         clean_target = issue_id.strip()
         actual_uuid = clean_target
 
         if not re.match(r'^[0-9a-fA-F-]{32,36}$', clean_target):
             # List tasks to resolve sequence number or prefix
-            url_list = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/"
-            url_list_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/"
+            url_list = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
+            url_list_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
             st_code, list_data = await _plane_get(client, url_list, headers, fallback_url=url_list_fb)
             if st_code == 200:
                 items = list_data.get("results", []) if isinstance(list_data, dict) else (list_data if isinstance(list_data, list) else [])
@@ -298,15 +427,15 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
                         actual_uuid = it["id"]
                         break
 
-        url_item = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/{actual_uuid}/"
-        url_item_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/{actual_uuid}/"
+        url_item = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/{actual_uuid}/"
+        url_item_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/{actual_uuid}/"
 
         status, issue = await _plane_get(client, url_item, headers, fallback_url=url_item_fb)
         if status != 200 or not isinstance(issue, dict):
-            return f"Error: Task '{issue_id}' not found in project '{project_id}' (HTTP {status})."
+            return f"Error: Task '{issue_id}' not found in project '{pid}' (HTTP {status})."
 
         # States map
-        states = await _fetch_project_states(client, base, workspace, project_id, headers)
+        states = await _fetch_project_states(client, base, ws, pid, headers)
         state_map = {s.get("id"): s.get("name", "") for s in states}
 
         st_id = issue.get("state") or issue.get("state_id") or ""
@@ -324,8 +453,8 @@ async def get_plane_issue_details(ctx: Any = None, workspace: str = "", project_
         clean_desc = _strip_html(desc_html)
 
         # Comments
-        comments_url = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/{actual_uuid}/comments/"
-        comments_url_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/{actual_uuid}/comments/"
+        comments_url = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/{actual_uuid}/comments/"
+        comments_url_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/{actual_uuid}/comments/"
         c_status, c_data = await _plane_get(client, comments_url, headers, fallback_url=comments_url_fb)
         comments_list = c_data.get("results", []) if isinstance(c_data, dict) else (c_data if isinstance(c_data, list) else [])
 
@@ -357,13 +486,18 @@ async def create_plane_issue(ctx: Any = None, workspace: str = "", project_id: s
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace or not project_id or not name:
-        return "Error: workspace, project_id, and task name are required."
+    if not name:
+        return "Error: task name is required."
 
+    ws = resolve_plane_workspace(ctx, workspace)
     base = resolve_plane_base_url(ctx)
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
+        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        if err or not pid:
+            return err or f"Error: Could not resolve project_id in workspace '{ws}'."
+
         payload: Dict[str, Any] = {
             "name": name.strip(),
             "priority": priority.strip().lower() if priority else "none",
@@ -375,13 +509,13 @@ async def create_plane_issue(ctx: Any = None, workspace: str = "", project_id: s
 
         # Optional initial state
         if state_name:
-            states = await _fetch_project_states(client, base, workspace, project_id, headers)
+            states = await _fetch_project_states(client, base, ws, pid, headers)
             target_st = next((s for s in states if s.get("name", "").lower() == state_name.strip().lower()), None)
             if target_st:
                 payload["state"] = target_st["id"]
 
-        url_items = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/"
-        url_legacy = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/"
+        url_items = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
+        url_legacy = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
 
         status, created = await _plane_post(client, url_items, headers, payload, fallback_url=url_legacy)
         if status not in (200, 201) or not isinstance(created, dict):
@@ -401,20 +535,24 @@ async def update_plane_issue_state(ctx: Any = None, workspace: str = "", project
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace or not project_id or not issue_id or not state_name:
-        return "Error: workspace, project_id, issue_id, and state_name are required."
+    if not issue_id or not state_name:
+        return "Error: issue_id and state_name are required."
 
+    ws = resolve_plane_workspace(ctx, workspace)
     base = resolve_plane_base_url(ctx)
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
+        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        if err or not pid:
+            return err or f"Error: Could not resolve project_id in workspace '{ws}'."
+
         # 1. Fetch available states
-        states = await _fetch_project_states(client, base, workspace, project_id, headers)
+        states = await _fetch_project_states(client, base, ws, pid, headers)
         if not states:
-            return f"Error: Could not retrieve workflow states for project '{project_id}'."
+            return f"Error: Could not retrieve workflow states for project '{pid}'."
 
         norm_target = state_name.strip().lower()
-        # Match by state name or state group
         matched_state = next(
             (s for s in states if s.get("name", "").lower() == norm_target or s.get("group", "").lower() == norm_target),
             None
@@ -427,8 +565,8 @@ async def update_plane_issue_state(ctx: Any = None, workspace: str = "", project
         clean_target = issue_id.strip()
         actual_uuid = clean_target
         if not re.match(r'^[0-9a-fA-F-]{32,36}$', clean_target):
-            url_list = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/"
-            url_list_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/"
+            url_list = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
+            url_list_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
             st_code, list_data = await _plane_get(client, url_list, headers, fallback_url=url_list_fb)
             if st_code == 200:
                 items = list_data.get("results", []) if isinstance(list_data, dict) else (list_data if isinstance(list_data, list) else [])
@@ -439,8 +577,8 @@ async def update_plane_issue_state(ctx: Any = None, workspace: str = "", project
                         break
 
         # 3. Patch state
-        url_item = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/{actual_uuid}/"
-        url_item_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/{actual_uuid}/"
+        url_item = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/{actual_uuid}/"
+        url_item_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/{actual_uuid}/"
 
         patch_payload = {"state": matched_state["id"]}
         status, updated = await _plane_patch(client, url_item, headers, patch_payload, fallback_url=url_item_fb)
@@ -458,19 +596,23 @@ async def add_plane_issue_comment(ctx: Any = None, workspace: str = "", project_
     if not tok:
         return "Error: Plane API key not configured. Please save your Plane key in Settings -> Security & Keys."
 
-    if not workspace or not project_id or not issue_id or not comment:
-        return "Error: workspace, project_id, issue_id, and comment text are required."
+    if not issue_id or not comment:
+        return "Error: issue_id and comment text are required."
 
+    ws = resolve_plane_workspace(ctx, workspace)
     base = resolve_plane_base_url(ctx)
     headers = _make_headers(tok)
 
     async with httpx.AsyncClient() as client:
-        # Resolve issue UUID if needed
+        pid, err = await _resolve_project_id(client, base, ws, project_id, headers)
+        if err or not pid:
+            return err or f"Error: Could not resolve project_id in workspace '{ws}'."
+
         clean_target = issue_id.strip()
         actual_uuid = clean_target
         if not re.match(r'^[0-9a-fA-F-]{32,36}$', clean_target):
-            url_list = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/"
-            url_list_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/"
+            url_list = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/"
+            url_list_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/"
             st_code, list_data = await _plane_get(client, url_list, headers, fallback_url=url_list_fb)
             if st_code == 200:
                 items = list_data.get("results", []) if isinstance(list_data, dict) else (list_data if isinstance(list_data, list) else [])
@@ -480,8 +622,8 @@ async def add_plane_issue_comment(ctx: Any = None, workspace: str = "", project_
                         actual_uuid = it["id"]
                         break
 
-        comments_url = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/work-items/{actual_uuid}/comments/"
-        comments_url_fb = f"{base}/api/v1/workspaces/{workspace}/projects/{project_id}/issues/{actual_uuid}/comments/"
+        comments_url = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/work-items/{actual_uuid}/comments/"
+        comments_url_fb = f"{base}/api/v1/workspaces/{ws}/projects/{pid}/issues/{actual_uuid}/comments/"
 
         clean_comment = html.escape(comment.strip()).replace("\n", "<br/>")
         payload = {"comment_html": f"<p>{clean_comment}</p>"}
