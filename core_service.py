@@ -1187,6 +1187,178 @@ def clean_reasoning_text(text: str) -> str:
 def get_non_plan_reasoning(text: str) -> str:
     return clean_reasoning_text(text)
 
+def update_todos_from_text(todos: list, text: str) -> bool:
+    """
+    Updates status of items in todos list based on checklist markers in text.
+    Looks for:
+    - [x], - [X], (completed), (done), (выполнено), (успешно) -> completed
+    - [ ], (pending), (в процессе) -> in_progress or pending
+    Returns True if any todo item was updated.
+    """
+    if not todos or not text:
+        return False
+    updated = False
+    lines = text.split('\n')
+    for line in lines:
+        l_str = line.strip()
+        if not l_str:
+            continue
+        is_completed = bool(re.search(r'\[[xX]\]|\(\s*(?:выполнено|completed|done|успешно)\s*\)', l_str, re.IGNORECASE))
+        
+        # Look for step index like - [1], - [2], Step 1:, 1.
+        idx_match = re.search(r'-\s*\[\s*(\d+)\s*\]|Step\s*(\d+)|\b(\d+)\.\s+', l_str, re.IGNORECASE)
+        step_idx = None
+        if idx_match:
+            for g in idx_match.groups():
+                if g and g.isdigit():
+                    step_idx = int(g) - 1
+                    break
+                    
+        if is_completed:
+            if step_idx is not None and 0 <= step_idx < len(todos):
+                if todos[step_idx]["status"] != "completed":
+                    todos[step_idx]["status"] = "completed"
+                    updated = True
+                    continue
+            for t_item in todos:
+                words = [w for w in re.findall(r'\w{4,}', t_item.get("content", "").lower())]
+                if words and sum(1 for w in words if w in l_str.lower()) >= min(2, len(words)):
+                    if t_item["status"] != "completed":
+                        t_item["status"] = "completed"
+                        updated = True
+                        break
+    return updated
+
+class McpStreamFilter:
+    """
+    Filters a stream of tokens into reasoning deltas, plan updates, and content deltas.
+    Prevents [PLAN] blocks, <channel|>, and thoughts from leaking into the user chat bubble.
+    """
+    def __init__(self, is_turn_zero: bool = False):
+        self.is_turn_zero = is_turn_zero
+        self.buffer = ""
+        self.in_plan = False
+        self.in_thought = False
+        self.content_started = False
+
+    def feed(self, token: str) -> list[tuple[str, str]]:
+        if self.content_started:
+            if not self.is_turn_zero:
+                return [("content", token)]
+            else:
+                return [("reasoning", token)]
+
+        self.buffer += token
+        events = []
+        
+        while self.buffer:
+            # 1. Check for explicit channel marker: <channel|>, <|channel|>, <channel|main>
+            channel_match = re.search(r"<\|?channel\|?(?:main|response|chat|final)?>", self.buffer, re.IGNORECASE)
+            if channel_match:
+                pre = self.buffer[:channel_match.start()]
+                if pre:
+                    events.append(("reasoning", pre))
+                self.buffer = self.buffer[channel_match.end():].lstrip("\n\r")
+                self.content_started = True
+                if self.buffer and not self.is_turn_zero:
+                    events.append(("content", self.buffer))
+                    self.buffer = ""
+                break
+
+            # 2. Check for explicit thought tag opening: <thought>, <think>
+            thought_open = re.search(r"<(?:thought|think)>", self.buffer, re.IGNORECASE)
+            if thought_open and not self.in_thought:
+                pre = self.buffer[:thought_open.start()]
+                if pre:
+                    events.append(("reasoning", pre))
+                self.in_thought = True
+                self.buffer = self.buffer[thought_open.end():]
+                continue
+
+            # 3. Check for explicit thought tag closing: </thought>, </think>
+            if self.in_thought:
+                thought_close = re.search(r"</(?:thought|think)>", self.buffer, re.IGNORECASE)
+                if thought_close:
+                    th = self.buffer[:thought_close.start()]
+                    if th:
+                        events.append(("reasoning", th))
+                    self.in_thought = False
+                    self.buffer = self.buffer[thought_close.end():].lstrip("\n\r")
+                    continue
+                else:
+                    safe_len = max(0, len(self.buffer) - 12)
+                    if safe_len > 0:
+                        chunk = self.buffer[:safe_len]
+                        events.append(("reasoning", chunk))
+                        self.buffer = self.buffer[safe_len:]
+                    break
+
+            # 4. Check for [PLAN] / [THOUGHT] / CHECKLIST: prefix
+            buf_strip = self.buffer.lstrip()
+            if not self.in_plan:
+                if len(buf_strip) < 15 and any(buf_strip.upper().startswith(p[:len(buf_strip)]) for p in ["[PLAN]", "[THOUGHT]", "<CHANNEL", "<|CHANNEL", "<THOUGHT>", "<THINK>"]):
+                    break
+                if any(buf_strip.upper().startswith(p) for p in ["[PLAN]", "PLAN:", "[CHECKLIST]", "CHECKLIST:"]):
+                    self.in_plan = True
+
+            if self.in_plan:
+                if "\n" in self.buffer:
+                    line, rest = self.buffer.split("\n", 1)
+                    l_str = line.strip()
+                    is_plan_header = any(p in l_str.upper() for p in ["[PLAN]", "PLAN:", "CHECKLIST:"])
+                    is_plan_item = re.match(r"^(?:-\s*\[\s*[\w\s-]*\s*\]|-\s*|\*\s*|Step\s*\d+|\d+\.\s*|•\s*)", l_str, re.IGNORECASE)
+                    
+                    if is_plan_header or (is_plan_item and len(l_str) > 0) or (not l_str and self.in_plan):
+                        events.append(("reasoning", line + "\n"))
+                        self.buffer = rest
+                        continue
+                    else:
+                        self.in_plan = False
+                        # Transition to content mode!
+                        self.content_started = True
+                        if not self.is_turn_zero:
+                            events.append(("content", self.buffer))
+                        else:
+                            events.append(("reasoning", self.buffer))
+                        self.buffer = ""
+                        break
+                else:
+                    break
+
+            # Check if buffer ends with partial channel tag prefix
+            potential_tag = False
+            for tag in ["<channel|>", "<|channel|>", "<channel|main>", "<channel|final>"]:
+                for i in range(1, len(tag)):
+                    if self.buffer.endswith(tag[:i]):
+                        potential_tag = True
+                        break
+                if potential_tag:
+                    break
+
+            if potential_tag:
+                break
+
+            # Not in plan, not in thought, not in channel marker -> User-facing content
+            self.content_started = True
+            if not self.is_turn_zero:
+                events.append(("content", self.buffer))
+            else:
+                events.append(("reasoning", self.buffer))
+            self.buffer = ""
+            break
+
+        return events
+
+    def flush(self) -> list[tuple[str, str]]:
+        events = []
+        if self.buffer:
+            if self.content_started and not self.is_turn_zero:
+                events.append(("content", self.buffer))
+            else:
+                events.append(("reasoning", self.buffer))
+            self.buffer = ""
+        return events
+
 def split_mcp_output(text: str, has_tool_calls: bool = False) -> tuple[str, str]:
     """
     Splits agent output into (reasoning, final_content).
@@ -1332,6 +1504,10 @@ def clean_assistant_response(text: str) -> str:
     """
     if not text:
         return ""
+    # Strip channel markers
+    text = re.sub(r'<\|?channel\|?[^>\n]*>', '', text, flags=re.IGNORECASE)
+    # Strip thought tags
+    text = re.sub(r'</?(?:thought|think)>', '', text, flags=re.IGNORECASE)
     # Remove any debug/agent labels
     text = re.sub(r'^(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\n(?:Agent\s+Reasoning\s*\(Turn\s*\d+\)\s*:|Agent\s+Conclusion\s*:)\s*', '\n', text, flags=re.IGNORECASE)
@@ -1353,8 +1529,8 @@ def clean_assistant_response(text: str) -> str:
             continue
             
         if in_plan_block:
-            # Plan lines usually look like checkboxes: - [ ] or - [x] or * Step X: etc.
-            is_checkbox = re.match(r'^(?:-\s*\[\s*[ xX]?\s*\]\s*|Step\s*\d+|Completed in previous turn|\(\s*Completed in previous turn\s*\))', line_strip, re.IGNORECASE)
+            # Plan lines look like checkboxes or numbered steps: - [ ], - [x], - [1], Step 1:, 1. etc.
+            is_checkbox = re.match(r'^(?:-\s*\[\s*[\w\s-]*\s*\]\s*|Step\s*\d+|\d+\.\s+|Completed in previous turn|\(\s*Completed in previous turn\s*\))', line_strip, re.IGNORECASE)
             # If we hit a non-plan line, terminate the plan block suppression
             if not is_checkbox and not line_strip.startswith(("-", "*", "•")) and len(line_strip) > 0:
                 in_plan_block = False
@@ -1585,6 +1761,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         # Turn 0 is strictly for [PLAN] checklist and initial tool call.
         # Turns where mandatory file reading/writing hasn't happened yet should not stream to chat text.
         can_stream_content = (turn > 0) and not (known_files and not has_read_file and requires_read) and not (was_write_planned and not changed_files)
+        stream_filter = McpStreamFilter(is_turn_zero=(turn == 0 or not can_stream_content))
 
         async for chunk in llm_request_stream(payload):
             if not isinstance(chunk, dict):
@@ -1604,15 +1781,36 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
 
             if cnt:
                 raw_msg_content += cnt
-                if can_stream_content:
-                    streamed_to_user = True
-                    yield {
-                        "type": "content_delta",
-                        "delta": cnt
-                    }
+                for ev_type, ev_text in stream_filter.feed(cnt):
+                    if ev_type == "reasoning":
+                        yield {
+                            "id": f"thought_turn_{turn}",
+                            "type": "reasoning",
+                            "delta": ev_text
+                        }
+                    elif ev_type == "content":
+                        streamed_to_user = True
+                        yield {
+                            "type": "content_delta",
+                            "delta": ev_text
+                        }
 
             if tc:
                 tool_calls.extend(tc)
+
+        for ev_type, ev_text in stream_filter.flush():
+            if ev_type == "reasoning":
+                yield {
+                    "id": f"thought_turn_{turn}",
+                    "type": "reasoning",
+                    "delta": ev_text
+                }
+            elif ev_type == "content":
+                streamed_to_user = True
+                yield {
+                    "type": "content_delta",
+                    "delta": ev_text
+                }
 
         if not raw_msg_content and not raw_msg_thinking and not tool_calls:
             break
@@ -1675,7 +1873,8 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                   # Separate thoughts from final answer using split_mcp_output
                   reasoning_delta, final_candidate = split_mcp_output(clean_agent_text, has_tool_calls=bool(tool_calls))
                   
-                  if reasoning_delta and not raw_msg_thinking:
+                  has_streamed_reasoning = bool(raw_msg_thinking) or bool(stream_filter.in_plan or stream_filter.in_thought)
+                  if reasoning_delta and not has_streamed_reasoning:
                        all_tool_results += f"{reasoning_delta}\n\n"
                        yield {
                            "id": f"thought_turn_{turn}",
@@ -1706,6 +1905,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                                 },
                                 "action": "part_update"
                             }
+                  elif todos and update_todos_from_text(todos, clean_agent_text):
+                       yield {
+                           "id": "mcp_todo",
+                           "type": "tool",
+                           "state": {
+                               "status": "running",
+                               "tool": "todo",
+                               "input": {
+                                   "todos": todos
+                               }
+                           },
+                           "action": "part_update"
+                       }
                   
                   # [PLAN LOGGING]
                   if turn == 0:
@@ -2249,6 +2461,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         }
         logging.info("[MCP] Generating dynamic human response via LLM (streaming)...")
         raw_summary = ""
+        summary_filter = McpStreamFilter(is_turn_zero=False)
         async for chunk in llm_request_stream(payload):
             if not isinstance(chunk, dict):
                 continue
@@ -2263,10 +2476,31 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                 }
             if cnt:
                 raw_summary += cnt
+                for ev_type, ev_text in summary_filter.feed(cnt):
+                    if ev_type == "reasoning":
+                        yield {
+                            "id": "thought_summary",
+                            "type": "reasoning",
+                            "delta": ev_text
+                        }
+                    elif ev_type == "content":
+                        streamed_to_user = True
+                        yield {
+                            "type": "content_delta",
+                            "delta": ev_text
+                        }
+        for ev_type, ev_text in summary_filter.flush():
+            if ev_type == "reasoning":
+                yield {
+                    "id": "thought_summary",
+                    "type": "reasoning",
+                    "delta": ev_text
+                }
+            elif ev_type == "content":
                 streamed_to_user = True
                 yield {
                     "type": "content_delta",
-                    "delta": cnt
+                    "delta": ev_text
                 }
         if raw_summary:
             final_output = clean_assistant_response(raw_summary.strip())
