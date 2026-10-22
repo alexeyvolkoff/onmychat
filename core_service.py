@@ -4240,7 +4240,11 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                 owner_val = r.get("owner", ctx.user_id or user_context.node_owner())
                 clean_doc_id = str(doc_id).strip() if doc_id else ""
                 full_path = clean_doc_id if clean_doc_id.startswith("/") or clean_doc_id.startswith("http") else (f"/{clean_doc_id}" if clean_doc_id else "")
-                fn        = clean_doc_id.split("/")[-1] if clean_doc_id else title
+                if not ctx.private_mode and full_path:
+                    stripped_p = unified_memory._strip_device_namespace(full_path)
+                    if stripped_p:
+                        full_path = stripped_p
+                fn        = full_path.split("/")[-1] if full_path else title
                 fn        = re.sub(r'^\s*#+\s*', '', fn).strip()
                 file_ref  = full_path or fn
 
@@ -4269,20 +4273,24 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     if key not in sources_map:
                         clean_doc_id = str(doc_id).strip()
                         if clean_doc_id.startswith("http://") or clean_doc_id.startswith("https://"):
-                            full_path = clean_doc_id
+                            src_full_path = clean_doc_id
                             clickable = True
                         else:
-                            full_path = clean_doc_id if clean_doc_id.startswith("/") else f"/{clean_doc_id}"
-                            clickable = bool(clean_doc_id and not clean_doc_id.startswith("user:note:") and not clean_doc_id.startswith("kb:"))
-                        src_title = fn if (fn and "." in fn) else (title or fn or clean_doc_id.split("/")[-1])
+                            src_full_path = clean_doc_id if clean_doc_id.startswith("/") else f"/{clean_doc_id}"
+                            if not ctx.private_mode:
+                                stripped_p = unified_memory._strip_device_namespace(src_full_path)
+                                if stripped_p:
+                                    src_full_path = stripped_p
+                            clickable = bool(ctx.private_mode and clean_doc_id and not clean_doc_id.startswith("user:note:") and not clean_doc_id.startswith("kb:"))
+                        src_title = fn if (fn and "." in fn) else (title or fn or src_full_path.split("/")[-1])
                         sources_map[key] = {
                             "title":       src_title,
-                            "owner":       owner_val,
-                            "clickable":   True,
-                            "document_id": full_path,
-                            "fullPath":    full_path,
-                            "path":        full_path,
-                            "url":         full_path,
+                            "owner":       owner_val if ctx.private_mode else "",
+                            "clickable":   clickable,
+                            "document_id": src_full_path,
+                            "fullPath":    src_full_path,
+                            "path":        src_full_path,
+                            "url":         src_full_path,
                         }
         except Exception as e:
             logging.error(f"[memory] unified search error in inject_facts: {e}")

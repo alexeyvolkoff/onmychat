@@ -3044,7 +3044,7 @@ def _folder_cover_exists(doc_id: str) -> bool:
 DEVICE_CARD_TEXT_LIMIT = 300
 
 
-def _device_cards_response(offset: int = 0, limit: int = None):
+def _device_cards_response(offset: int = 0, limit: int = None, public_only: bool = False):
     """Карточки on-device: memory_card + проиндексированные документы (группы file_chunk).
 
     Внимание: base64-превью НЕ отдаём в списке (4611+ фото = сотни МБ JSON и
@@ -3055,6 +3055,7 @@ def _device_cards_response(offset: int = 0, limit: int = None):
     один мегабайтный ответ). Без limit — прежний полный ответ (совместимость).
     """
     cards = unified_memory.get_all_memory_cards() + unified_memory.get_indexed_documents()
+    pub_tags = set(t.lower() for t in unified_memory.PUBLIC_TAGS)
     out = []
     for c in cards:
         doc_id = c.get("document_id") or c.get("path") or ""
@@ -3064,14 +3065,35 @@ def _device_cards_response(offset: int = 0, limit: int = None):
         # Одиночные карточки Readme.md как отдельный документ в список не включаем.
         if (doc_id.lower().endswith("/readme.md") or doc_id.lower().endswith("/readme.txt")) and not c.get("is_folder"):
             continue
+
+        # Если теги пусты, но в тексте есть хештеги — извлекаем их
+        if not c.get("tags") and c.get("text"):
+            found_tags = [w.lstrip("#").lower() for w in re.findall(r"(?<!\w)#[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", c["text"])]
+            if found_tags:
+                c["tags"] = sorted(set(found_tags))
+
+        # Фильтрация для гостей публичной ноды: только публичные теги (например, #omd)
+        if public_only:
+            c_tags = set(t.lower() for t in c.get("tags", []))
+            if not (c_tags & pub_tags):
+                continue
+            c["readOnly"] = True
+            # Скрываем префикс устройства/ноды из путей для гостей (например, /beelink/Knowledge/OMD -> /Knowledge/OMD)
+            stripped_doc_id = unified_memory._strip_device_namespace(doc_id)
+            if stripped_doc_id:
+                doc_id = stripped_doc_id
+                c["document_id"] = stripped_doc_id
+                c["path"] = stripped_doc_id
+                if c.get("title") and c["title"] == (c.get("document_id") or "").split("/")[-1]:
+                    c["title"] = stripped_doc_id.split("/")[-1]
+
         c["onDevice"] = True
         c["source"] = "device"
         if not c.get("created"):
             c["created"] = c.get("timestamp", "") or ""
         if not c.get("title"):
-            c["title"] = (c.get("document_id") or "").split("/")[-1]
+            c["title"] = (doc_id or "").split("/")[-1]
 
-        doc_id = c.get("document_id") or ""
         # Для папок: если выжимки нет или в тексте только имя/заголовок папки — подтягиваем из Readme.md
         if c.get("is_folder") and doc_id:
             cur_text = (c.get("text") or "").strip()
@@ -3089,12 +3111,6 @@ def _device_cards_response(offset: int = 0, limit: int = None):
         if c.get("is_folder") and not has_any_preview:
             has_any_preview = _folder_cover_exists(doc_id)
         c["hasPreview"] = has_any_preview
-
-        # Если теги пусты, но в тексте есть хештеги — извлекаем их
-        if not c.get("tags") and c.get("text"):
-            found_tags = [w.lstrip("#").lower() for w in re.findall(r"(?<!\w)#[a-zA-Zа-яА-ЯёЁ0-9_-]{2,}", c["text"])]
-            if found_tags:
-                c["tags"] = sorted(set(found_tags))
 
         # Гарантированно выпиливаем base64-превью из ответа
         c.pop("image_preview", None)
@@ -3134,10 +3150,21 @@ async def device_memory_endpoint(
     limit: int = Query(0, ge=0),  # 0 = весь список (совместимость со старым клиентом)
 ):
     ctx = get_ctx(omd_key)
-    if not trusted_private_access(request, ctx):
-        return {"memories": [], "total": 0, "offset": 0, "hasMore": False}
+    pm = request.headers.get("X-OMD-Private-Mode")
+    role = trusted_caller_role(request)
+
+    # Владелец ноды имеет полный доступ ко всем своим знаниям.
+    # Гость (или запрос с X-OMD-Private-Mode: 0 / role=guest) видит ТОЛЬКО публичные знания (PUBLIC_TAGS).
+    is_owner = False
+    if pm in ("0", "false") or role in ("guest", "shared"):
+        is_owner = False
+    elif trusted_owner_access(request) or validated_node_owner(ctx):
+        is_owner = True
+    elif trusted_private_access(request, ctx):
+        is_owner = True
+
     try:
-        page = _device_cards_response(offset=offset, limit=limit or None)
+        page = _device_cards_response(offset=offset, limit=limit or None, public_only=not is_owner)
     except Exception as e:
         logging.error(f"[device_memory] list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3161,8 +3188,19 @@ async def device_memory_thumb_endpoint(
     Для папок ищем обложку (folder.jpg/cover.jpg/...) внутри папки.
     """
     ctx = get_ctx(omd_key)
-    if not trusted_private_access(request, ctx):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    pm = request.headers.get("X-OMD-Private-Mode")
+    role = trusted_caller_role(request)
+
+    is_owner = False
+    if pm in ("0", "false") or role in ("guest", "shared"):
+        is_owner = False
+    elif trusted_owner_access(request) or validated_node_owner(ctx) or trusted_private_access(request, ctx):
+        is_owner = True
+
+    if not is_owner:
+        if not path or not unified_memory.is_document_public(path):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
 
@@ -3197,8 +3235,10 @@ async def device_memory_thumb_endpoint(
 async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
     """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB и Readme.md на диске."""
     ctx = get_ctx(omd_key)
-    if not trusted_private_access(request, ctx):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    pm = request.headers.get("X-OMD-Private-Mode")
+    role = trusted_caller_role(request)
+    if pm in ("0", "false") or role in ("guest", "shared") or not trusted_private_access(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden: Public knowledge is read-only for guests")
     body = await request.json()
     try:
         new_text = (body.get("text") or "").strip()
@@ -3230,8 +3270,10 @@ async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None 
 @app.delete("/api/device_memory/{mem_id:path}")
 async def delete_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
     ctx = get_ctx(omd_key)
-    if not trusted_private_access(request, ctx):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    pm = request.headers.get("X-OMD-Private-Mode")
+    role = trusted_caller_role(request)
+    if pm in ("0", "false") or role in ("guest", "shared") or not trusted_private_access(request, ctx):
+        raise HTTPException(status_code=403, detail="Forbidden: Public knowledge is read-only for guests")
     try:
         # document::<document_id> — сгруппированный индексируемый документ
         if mem_id.startswith("document::"):

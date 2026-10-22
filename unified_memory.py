@@ -1176,6 +1176,44 @@ def match_qa(question: str, min_score: float = 0.8, top_k: int = 1) -> dict:
     return {"answer": best.get("answer", ""), "score": round(best["relevance"] / 100.0, 4)}
 
 
+def is_document_public(doc_id: str) -> bool:
+    """Проверяет, помечен ли документ или карточка одним из PUBLIC_TAGS."""
+    if not doc_id:
+        return False
+    pub_tags = set(t.lower() for t in PUBLIC_TAGS)
+    coll = get_collection()
+    candidates = [doc_id]
+    stripped = _strip_device_namespace(doc_id)
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+    for c in candidates:
+        try:
+            res = coll.get(where={"document_id": {"$eq": c}}, include=["metadatas"], limit=10)
+            for meta in res.get("metadatas", []):
+                meta_tags = set(k[2:].lower() for k in meta if k.startswith("t_"))
+                if meta.get("tags"):
+                    meta_tags.update(t.strip().lower() for t in str(meta["tags"]).split(",") if t.strip())
+                if meta_tags & pub_tags:
+                    return True
+        except Exception:
+            pass
+
+    # Если передан путь без устройства (напр. /Knowledge/OMD), сверяем с публичными карточками
+    clean_target = stripped or ("/" + doc_id.strip("/"))
+    try:
+        pub_filter = _tags_match_filter(PUBLIC_TAGS)
+        res = coll.get(where=pub_filter, include=["metadatas"], limit=500)
+        for meta in res.get("metadatas", []):
+            did = meta.get("document_id") or ""
+            did_stripped = _strip_device_namespace(did) or did
+            if did == clean_target or did_stripped == clean_target or did.endswith(clean_target):
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
 # ─── Высокоуровневые RAG-запросы ──────────────────────────────────────────────
 
 def search_for_rag(
@@ -1187,24 +1225,22 @@ def search_for_rag(
 ) -> list:
     """
     Поиск для RAG-инъекции:
-    - tags_filter (хештеги из промпта) -> только эти теги
-    - private_mode=True  + нет тегов   -> вся база (владелец ноды, все владельцы)
-    - private_mode=False + нет тегов   -> только PUBLIC_TAGS (гость)
-    - document_id (focus /learn)       -> только чанки/карточка этого файла (теги не фильтруем)
+    - private_mode=False (гость)       -> ВСЕГДА только PUBLIC_TAGS (или пересечение с tags_filter)
+    - private_mode=True + tags_filter  -> только эти теги
+    - private_mode=True + document_id  -> только чанки/карточка этого файла (теги не фильтруем)
+    - private_mode=True + нет тегов    -> вся база (владелец ноды)
     - recency: результат ранжируется relevance × recency (свежие файлы выше)
-    owner-фильтра больше нет: в private-режиме видны записи всех владельцев ноды.
     """
     if top_k is None:
         top_k = RAG_TOP_K
-    if tags_filter:
+    if not private_mode:
+        tag_filter = tags_filter or PUBLIC_TAGS
+    elif tags_filter:
         tag_filter = tags_filter
     elif document_id:
-        # При document_id фильтр по тегам не нужен — document_id и так
-        # ограничивает выдачу одним документом; PUBLIC_TAGS убьёт чанки
-        #OWNER-документов (они без тега "public").
         tag_filter = None
     else:
-        tag_filter = None if private_mode else PUBLIC_TAGS
+        tag_filter = None
 
     # Явный фокус (/learn <файл>, прикреплённый документ) — пользователь сам
     # указал документ, его семантическая близость к вопросу не валидна:
