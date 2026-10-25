@@ -1160,6 +1160,11 @@ def clean_reasoning_text(text: str) -> str:
         if not line_strip:
             cleaned_lines.append(line)
             continue
+
+        # Filter out creepy self-referential persona thoughts (e.g. "Drafting the Response (June persona):")
+        if re.search(r'(?:persona|character|june)\s*(?:check|reminder|mode|\bpersona\b)?[:\)]', line_strip, re.IGNORECASE) and not re.search(r'(?:tool|file|code|query|search)', line_strip, re.IGNORECASE):
+            continue
+
         if "[PLAN]" in line_strip.upper() or "PLAN:" in line_strip.upper() or "CHECKLIST:" in line_strip.upper():
             in_plan_block = True
             continue
@@ -4858,7 +4863,13 @@ async def _perform_prompt_gen(ctx: UserContext,
             logging.info(f"Disabling Gemma 4 Thinking Mode for intent: {intent} (mode: {mode})")
             system_prompt = f"<|nothink|>\n{system_prompt}"
 
-    if not allow_thinking:
+    if allow_thinking:
+        instruction_prompt += (
+            "\n\nTHINKING GUIDELINES:\n"
+            "- Your internal thoughts must focus strictly on analyzing the user's inquiry, verifying facts, and technical logic.\n"
+            "- Absolutely DO NOT analyze, rehearse, or describe your persona, name, or roleplay character rules in your thoughts. Your personality is innate and natural — never mention 'June persona', 'acting charming', or roleplay instructions inside the thinking block."
+        )
+    else:
         instruction_prompt += "\nCRITICAL: Respond directly to the user. Do NOT output any internal thinking process, reasoning steps, or analysis preamble."
 
     # === ОСНОВНОЙ ЗАПРОС ===
