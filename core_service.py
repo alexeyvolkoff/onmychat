@@ -1458,6 +1458,97 @@ def clean_final_content(text: str) -> str:
     return clean_reasoning_text(text)
 
 
+def extract_tool_calls_from_text(text: str, supported_names: set) -> list:
+    """
+    Fallback parser when local LLMs output tool calls in markdown or text
+    rather than structured JSON tool_calls in the API response.
+    """
+    import ast
+    if not text:
+        return []
+    tool_calls = []
+
+    # 1. <execute_tool>name{...}</execute_tool> or <execute_tool>{"name": ..., "arguments": ...}</execute_tool>
+    for m in re.finditer(r'<execute_tool>\s*(\w+)?\s*(\{[\s\S]*?\})\s*</execute_tool>', text, re.IGNORECASE):
+        fn_name, json_body = m.group(1), m.group(2)
+        try:
+            parsed = json.loads(json_body)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(json_body)
+            except Exception:
+                continue
+        if not fn_name and isinstance(parsed, dict) and ('name' in parsed or 'tool' in parsed):
+            fn_name = parsed.get('name') or parsed.get('tool')
+            parsed = parsed.get('arguments') or parsed.get('parameters') or parsed
+        if fn_name and fn_name in supported_names:
+            tool_calls.append({
+                'id': f'call_text_{len(tool_calls)}',
+                'function': {'name': fn_name, 'arguments': parsed if isinstance(parsed, dict) else {}}
+            })
+
+    if tool_calls:
+        return tool_calls
+
+    # 2. Markdown or Python style: Execute name with ... or name(arg1=val1, ...)
+    for name in supported_names:
+        # Pattern 2a: name(arg=val, ...)
+        py_match = re.search(r'\b' + re.escape(name) + r'\s*\(([\s\S]*?)\)', text)
+        if py_match:
+            raw_args = py_match.group(1).strip()
+            args = {}
+            for kv in re.finditer(r'(\w+)\s*=\s*(?:(["\'])([\s\S]*?)\2|(\{[\s\S]*?\})|(\[[^\]]*?\])|([^\s,]+))', raw_args):
+                k = kv.group(1)
+                val = kv.group(3) if kv.group(3) is not None else (kv.group(4) or kv.group(5) or kv.group(6))
+                if val:
+                    val = val.strip()
+                    if val.startswith('{') or val.startswith('['):
+                        try:
+                            args[k] = json.loads(val)
+                        except Exception:
+                            try:
+                                args[k] = ast.literal_eval(val)
+                            except Exception:
+                                args[k] = val
+                    else:
+                        args[k] = val
+            if args:
+                tool_calls.append({
+                    'id': f'call_text_{len(tool_calls)}',
+                    'function': {'name': name, 'arguments': args}
+                })
+                return tool_calls
+
+        # Pattern 2b: Execute name with key: val, ...
+        exec_match = re.search(r'(?:Execute|Call)\s+`?' + re.escape(name) + r'`?\s+with\s*:?\s*([\s\S]+?)(?:\n\n|\Z)', text, re.IGNORECASE)
+        if exec_match:
+            raw_args = exec_match.group(1).strip()
+            args = {}
+            for kv in re.finditer(r'`?(\w+)`?\s*:\s*(?:(["\'])([\s\S]*?)\2|(\{[\s\S]*?\})|(\[[^\]]*?\])|([^\n,]+))', raw_args):
+                k = kv.group(1)
+                val = kv.group(3) if kv.group(3) is not None else (kv.group(4) or kv.group(5) or kv.group(6))
+                if val:
+                    val = val.strip()
+                    if val.startswith('{') or val.startswith('['):
+                        try:
+                            args[k] = json.loads(val)
+                        except Exception:
+                            try:
+                                args[k] = ast.literal_eval(val)
+                            except Exception:
+                                args[k] = val
+                    else:
+                        args[k] = val
+            if args:
+                tool_calls.append({
+                    'id': f'call_text_{len(tool_calls)}',
+                    'function': {'name': name, 'arguments': args}
+                })
+                return tool_calls
+
+    return tool_calls
+
+
 def clean_mimetype(filename: str, raw_mimetype: str = None) -> str:
     """
     Cleans and formats mimetype to be strictly compatible with the OnMyDisk frontend flat-file icon assets.
@@ -1702,7 +1793,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         else:
             available_tools = list(MCP_TOOLS)
         if turn == 0:
-             guidance += "MANDATORY: Analyze the request and create a detailed `[PLAN]` checklist. Your plan MUST cover every part of the user's request (e.g., if they ask to 'extract' or 'find amount', your plan MUST include `read_omd_file`). You MUST also call the first tool in your plan if possible."
+             guidance += "MANDATORY: Analyze the request and create a detailed `[PLAN]` checklist. Your plan MUST cover every part of the user's request (e.g., if they ask to 'extract' or 'find amount', your plan MUST include `read_omd_file`). You may call the first tool in Turn 0 or execute it in Turn 1."
              # [PROACTIVE DISCOVERY GATE]
              if potential_paths and not known_files:
                   is_dir_like = any(p.endswith("/") or not os.path.splitext(p)[1] for p in potential_paths)
@@ -1711,10 +1802,22 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                        logging.info(f"[MCP] Enforcing Discovery Phase for: {potential_paths}")
                        guidance += "\nDISCOVERY PHASE: You MUST use `find_omd_file` or `list_omd_files` first to find the file name."
              
+        # Convert any role: "tool" to role: "user" in history for Ollama local model compatibility
+        converted_history = []
+        for m in messages[1:]:
+            if m.get("role") == "tool":
+                converted_history.append({
+                    "role": "user",
+                    "content": f"Tool Output:\n{m.get('content', '')}\n\nProceed with the next step of your plan."
+                })
+            else:
+                converted_history.append(m)
+
+        if turn == 0:
              # Remove strict "Tool Only" constraint for turn 0
              current_messages = [
                  {"role": "system", "content": messages[0]["content"] + f"\n\nCURRENT GUIDANCE: {guidance}"}
-             ] + messages[1:]
+             ] + converted_history
         else:
              if was_write_planned and not changed_files:
                   guidance = "Continue executing your `[PLAN]`. Use `create_document_from_template` (or `write_omd_file`) to create or save documents."
@@ -1737,7 +1840,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                          f"CURRENT GUIDANCE: {guidance}"
                      )
                  }
-             ] + messages[1:]
+             ] + converted_history
         
         # General removal of search_memory if paths were provided
         if potential_paths:
@@ -1813,7 +1916,22 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                 }
 
         if not raw_msg_content and not raw_msg_thinking and not tool_calls:
+            if was_write_planned and not changed_files and turn < max_turns - 1:
+                logging.warning(f"[MCP][Turn {turn+1}] Model returned empty output before document creation. Nudging.")
+                messages.append({
+                    "role": "user",
+                    "content": "Wait! You did not output a tool call. You MUST execute the next step: call `create_document_from_template` with template_path, target_path, and replacements. Output ONLY the tool call."
+                })
+                continue
             break
+
+        if not tool_calls and (raw_msg_content or raw_msg_thinking):
+            supported_names = {t["function"]["name"] for t in available_tools}
+            combined_text = (raw_msg_content or "") + "\n" + (raw_msg_thinking or "")
+            text_tool_calls = extract_tool_calls_from_text(combined_text, supported_names)
+            if text_tool_calls:
+                logging.info(f"[MCP][Turn {turn+1}] Extracted tool call from text: {text_tool_calls}")
+                tool_calls = text_tool_calls
 
         if len(tool_calls) > 1:
             # Force pipelining: Only take the first tool call to avoid parallel execution conflicts
@@ -1930,26 +2048,23 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
              # The user's intent (set at the start) is the source of truth.
              if turn == 0:
                   # [PLANNING GATE]
-                  # Enforce that a detailed [PLAN] is created and tools are called in Turn 0
                   has_plan_text = "[PLAN]" in agent_text or "checklist" in agent_text.lower() or len(todos) > 0
                   
-                  if not has_plan_text or not tool_calls:
-                       logging.warning(f"[MCP] Turn 0 PLANNING GATE trigger: has_plan={has_plan_text}, has_tool_calls={bool(tool_calls)}. Intercepting.")
-                       
-                       if not has_plan_text and not tool_calls:
-                            refusal_msg = (
-                                 "Wait! You did NOT provide a detailed `[PLAN]` checklist or call any tools! "
-                                 "To fulfill the request, you MUST start your response with a detailed `[PLAN]` checklist "
-                                 "describing each step (using tool_name in parentheses) and execute the first tool call "
-                                 "(e.g., `read_omd_file` or `list_omd_files`) immediately in Turn 0. "
-                                 "Do NOT output raw JSON data, markdown templates, or conversational text. Redo your response now."
-                            )
-                       elif not has_plan_text:
-                            refusal_msg = "Wait! You called a tool but skipped the mandatory `[PLAN]` checklist in Turn 0. Redo your response including a detailed `[PLAN]` checklist."
-                       else:
-                            refusal_msg = "Wait! You provided a plan but did NOT call your first tool in Turn 0. You MUST execute the first tool call of your plan immediately in Turn 0."
-                            
+                  if not has_plan_text and not tool_calls:
+                       logging.warning(f"[MCP] Turn 0 PLANNING GATE trigger: has_plan=False, has_tool_calls=False. Intercepting.")
+                       refusal_msg = (
+                            "Wait! You did NOT provide a detailed `[PLAN]` checklist or call any tools! "
+                            "To fulfill the request, you MUST start your response with a detailed `[PLAN]` checklist "
+                            "describing each step (using tool_name in parentheses). "
+                            "Do NOT output raw JSON data, markdown templates, or conversational text. Redo your response now."
+                       )
                        messages.append({"role": "user", "content": refusal_msg})
+                       tool_calls = []
+                       msg["tool_calls"] = []
+                       continue
+                  elif has_plan_text and not tool_calls:
+                       logging.info(f"[MCP][Turn {turn+1}] Turn 0 generated plan. Continuing to execution in Turn 1.")
+                       messages.append({"role": "user", "content": "Plan accepted. Now execute the first tool call of your plan. Do NOT reply with conversational text, explanations, or apologies. Output ONLY the tool call."})
                        tool_calls = []
                        msg["tool_calls"] = []
                        continue
@@ -1983,7 +2098,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                        continue
                   
                   if was_write_planned and not changed_files and turn < max_turns - 1:
-                       messages.append({"role": "user", "content": "Wait! Your plan includes creating or modifying a document (`create_document_from_template` or `write_omd_file`), but no document has been created or saved yet. You MUST call `create_document_from_template` now with template_path, target_path, and replacements."})
+                       messages.append({"role": "user", "content": "Wait! Your plan includes creating or modifying a document (`create_document_from_template` or `write_omd_file`), but no document has been created or saved yet. You MUST call `create_document_from_template` now with template_path, target_path, and replacements. Do NOT reply with conversational text or apologies. Output ONLY the tool call."})
                        logging.warning(f"[MCP][Turn {turn+1}] Agent attempted to stop without writing document. Blocking.")
                        continue
                   
@@ -1991,6 +2106,7 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
                        final_agent_response = final_candidate
                        all_tool_results += f"\nFinal Response:\n{final_candidate}\n"
                   else:
+                       final_agent_response = clean_agent_text
                        all_tool_results += f"\n{clean_agent_text}\n"
                   break
 
@@ -2004,12 +2120,12 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             if turn == 0 and ("[PLAN]" in content or "checklist" in content.lower()):
                  logging.info(f"[MCP][Turn {turn+1}] First turn was for PLANNING. Continuing to execution.")
                  # Add a system nudge to actually start tool calls if they haven't yet.
-                 messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now."})
+                 messages.append({"role": "user", "content": "Plan received. Proceed with the first tool call now. Do NOT reply with conversational text or apologies. Output ONLY the tool call."})
                  continue
 
 
             if was_write_planned and not changed_files and turn < max_turns - 1:
-                 messages.append({"role": "user", "content": "Wait! You have not created the requested document yet. Execute the next step: call `create_document_from_template` with template_path, target_path, and replacements."})
+                 messages.append({"role": "user", "content": "Wait! You have not created the requested document yet. Execute the next step: call `create_document_from_template` with template_path, target_path, and replacements. Do NOT reply with conversational text or apologies. Output ONLY the tool call."})
                  logging.warning(f"[MCP][Turn {turn+1}] Agent stopped with no tool calls before document creation. Nudging.")
                  continue
 
@@ -2027,6 +2143,19 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
         func = tool.get("function", {})
         name = func.get("name")
         args = func.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                try:
+                    import ast
+                    args = ast.literal_eval(args)
+                except Exception:
+                    args = {}
+        if isinstance(args, dict):
+            for nested_key in ("parameters", "properties", "input"):
+                if nested_key in args and isinstance(args[nested_key], dict):
+                    args = {**args, **args[nested_key]}
         call_id = tool.get("id")
 
         # [STATUS YIELD]
@@ -2326,7 +2455,17 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
 
         if res:
             all_tool_results += f"Tool Output ({name}):\n{res}\n\n"
-            msg_entry = {"role": "tool", "content": str(res)}
+            if was_write_planned and not changed_files:
+                next_step_prompt = "Execute the next step of your plan: call `create_document_from_template` (or `write_omd_file`) with the required parameters. Do NOT reply with conversational text or apologies. Output ONLY the tool call."
+            elif was_write_planned and changed_files:
+                next_step_prompt = "All document creation steps are completed! Now formulate your final friendly and comprehensive response to the user."
+            else:
+                next_step_prompt = "Execute the next step of your plan, or formulate your final response if all required operations are complete."
+
+            msg_entry = {
+                "role": "user",
+                "content": f"Tool Output ({name}):\n{str(res)}\n\n{next_step_prompt}"
+            }
             if call_id:
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)
@@ -2337,7 +2476,10 @@ async def check_and_execute_mcp(ctx: UserContext, message: str, mode: str = "wor
             
             found_new_info = True
         else:
-            msg_entry = {"role": "tool", "content": "Error: Tool returned no result."}
+            msg_entry = {
+                "role": "user",
+                "content": f"Tool Output ({name}): Error: Tool returned no result. Proceed with next step."
+            }
             if call_id:
                  msg_entry["tool_call_id"] = call_id
             messages.append(msg_entry)

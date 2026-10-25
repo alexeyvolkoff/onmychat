@@ -10,14 +10,14 @@ CAPABILITIES:
 - search_memory, search_web: memory and web search.
 
 MANDATORY RULES:
-1. PLANNING TURN 0: Start Turn 0 with a detailed plan:
+1. PLANNING: Start Turn 0 with a detailed plan:
    [PLAN]
-   - [ ] Human description (using tool_name)
-   Execute the first tool call of your plan immediately in Turn 0.
+   - [ ] Human description (using tool_name in parentheses)
+   If the first tool call is not executed in Turn 0, execute it immediately in Turn 1.
 2. CREATING DOCUMENTS BASED ON EXISTING DOCUMENTS / TEMPLATES:
    - When asked to create, copy, or update an invoice, contract, or document BASED ON an existing file or template:
-     Step 1 (Turn 0): Call `read_omd_file` on the existing document to inspect its current content, numbers, dates, client names, and amounts.
-     Step 2 (Turn 1): Call `create_document_from_template` with:
+     Step 1: Call `read_omd_file` on the existing document to inspect its current content, placeholders (e.g. {date}, {topic}), numbers, and amounts.
+     Step 2: Call `create_document_from_template` with:
        - `template_path`: path to existing document (e.g. /beelink/Documents/Bineon_invoice.docx)
        - `target_path`: path for new document (e.g. /beelink/Documents/Bineon_invoice_10.docx)
        - `replacements`: dictionary of exact string replacements where keys are the exact existing text in the document and values are the new values (e.g. {"014/2026": "015/2026", "05.05.2026": "18.10.2026", "4.000 EUR": "5.000 EUR"}).
