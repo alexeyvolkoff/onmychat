@@ -1047,6 +1047,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
     async def _crawl_local():
         status = RAG_INDEX_STATUS[doc_root]
+        folder_tags_cache = {}
 
         def _doc_id_of(full, rel):
             if logical_path:
@@ -1091,6 +1092,25 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 # Старый вариант: Readme.md индексировался самостоятельным доком
                 unified_memory.delete_document(readme_doc_id)
                 folder_title = os.path.basename(folder_doc_id.rstrip("/")) or folder_doc_id
+
+                # Собираем теги для папки: из запроса + унаследованные вышестоящие + существующие в БД + хештеги/ключи из Readme.md
+                inherited_p_tags = unified_memory.get_inherited_folder_tags(folder_doc_id)
+                existing_f_tags = unified_memory.get_document_tags(folder_doc_id)
+                readme_f_tags = unified_memory.auto_extract_tags(raw, "Readme.md")
+                merged_folder_tags = sorted(set(tags) | set(inherited_p_tags) | set(existing_f_tags) | set(readme_f_tags))
+
+                # Добавляем хештеги в тело Readme папки и файл на диске
+                raw_with_tags = unified_memory.append_tags_to_card_text(raw, merged_folder_tags)
+                if raw_with_tags.strip() != raw.strip():
+                    try:
+                        with open(full, "w", encoding="utf-8") as rf:
+                            rf.write(raw_with_tags.strip() + "\n")
+                        raw = raw_with_tags
+                    except Exception as e_w:
+                        logging.warning(f"[rag/index] failed to write tags to folder Readme {full}: {e_w}")
+
+                folder_tags_cache[folder_doc_id] = merged_folder_tags
+
                 if not force and unified_memory.has_document(folder_doc_id, source_stamp=last_modified):
                     return {"action": "skip", "doc_id": folder_doc_id, "is_folder": True}
 
@@ -1109,18 +1129,22 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
 
                 try:
                     n = unified_memory.chunk_and_index_document(
-                        raw, document_id=folder_doc_id, owner=owner, tags=tags,
+                        raw, document_id=folder_doc_id, owner=owner, tags=merged_folder_tags,
                         title=folder_title, source_stamp=last_modified, is_folder=True,
                         image_preview=folder_preview,
                     )
                     try:
                         unified_memory.upsert_memory_card(
-                            raw, document_id=folder_doc_id, owner=owner, tags=tags,
-                            title=folder_title, relevance="permanent",
+                            raw_with_tags, document_id=folder_doc_id, owner=owner, tags=merged_folder_tags,
+                            title=folder_title, relevance="permanent", is_folder=True,
                             image_preview=folder_preview,
                         )
                     except Exception as e_mem:
                         logging.warning(f"[rag/index] memory_card upsert error {folder_doc_id}: {e_mem}")
+                    try:
+                        unified_memory.propagate_folder_tags(folder_doc_id, merged_folder_tags)
+                    except Exception as e_prop:
+                        logging.warning(f"[rag/index] propagate_folder_tags error {folder_doc_id}: {e_prop}")
                     logging.info(f"[rag/index] {folder_doc_id} indexed as folder from {fn} ({n} chunks)")
                     return {"action": "indexed", "doc_id": folder_doc_id, "is_folder": True, "chunks": n}
                 except Exception as e:
@@ -1194,7 +1218,19 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                             logging.warning(f"[rag/index] geo tags error {orig_full}: {e_geo}")
                     except Exception as e:
                         logging.warning(f"[rag/index] preview error {orig_full}: {e}")
-                merged_tags = sorted(set(tags) | set(geo_tokens))
+                parent_folder_id = os.path.dirname(orig_doc_id)
+                folder_inherited = folder_tags_cache.get(parent_folder_id) or unified_memory.get_inherited_folder_tags(orig_doc_id)
+                file_auto_tags = unified_memory.auto_extract_tags(raw, target)
+                merged_tags = sorted(set(tags) | set(folder_inherited) | set(file_auto_tags) | set(geo_tokens))
+
+                raw_with_tags = unified_memory.append_tags_to_card_text(raw, merged_tags)
+                if raw_with_tags.strip() != raw.strip():
+                    try:
+                        with open(full, "w", encoding="utf-8") as rf:
+                            rf.write(raw_with_tags.strip() + "\n")
+                        raw = raw_with_tags
+                    except Exception as e_w:
+                        logging.warning(f"[rag/index] failed to write tags to companion {full}: {e_w}")
                 try:
                     n = unified_memory.chunk_and_index_document(
                         raw, document_id=orig_doc_id, owner=owner, tags=merged_tags,
@@ -1202,7 +1238,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     )
                     try:
                         unified_memory.upsert_memory_card(
-                            raw, document_id=orig_doc_id, owner=owner, tags=merged_tags,
+                            raw_with_tags, document_id=orig_doc_id, owner=owner, tags=merged_tags,
                             title=target, relevance="permanent", image_preview=image_preview,
                         )
                     except Exception as e_mem:
@@ -1239,9 +1275,15 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 return {"action": "error", "doc_id": doc_id, "error": f"{fn}: {e}"}
             if not raw or not raw.strip():
                 return {"action": "error", "doc_id": doc_id, "error": f"{fn}: no text (unsupported or scanned)"}
+
+            parent_folder_id = os.path.dirname(doc_id)
+            folder_inherited = folder_tags_cache.get(parent_folder_id) or unified_memory.get_inherited_folder_tags(doc_id)
+            doc_auto_tags = unified_memory.auto_extract_tags(raw, fn)
+            merged_tags = sorted(set(tags) | set(folder_inherited) | set(doc_auto_tags))
+
             try:
                 n = unified_memory.chunk_and_index_document(
-                    raw, document_id=doc_id, owner=owner, tags=tags,
+                    raw, document_id=doc_id, owner=owner, tags=merged_tags,
                     title=fn, source_stamp=last_modified,
                 )
                 # Выжимка для memory_card: если есть Readme.md — берём его; иначе создаём первичное описание
@@ -1264,14 +1306,22 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                     summary_text = _llm_document_summary(ctx, raw, fn)
                     if not summary_text:
                         summary_text = raw.strip()[:600]
+
+                # Обогащаем тегами из summary_text и добавляем хештеги в тело карточки
+                summary_auto_tags = unified_memory.auto_extract_tags(summary_text, fn)
+                all_doc_tags = sorted(set(merged_tags) | set(summary_auto_tags))
+                summary_with_tags = unified_memory.append_tags_to_card_text(summary_text, all_doc_tags)
+
+                if readme_path and summary_with_tags.strip() != summary_text.strip():
                     try:
                         with open(readme_path, "w", encoding="utf-8") as rf:
-                            rf.write(summary_text + "\n")
+                            rf.write(summary_with_tags.strip() + "\n")
                     except Exception as e_write:
                         logging.warning(f"[rag/index] cannot write companion {readme_path}: {e_write}")
+
                 try:
                     unified_memory.upsert_memory_card(
-                        summary_text, document_id=doc_id, owner=owner, tags=tags,
+                        summary_with_tags, document_id=doc_id, owner=owner, tags=all_doc_tags,
                         title=fn, relevance="permanent",
                     )
                 except Exception as e_mem:
@@ -1348,7 +1398,17 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 logging.warning(f"[rag/index] recognise preview error {fn}: {e}")
                 image_preview = ""
             doc_id = _doc_id_of(full, rel)
-            merged_tags = sorted(set(tags) | set(ai_tags or []))
+            parent_folder_id = os.path.dirname(doc_id)
+            folder_inherited = folder_tags_cache.get(parent_folder_id) or unified_memory.get_inherited_folder_tags(doc_id)
+            merged_tags = sorted(set(tags) | set(folder_inherited) | set(ai_tags or []))
+            annotation_with_tags = unified_memory.append_tags_to_card_text(annotation, merged_tags)
+            if annotation_with_tags.strip() != annotation.strip():
+                try:
+                    with open(readme_path, "w", encoding="utf-8") as f:
+                        f.write(annotation_with_tags.strip() + "\n")
+                    annotation = annotation_with_tags
+                except Exception as e_w:
+                    logging.warning(f"[rag/index] failed to write tags to {readme_path}: {e_w}")
             try:
                 n = unified_memory.chunk_and_index_document(
                     annotation, document_id=doc_id, owner=owner, tags=merged_tags,
@@ -1356,7 +1416,7 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 )
                 try:
                     unified_memory.upsert_memory_card(
-                        annotation, document_id=doc_id, owner=owner, tags=merged_tags,
+                        annotation_with_tags, document_id=doc_id, owner=owner, tags=merged_tags,
                         title=fn, relevance="permanent", image_preview=image_preview,
                     )
                 except Exception as e_mem:
@@ -1433,6 +1493,18 @@ async def rag_index_endpoint(request: Request, background_tasks: BackgroundTasks
                 _log = doc_root.rstrip("/") + ("/" + _rel if _rel != "." else "")
                 return _is_path_excluded(_log, _phys) is None
             dirnames[:] = [d for d in dirnames if _keep_dir(d)]
+
+            rel_dir = os.path.relpath(dirpath, local_root).replace("\\", "/")
+            cur_folder_doc_id = doc_root.rstrip("/") + ("/" + rel_dir if rel_dir != "." else "")
+            if cur_folder_doc_id not in folder_tags_cache:
+                folder_tags_cache[cur_folder_doc_id] = sorted(
+                    set(tags)
+                    | set(unified_memory.get_inherited_folder_tags(cur_folder_doc_id))
+                    | set(unified_memory.get_document_tags(cur_folder_doc_id))
+                )
+
+            # Readme.md обрабатываем первым, чтобы инициализировать теги папки до файлов внутри
+            filenames.sort(key=lambda x: 0 if x.lower() == "readme.md" else 1)
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 rel = full[len(local_root):].lstrip("/")

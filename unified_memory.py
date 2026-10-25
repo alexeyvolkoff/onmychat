@@ -14,6 +14,7 @@ unified_memory.py  —  OMD 3.0 RAG
 """
 
 import os
+import re
 import math
 import time
 import uuid
@@ -141,22 +142,79 @@ def get_faces_collection():
 
 # ─── Вспомогательные ─────────────────────────────────────────────────────────
 
-def _normalize_tag(t: str) -> str:
+def _normalize_tag(t) -> str:
     """' #OMD  ' -> 'omd'"""
-    return t.strip().lstrip("#").lower()
+    if not t:
+        return ""
+    norm = str(t).strip().lstrip("#").lower()
+    return re.sub(r"[^\w-]", "_", norm)
 
 
 def _tags_meta(tags: list) -> dict:
     """
-    ['omd', '#docs'] -> {'t_omd': 1, 't_docs': 1, 'tags': 'omd,docs'}
+    ['omd', '#docs'] -> {'t_omd': 1, 't_docs': 1, 'tags': 'docs,omd'}
     Каждый тег — отдельное поле t_<tag>: 1 (для $eq-фильтрации).
     Поле 'tags' сохраняется как человекочитаемая строка.
     """
-    clean = [_normalize_tag(t) for t in tags if t.strip()]
+    clean = sorted(set(_normalize_tag(t) for t in (tags or []) if _normalize_tag(t)))
     meta = {"tags": ",".join(clean)}
     for t in clean:
         meta[f"t_{t}"] = 1
     return meta
+
+
+def auto_extract_tags(text: str, filename: str = "", extra_tags: list = None) -> list[str]:
+    """
+    Автоматически извлекает теги:
+    1. Хештеги из текста: #tag (например, #omd, #architecture, #rag, #docs)
+    2. Ключевые слова из имени файла или текста
+    3. Дополнительные переданные теги (extra_tags, например унаследованные от папки)
+    """
+    tags = set(_normalize_tag(t) for t in (extra_tags or []) if _normalize_tag(t))
+
+    if text:
+        found = re.findall(r'(?:^|[\s\(\[\{<])#([a-zA-Zа-яА-ЯёЁ0-9_-]{2,30})\b', text)
+        for t in found:
+            norm = _normalize_tag(t)
+            if norm and not norm.isdigit():
+                tags.add(norm)
+
+    if filename:
+        clean_fn = os.path.splitext(os.path.basename(filename))[0]
+        tokens = re.split(r"[-_.\s]+", clean_fn.lower())
+        KNOWN_KEYWORDS = {
+            "omd", "mcp", "rag", "p2p", "did", "webrtc", "svar", "gundb",
+            "guide", "architecture", "specification", "nas", "fastmcp", "team"
+        }
+        for token in tokens:
+            if token in KNOWN_KEYWORDS:
+                tags.add(token)
+
+    return sorted(t for t in tags if t)
+
+
+def append_tags_to_card_text(text: str, tags: list[str]) -> str:
+    """
+    Добавляет недостающие теги в виде #хештегов в конец тела карточки,
+    чтобы они отображались в UI карточки и сохранялись в тексте.
+    """
+    clean_tags = sorted(set(_normalize_tag(t) for t in (tags or []) if _normalize_tag(t)))
+    if not clean_tags:
+        return text or ""
+    clean_text = (text or "").strip()
+
+    existing_hashtags = set(
+        _normalize_tag(t)
+        for t in re.findall(r'(?:^|[\s\(\[\{<])#([a-zA-Zа-яА-ЯёЁ0-9_-]{2,30})\b', clean_text)
+    )
+    missing = [t for t in clean_tags if t not in existing_hashtags]
+    if not missing:
+        return clean_text
+
+    tags_line = " ".join(f"#{t}" for t in missing)
+    if not clean_text:
+        return tags_line
+    return f"{clean_text}\n\n{tags_line}"
 
 
 def _tags_match_filter(tags_filter: list) -> dict:
@@ -529,6 +587,139 @@ def save_companion_readme(document_id: str, text: str) -> str | None:
         return None
 
 
+def get_document_tags(document_id: str) -> list[str]:
+    """Возвращает теги документа или папки из ChromaDB и companion readme."""
+    if not document_id:
+        return []
+    coll = get_collection()
+    candidates = [document_id]
+    stripped = _strip_device_namespace(document_id)
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+
+    tags = set()
+    for c_id in candidates:
+        try:
+            res = coll.get(where={"$and": [{"type": {"$eq": "memory_card"}}, {"document_id": {"$eq": c_id}}]}, include=["metadatas", "documents"])
+            for meta in res.get("metadatas", []):
+                tags.update(k[2:] for k in meta if k.startswith("t_"))
+                if meta.get("tags"):
+                    tags.update(_normalize_tag(t) for t in str(meta["tags"]).split(",") if t.strip())
+            for doc in res.get("documents", []):
+                if doc:
+                    tags.update(auto_extract_tags(doc))
+            if not tags:
+                res_fc = coll.get(where={"$and": [{"type": {"$eq": "file_chunk"}}, {"document_id": {"$eq": c_id}}]}, include=["metadatas"], limit=5)
+                for meta in res_fc.get("metadatas", []):
+                    tags.update(k[2:] for k in meta if k.startswith("t_"))
+                    if meta.get("tags"):
+                        tags.update(_normalize_tag(t) for t in str(meta["tags"]).split(",") if t.strip())
+        except Exception as e:
+            logger.debug(f"[unified] get_document_tags error for {c_id}: {e}")
+
+    try:
+        real_path, readme_content = resolve_companion_readme(document_id)
+        if readme_content:
+            tags.update(auto_extract_tags(readme_content))
+    except Exception:
+        pass
+
+    return sorted(t for t in tags if t)
+
+
+def get_inherited_folder_tags(doc_or_folder_id: str) -> list[str]:
+    """
+    Обходит иерархию родительских папок вверх и собирает накопленные теги.
+    Например, для /beelink/Knowledge/OMD/3.0/file.md проверяет:
+    /beelink/Knowledge/OMD/3.0, /beelink/Knowledge/OMD, /beelink/Knowledge.
+    """
+    if not doc_or_folder_id:
+        return []
+    tags = set()
+    curr = doc_or_folder_id.rstrip("/")
+    parent = os.path.dirname(curr)
+    while parent and parent not in ("/", "\\", ""):
+        parts = [p for p in parent.split("/") if p]
+        if len(parts) >= 1:
+            p_tags = get_document_tags(parent)
+            tags.update(p_tags)
+        parent = os.path.dirname(parent)
+    return sorted(tags)
+
+
+def propagate_folder_tags(folder_doc_id: str, tags: list[str]) -> int:
+    """
+    Распространяет теги папки на все дочерние карточки памяти и file_chunk в ChromaDB.
+    Также добавляет недостающие хештеги в текст карточек и сохраняет в companion Readme.
+    """
+    clean_tags = sorted(set(_normalize_tag(t) for t in (tags or []) if _normalize_tag(t)))
+    if not clean_tags or not folder_doc_id:
+        return 0
+    coll = get_collection()
+    folder_prefix = folder_doc_id.rstrip("/") + "/"
+    stripped = _strip_device_namespace(folder_doc_id)
+    prefixes = [folder_prefix]
+    if stripped:
+        prefixes.append(stripped.rstrip("/") + "/")
+
+    updated_count = 0
+    try:
+        # 1. Обновляем memory_cards дочерних элементов
+        cards_res = coll.get(where={"type": {"$eq": "memory_card"}}, include=["metadatas", "documents"])
+        ids_to_update = []
+        metas_to_update = []
+        docs_to_update = []
+        for cid, meta, doc in zip(cards_res.get("ids", []), cards_res.get("metadatas", []), cards_res.get("documents", [])):
+            doc_id = meta.get("document_id") or ""
+            if any(doc_id.startswith(p) for p in prefixes):
+                cur_tags = set(k[2:] for k in meta if k.startswith("t_"))
+                if meta.get("tags"):
+                    cur_tags.update(_normalize_tag(t) for t in str(meta["tags"]).split(",") if t.strip())
+                new_tags_set = cur_tags | set(clean_tags)
+                if new_tags_set != cur_tags:
+                    new_meta = dict(meta)
+                    new_meta.update(_tags_meta(list(new_tags_set)))
+                    new_doc = append_tags_to_card_text(doc or "", clean_tags)
+                    ids_to_update.append(cid)
+                    metas_to_update.append(new_meta)
+                    docs_to_update.append(new_doc)
+                    if doc_id and not meta.get("is_folder"):
+                        save_companion_readme(doc_id, new_doc)
+
+        if ids_to_update:
+            coll.update(ids=ids_to_update, metadatas=metas_to_update, documents=docs_to_update)
+            updated_count += len(ids_to_update)
+
+        # 2. Обновляем file_chunks дочерних элементов
+        chunks_res = coll.get(where={"type": {"$eq": "file_chunk"}}, include=["metadatas"])
+        c_ids_to_update = []
+        c_metas_to_update = []
+        for cid, meta in zip(chunks_res.get("ids", []), chunks_res.get("metadatas", [])):
+            doc_id = meta.get("document_id") or ""
+            if any(doc_id.startswith(p) for p in prefixes):
+                cur_tags = set(k[2:] for k in meta if k.startswith("t_"))
+                if meta.get("tags"):
+                    cur_tags.update(_normalize_tag(t) for t in str(meta["tags"]).split(",") if t.strip())
+                new_tags_set = cur_tags | set(clean_tags)
+                if new_tags_set != cur_tags:
+                    new_meta = dict(meta)
+                    new_meta.update(_tags_meta(list(new_tags_set)))
+                    c_ids_to_update.append(cid)
+                    c_metas_to_update.append(new_meta)
+
+        if c_ids_to_update:
+            coll.update(ids=c_ids_to_update, metadatas=c_metas_to_update)
+            updated_count += len(c_ids_to_update)
+
+        if updated_count:
+            _invalidate_indexed_docs_cache()
+            logger.info(f"[unified] propagated tags {clean_tags} to {updated_count} items under {folder_doc_id}")
+    except Exception as e:
+        logger.error(f"[unified] propagate_folder_tags error: {e}")
+
+    return updated_count
+
+
 def find_memory_card_id(document_id: str, title: str = None) -> str | None:
     """Возвращает memory_id существующей карточки по document_id (или title), либо None."""
     if not (document_id or title):
@@ -564,6 +755,7 @@ def upsert_memory_card(
     document_id=None,
     relevance="contextual",
     image_preview="",
+    is_folder=False,
 ) -> str:
     """Добавляет/обновляет карточку памяти. Возвращает mem_id.
 
@@ -589,6 +781,10 @@ def upsert_memory_card(
     if not mem_id:
         mem_id = str(uuid.uuid4())
 
+    folder_flag = is_folder or (bool(document_id) and not os.path.splitext(document_id)[1])
+    clean_tags = auto_extract_tags(text, title or (document_id.split("/")[-1] if document_id else ""), tags or [])
+    final_text = append_tags_to_card_text(text, clean_tags)
+
     metadata = {
         "type":      "memory_card",
         "owner":     owner,
@@ -596,19 +792,26 @@ def upsert_memory_card(
         "relevance": relevance,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    if folder_flag:
+        metadata["is_folder"] = True
+        metadata["contentType"] = "folder"
     if image_preview:
         metadata["image_preview"] = image_preview
-    metadata.update(_tags_meta(tags or []))
+    metadata.update(_tags_meta(clean_tags))
     if document_id:
         metadata["document_id"] = document_id
 
     get_collection().upsert(
         ids=[mem_id],
-        embeddings=[embed(text)],
-        documents=[text.strip()],
+        embeddings=[embed(final_text)],
+        documents=[final_text.strip()],
         metadatas=[metadata],
     )
     _invalidate_indexed_docs_cache()
+
+    if folder_flag and document_id and clean_tags:
+        propagate_folder_tags(document_id, clean_tags)
+
     return mem_id
 
 
@@ -643,16 +846,40 @@ def update_memory_card(mem_id: str, text: str = None, title: str = None, tags=No
         new_text = (text if text is not None else old_text).strip()
         old_tags = [t for t in (meta.get("tags") or "").split(",") if t]
         new_tags = [t for t in (tags or [])] if tags is not None else old_tags
-        return upsert_memory_card(
-            new_text,
+        clean_new_tags = auto_extract_tags(new_text, title or meta.get("title", ""), new_tags)
+        new_text_with_tags = append_tags_to_card_text(new_text, clean_new_tags)
+        doc_id = meta.get("document_id")
+        is_folder = meta.get("is_folder") or (bool(doc_id) and not os.path.splitext(doc_id)[1])
+
+        ret = upsert_memory_card(
+            new_text_with_tags,
             mem_id=mem_id,
             owner=meta.get("owner"),
-            tags=new_tags,
+            tags=clean_new_tags,
             title=title if title is not None else meta.get("title", ""),
-            document_id=meta.get("document_id"),
+            document_id=doc_id,
             relevance=meta.get("relevance", "contextual"),
             image_preview=meta.get("image_preview", ""),
+            is_folder=is_folder,
         )
+
+        if doc_id:
+            try:
+                fc_res = coll.get(where={"$and": [{"type": {"$eq": "file_chunk"}}, {"document_id": {"$eq": doc_id}}]}, include=["metadatas"])
+                if fc_res.get("ids"):
+                    fc_metas = []
+                    for fm in fc_res["metadatas"]:
+                        nfm = dict(fm)
+                        nfm.update(_tags_meta(clean_new_tags))
+                        fc_metas.append(nfm)
+                    coll.update(ids=fc_res["ids"], metadatas=fc_metas)
+            except Exception as e_fc:
+                logger.warning(f"[unified] update file_chunks tags error for {doc_id}: {e_fc}")
+
+        if is_folder and doc_id and clean_new_tags:
+            propagate_folder_tags(doc_id, clean_new_tags)
+
+        return ret
     except Exception as e:
         logger.error(f"[unified] update_memory_card error: {e}")
         return None
@@ -1045,7 +1272,8 @@ def chunk_and_index_document(
     if title:
         chunks[0] = f"[File: {title}]\n{chunks[0]}"
 
-    tags_dict = _tags_meta(tags or [])
+    clean_tags = auto_extract_tags(text, title or document_id.split("/")[-1], tags or [])
+    tags_dict = _tags_meta(clean_tags)
     ts = datetime.now().isoformat(timespec="seconds")
     title = title or document_id.split("/")[-1]
 
