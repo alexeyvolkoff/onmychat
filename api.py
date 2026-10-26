@@ -2338,9 +2338,9 @@ class KreaGenerateInput(BaseModel):
     reference_image: str | None = None
     reference_images: list[str] | None = None
     sliders: dict | None = None
-    width: int = 896
-    height: int = 1152
-    steps: int = 6
+    width: int = 768
+    height: int = 1024
+    steps: int = 4
     cfg: float = 1.0
     seed: int | None = None
     chat: str = "default"
