@@ -3027,6 +3027,13 @@ async def is_krea_available(ctx=None) -> bool:
     return _krea_available_cache
 
 
+async def check_krea_status(ctx=None) -> dict:
+    """Checks if Krea Studio can be activated on this node."""
+    if await is_krea_available(ctx):
+        return {"allowed": True}
+    return {"allowed": False, "error": "Krea Studio is not available on this node."}
+
+
 async def generate_image_workflow(workflow) -> bytes:
     client_id = str(uuid.uuid4())
     ws_url = f"{COMFY_API_URL.replace('http', 'ws')}/ws?clientId={client_id}"

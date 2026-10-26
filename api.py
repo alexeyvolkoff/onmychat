@@ -4900,6 +4900,27 @@ async def get_krea_presets_endpoint():
     return core_service.get_krea_presets()
 
 
+class KreaStatusInput(BaseModel):
+    omd_key: Optional[str] = ""
+    settings: Optional[dict] = None
+
+
+@app.post("/krea/status")
+async def check_krea_status_endpoint(request: Request, data: KreaStatusInput):
+    """
+    Checks if Krea Studio can be activated for the caller.
+    Delegates to core_service / private extension hook.
+    """
+    ctx = get_ctx(data.omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    if data.settings:
+        ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
+    return await core_service.check_krea_status(ctx)
+
+
+
 
 
 
