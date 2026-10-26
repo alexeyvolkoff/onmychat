@@ -3561,7 +3561,7 @@ async def generate_krea2_image(
     reference_images: list[str] | None = None,
     width: int = 896,
     height: int = 1152,
-    steps: int = 10,
+    steps: int = 6,
     cfg: float = 1.0,
     seed: int | None = None,
     upload_storage: bool = True,
@@ -4012,6 +4012,7 @@ async def generate_krea2_image(
                 f.write(readme_content)
             logging.info(f"[Krea2] Saved generated image locally on AI node: {target_img_path}")
 
+            home_dir = os.path.expanduser("~")
             omc_dir = os.path.join(home_dir, "OnMyChat", "generated")
             if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
                 os.makedirs(omc_dir, exist_ok=True)

@@ -2340,7 +2340,7 @@ class KreaGenerateInput(BaseModel):
     sliders: dict | None = None
     width: int = 896
     height: int = 1152
-    steps: int = 10
+    steps: int = 6
     cfg: float = 1.0
     seed: int | None = None
     chat: str = "default"
