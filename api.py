@@ -3990,17 +3990,6 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 intent = "show"
             elif prompt.startswith("/generate"):
                 intent = "generate"
-                img_prompt = prompt[len("/generate"):].strip()
-                bypass_safety = ctx.private_mode or ctx.is_unlimited
-                if not bypass_safety:
-                    # Whitelist bypass for explicit content safety check
-                    logging.info(f"Checking image generation safety: {img_prompt}")
-                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
-                    if safety_result != "SAFE":
-                        logging.info(f"Image generation safety check failed: {safety_result}")
-                        warning = "I can not generate this. Subscribe to Premium plan to verify your age."
-                        yield f"data: {json.dumps({'delta': warning, 'role': 'assistant', 'done': True})}\n\n"
-                        return
             elif prompt.startswith("/view") or prompt.startswith("/imagine") or (intent == "view" and prompt.startswith("/")):
                 intent = "view"
             elif prompt.startswith(("/tools", "/docs", "/doc", "/mcp")) or intent == "tools":
@@ -4024,6 +4013,29 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 intent = "explore"
             elif prompt.startswith("/search"):
                 intent = "search"
+
+            # 4. Content Safety Filter for all image intents (/show, /generate, /view, auto-classified)
+            if intent in ("show", "view", "generate"):
+                if prompt.startswith("/generate"):
+                    img_prompt = prompt[len("/generate"):].strip()
+                elif prompt.startswith("/show"):
+                    img_prompt = prompt[len("/show"):].strip()
+                elif prompt.startswith("/view"):
+                    img_prompt = prompt[len("/view"):].strip()
+                elif prompt.startswith("/imagine"):
+                    img_prompt = prompt[len("/imagine"):].strip()
+                else:
+                    img_prompt = prompt.strip()
+
+                bypass_safety = ctx.private_mode or ctx.is_unlimited
+                if not bypass_safety:
+                    check_text = img_prompt or prompt
+                    logging.info(f"Checking image generation safety: {check_text}")
+                    safety_result = await core_service.check_prompt_safety(ctx, check_text)
+                    if safety_result != "SAFE":
+                        logging.info(f"Image generation safety check failed: {safety_result}")
+                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                        return
         
             restricted_intents = ["tools", "doc"]
             
@@ -4069,6 +4081,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 raw_prompt = await core_service.generate_character_image_prompt(ctx, prompt, chat, history=history)
                 img_prompt, _ = core_service.extract_title_and_prompt(raw_prompt)
 
+                if not (ctx.private_mode or ctx.is_unlimited):
+                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                    if safety_result != "SAFE":
+                        logging.info(f"Generated character tags safety check failed: {safety_result}")
+                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                        return
+
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
@@ -4104,6 +4123,13 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 logging.info(f"Generating refined image prompt for: {prompt}")
                 raw_prompt = await core_service.generate_general_image_prompt(ctx, prompt, chat, history=provided_history)
                 img_prompt, _ = core_service.extract_title_and_prompt(raw_prompt)
+
+                if not (ctx.private_mode or ctx.is_unlimited):
+                    safety_result = await core_service.check_prompt_safety(ctx, img_prompt)
+                    if safety_result != "SAFE":
+                        logging.info(f"Generated general tags safety check failed: {safety_result}")
+                        yield f"data: {json.dumps({'delta': safety_result, 'role': 'assistant', 'done': True})}\n\n"
+                        return
 
                 # Calculate prompt_id if not provided
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
@@ -4396,6 +4422,10 @@ async def generate_character_image(request: Request, data: GenerateInput):
             or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
+        if not (ctx.private_mode or ctx.is_unlimited):
+            safety = await core_service.check_prompt_safety(ctx, data.prompt)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
         # generate_image returns (filename, title, description, img_data)
         is_new = data.message_nonce is None and data.message_index is None
         res = await core_service.generate_character_image(ctx, data.prompt, data.chat, update_history=is_new, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
@@ -4420,6 +4450,8 @@ async def generate_character_image(request: Request, data: GenerateInput):
             "description": description,
             "tokens_consumed": ctx.tokens_consumed
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4447,6 +4479,10 @@ async def generate_general_image(request: Request, data: GenerateInput):
             or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
+        if not (ctx.private_mode or ctx.is_unlimited):
+            safety = await core_service.check_prompt_safety(ctx, data.prompt)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
         # generate_general_image returns (filename, title, description, img_data)
         res = await core_service.generate_general_image(ctx, data.prompt, data.chat, prompt_id=data.prompt_id, upload_storage=upload_storage_flag)
         filename, title, description = res[0], res[1], res[2]
@@ -4461,6 +4497,8 @@ async def generate_general_image(request: Request, data: GenerateInput):
             "description": description,
             "tokens_consumed": ctx.tokens_consumed
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4488,6 +4526,10 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             or (data.settings and (data.settings.get("client") == "svar" or data.settings.get("image_delivery") == "inline"))
         )
         upload_storage_flag = data.upload_storage if data.upload_storage is not None else (not is_p2p)
+        if not (ctx.private_mode or ctx.is_unlimited):
+            safety = await core_service.check_prompt_safety(ctx, data.prompt)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
 
         # Случай 1: Владелец ноды выбрал сохранение на этой ноде (save_local=True)
         is_node_owner = False

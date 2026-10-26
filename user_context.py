@@ -65,8 +65,7 @@ def save_user_settings(ctx: UserContext):
 
 def get_context_by_account(account_id: str = "", storage: str = "", force_reload: bool = False, **kwargs) -> UserContext:
     """Создает контекст на лету. Все данные поступают от клиента в контексте без запросов к шлюзу."""
-    default_owner = node_owner()
-    user_id = kwargs.get("user_id") or kwargs.get("name") or kwargs.get("username") or default_owner or (f"user_{account_id[:8]}" if account_id else "user")
+    user_id = kwargs.get("user_id") or kwargs.get("name") or kwargs.get("username") or (f"user_{account_id[:8]}" if account_id else "anonymous")
     return UserContext(
         type="omd",
         user_id=user_id,
