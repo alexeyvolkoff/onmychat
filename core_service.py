@@ -4011,6 +4011,15 @@ async def generate_krea2_image(
             with open(target_readme_path, "w", encoding="utf-8") as f:
                 f.write(readme_content)
             logging.info(f"[Krea2] Saved generated image locally on AI node: {target_img_path}")
+
+            omc_dir = os.path.join(home_dir, "OnMyChat", "generated")
+            if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
+                os.makedirs(omc_dir, exist_ok=True)
+                with open(os.path.join(omc_dir, filename), "wb") as f:
+                    f.write(img_data)
+                with open(os.path.join(omc_dir, f"{base_name}.Readme.md"), "w", encoding="utf-8") as f:
+                    f.write(readme_content)
+                logging.info(f"[Krea2] Also mirrored generated image to OnMyChat: {omc_dir}/{filename}")
         except Exception as e:
             logging.warning(f"[Krea2] Local file save failed: {e}")
 
@@ -6265,11 +6274,15 @@ def resolve_local_target_dir(ctx: UserContext, subfolder: str = "generated") -> 
     user prefixes, and direct share paths.
     """
     home_dir = os.path.expanduser("~")
+    default_fallback = "OnMyChat" if os.path.isdir(os.path.join(home_dir, "OnMyChat")) else "Data"
     raw_storage = (
         getattr(ctx, "storage", None)
         or (ctx.settings.get("defaultStorage", "") if getattr(ctx, "settings", None) else "")
-        or "Data"
+        or default_fallback
     ).strip()
+
+    if raw_storage.lower() == "data" and os.path.isdir(os.path.join(home_dir, "OnMyChat", "generated")):
+        raw_storage = "OnMyChat"
 
     if raw_storage.startswith(home_dir):
         return os.path.join(raw_storage, subfolder) if subfolder else raw_storage
@@ -6290,10 +6303,12 @@ def resolve_local_target_dir(ctx: UserContext, subfolder: str = "generated") -> 
             parts = parts[1:]
     elif len(parts) == 1 and not os.path.isdir(os.path.join(home_dir, parts[0])):
         # If parts[0] is only the device name itself (e.g. "Colab-AI-Node")
-        if os.path.isdir(os.path.join(home_dir, "Data")):
+        if os.path.isdir(os.path.join(home_dir, "OnMyChat")):
+            parts = ["OnMyChat"]
+        elif os.path.isdir(os.path.join(home_dir, "Data")):
             parts = ["Data"]
 
-    rel_path = "/".join(parts) if parts else "Data"
+    rel_path = "/".join(parts) if parts else default_fallback
     base_dir = os.path.join(home_dir, rel_path)
     return os.path.join(base_dir, subfolder) if subfolder else base_dir
 
