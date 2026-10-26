@@ -46,7 +46,7 @@ WORK_MODEL = SETTINGS.get("WORK_MODEL", DEFAULT_MODEL)
 FUN_MODEL = SETTINGS.get("FUN_MODEL", DEFAULT_MODEL)
 VISION_MODEL = SETTINGS.get("VISION_MODEL", "gemma4:latest")
 IMAGE_TAG_MODEL = SETTINGS.get("IMAGE_TAG_MODEL", WORK_MODEL)
-FAST_MODEL = SETTINGS.get("FAST_MODEL", "qwen2.5:1.5b")
+FAST_MODEL = SETTINGS.get("FAST_MODEL", DEFAULT_MODEL)
 MCP_MODEL = DEFAULT_MODEL
 
 # AI Provider: 'local' (Ollama only), 'hybrid' (Ollama for Work/RAG, Horde for Fun/RP), 'horde' (always Horde)
@@ -133,7 +133,7 @@ def get_llm_model(ctx: UserContext, mode: str | None = None) -> str:
 
 def get_fast_model(ctx: UserContext | None = None) -> str:
     """Returns a fast lightweight model for prompt generation, titles, and descriptions."""
-    return FAST_MODEL or (get_llm_model(ctx) if ctx else "qwen2.5:1.5b")
+    return FAST_MODEL or (get_llm_model(ctx) if ctx else DEFAULT_MODEL)
 
 # Imaging settings #
 COMFY_API_URL = SETTINGS["COMFY_API_URL"]
@@ -3050,6 +3050,10 @@ async def generate_image_workflow(workflow) -> bytes:
                     resp_data = await resp.json()
                     prompt_id = resp_data.get("prompt_id")
                     logging.info(f"Prompt ID: {prompt_id}")
+                    if not prompt_id:
+                        err_msg = resp_data.get("error") or resp_data.get("node_errors") or "ComfyUI prompt submission failed"
+                        logging.error(f"Failed to submit prompt to ComfyUI: {err_msg}")
+                        return None, None
 
                 # Listen for messages
                 final_image_data = None
@@ -5977,12 +5981,13 @@ async def generate_random_creative_prompt(
         ],
         "model": model,
         "stream": False,
+        "think": False,
         "options": {
             "temperature": 1.0,
             "top_p": 0.95,
             "presence_penalty": 1.1,
             "frequency_penalty": 1.1,
-            "num_predict": 130
+            "num_predict": 250
         }
     }
 
@@ -6156,7 +6161,8 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
         ],
         "model": model,
         "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 100}
+        "think": False,
+        "options": {"temperature": 0.3, "num_predict": 150}
     }
     
     try:
