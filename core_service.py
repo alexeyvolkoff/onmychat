@@ -5908,6 +5908,30 @@ DYNAMIC_COMPOSITIONS = [
 ]
 
 
+LANDSCAPE_COMPOSITIONS = [
+    {
+        "framing": "sweeping panoramic establishing landscape",
+        "description": "Grand panoramic horizon with deep atmospheric layers, monumental geological scale, and dramatic natural lighting."
+    },
+    {
+        "framing": "dramatic low-angle nature perspective",
+        "description": "Camera positioned low to ground level looking across geological textures toward towering peaks, ancient trees, or sky."
+    },
+    {
+        "framing": "atmospheric aerial drone perspective",
+        "description": "High-altitude cinematic bird's-eye perspective revealing intricate natural topography, river deltas, or coastlines."
+    },
+    {
+        "framing": "deep layered telephoto landscape",
+        "description": "Compressed distance layers showing atmospheric haze and glowing sunlight between receding mountain ridges."
+    },
+    {
+        "framing": "cinematic wide-angle environmental vista",
+        "description": "Vibrant foreground details like reflections on water, wild flora, or carved rocks leading into a grand distant panorama."
+    }
+]
+
+
 async def generate_random_creative_prompt(
     ctx: UserContext,
     persona_name: str = "",
@@ -5921,56 +5945,79 @@ async def generate_random_creative_prompt(
 ) -> str:
     """Generate a truly creative, imaginative, dynamic and evocative visual prompt for Krea 2 using LLM."""
     model = get_fast_model(ctx)
+    has_character = bool(persona_name or persona_prompt or persona_lora or archetypes)
 
-    # Randomly select a distinct composition & camera angle to guarantee diverse staging
-    comp = random.choice(DYNAMIC_COMPOSITIONS)
-
-    system_instruction = (
-        "You are an avant-garde film director and AI cinematographer for state-of-the-art diffusion models.\n"
-        "Your mission is to invent a dynamic, unexpected, visually breathtaking cinematic scene from scratch.\n\n"
-        "CRITICAL COMPOSITION & DYNAMICS RULES:\n"
-        "1. STRICTLY FORBIDDEN: Static boring headshots, passport photos, simple bust studio portraits, or character staring passively at the camera.\n"
-        f"2. COMPOSITION MANDATE: You MUST build the scene around this exact framing: '{comp['framing']}'. {comp['description']}\n"
-        "3. ACTIVE DYNAMICS: The subject must be actively DOING something physical or exploring the world (walking briskly, repairing machinery, running through rain, climbing, painting, navigating, inspecting artifacts), fully integrated into a rich setting.\n"
-        "4. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
-        "5. NO META/BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece', and NEVER start with 'A photo of' or 'Capture the essence of'. Start directly with the subject, action, and shot framing.\n"
-        "6. OUTPUT ONLY the prompt text. No quotes, no intro, no labels."
-    )
-
-    user_parts = [
-        f"Framing: {comp['framing']}."
-    ]
-
-    if archetypes:
-        user_parts.append(
-            f"The image MUST feature and portray the character archetype(s): {archetypes}. "
-            "Incorporate their distinctive aesthetic, hair, styling, and presence into the scene."
+    if not has_character:
+        # PURE LANDSCAPE / ENVIRONMENT MODE — strictly no humans or character figures!
+        comp = random.choice(LANDSCAPE_COMPOSITIONS)
+        system_instruction = (
+            "You are a master nature photographer and cinematic landscape director for state-of-the-art diffusion models.\n"
+            "Your mission is to invent a breathtaking, majestic, awe-inspiring landscape, natural scenery, or atmospheric architectural vista.\n\n"
+            "CRITICAL MANDATES:\n"
+            "1. NO PEOPLE: STRICTLY FORBIDDEN to include any humans, people, persons, figures, silhouettes, faces, or character subjects. The scenery must be completely focused on nature, terrain, weather, atmosphere, or grand architecture.\n"
+            f"2. COMPOSITION MANDATE: Frame the scene with: '{comp['framing']}'. {comp['description']}\n"
+            "3. RICH VISUAL ATMOSPHERE: Include vivid environmental textures (geological formations, reflections on water, morning mist, storm clouds, foliage, lighting interaction).\n"
+            "4. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
+            "5. NO META/BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece', and NEVER start with 'A photo of'. Start directly with the scenery, terrain, lighting, and atmosphere.\n"
+            "6. OUTPUT ONLY the prompt text. No quotes, no intro, no labels."
         )
-
-    if persona_name or persona_prompt:
-        char_desc = persona_name
-        if persona_prompt:
-            char_desc += f" ({persona_prompt})"
-        user_parts.append(f"Depict character identity: {char_desc}.")
-    elif persona_lora:
-        clean_lora = persona_lora.replace(".safetensors", "").replace("_", " ")
-        user_parts.append(f"Depict character features matching {clean_lora}.")
-
-    if style:
-        user_parts.append(f"Visual style: {style}.")
-
-    if loras:
-        clean_loras = loras.strip()
-        if clean_loras:
-            user_parts.append(f"Visual motifs: {clean_loras}.")
-
-    # Only incorporate keywords if they are a brief user concept (<= 4 words, no sentences)
-    clean_kw = (keywords or "").strip()
-    words = clean_kw.split()
-    if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
-        user_parts.append(f"Incorporate user theme: {clean_kw}.")
+        user_parts = [
+            f"Framing: {comp['framing']}."
+        ]
+        if style:
+            user_parts.append(f"Visual style: {style}.")
+        if loras:
+            clean_loras = loras.strip()
+            if clean_loras:
+                user_parts.append(f"Visual motifs: {clean_loras}.")
+        clean_kw = (keywords or "").strip()
+        words = clean_kw.split()
+        if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
+            user_parts.append(f"Scenery theme: {clean_kw}.")
+        else:
+            user_parts.append("Invent a majestic, completely original natural landscape or atmospheric architectural vista.")
     else:
-        user_parts.append("Invent a fresh, completely original scene with rich visual atmosphere and cinematic lighting.")
+        # CHARACTER MODE
+        comp = random.choice(DYNAMIC_COMPOSITIONS)
+        system_instruction = (
+            "You are an avant-garde film director and AI cinematographer for state-of-the-art diffusion models.\n"
+            "Your mission is to invent a dynamic, unexpected, visually breathtaking cinematic scene from scratch.\n\n"
+            "CRITICAL COMPOSITION & DYNAMICS RULES:\n"
+            "1. STRICTLY FORBIDDEN: Static boring headshots, passport photos, simple bust studio portraits, or character staring passively at the camera.\n"
+            f"2. COMPOSITION MANDATE: You MUST build the scene around this exact framing: '{comp['framing']}'. {comp['description']}\n"
+            "3. ACTIVE DYNAMICS: The subject must be actively DOING something physical or exploring the world (walking briskly, repairing machinery, running through rain, climbing, painting, navigating, inspecting artifacts), fully integrated into a rich setting.\n"
+            "4. DENSE & CONCISE: 1 to 2 complete visual sentences (around 30 to 45 words maximum). Finish with a period.\n"
+            "5. NO META/BUZZWORDS: Do not use 'photorealistic, 8k, masterpiece', and NEVER start with 'A photo of' or 'Capture the essence of'. Start directly with the subject, action, and shot framing.\n"
+            "6. OUTPUT ONLY the prompt text. No quotes, no intro, no labels."
+        )
+        user_parts = [
+            f"Framing: {comp['framing']}."
+        ]
+        if archetypes:
+            user_parts.append(
+                f"The image MUST feature and portray the character archetype(s): {archetypes}. "
+                "Incorporate their distinctive aesthetic, hair, styling, and presence into the scene."
+            )
+        if persona_name or persona_prompt:
+            char_desc = persona_name
+            if persona_prompt:
+                char_desc += f" ({persona_prompt})"
+            user_parts.append(f"Depict character identity: {char_desc}.")
+        elif persona_lora:
+            clean_lora = persona_lora.replace(".safetensors", "").replace("_", " ")
+            user_parts.append(f"Depict character features matching {clean_lora}.")
+        if style:
+            user_parts.append(f"Visual style: {style}.")
+        if loras:
+            clean_loras = loras.strip()
+            if clean_loras:
+                user_parts.append(f"Visual motifs: {clean_loras}.")
+        clean_kw = (keywords or "").strip()
+        words = clean_kw.split()
+        if 0 < len(words) <= 4 and not any(p in clean_kw for p in [".", "!", "?", "\n"]):
+            user_parts.append(f"Incorporate user theme: {clean_kw}.")
+        else:
+            user_parts.append("Invent a fresh, completely original scene with rich visual atmosphere and cinematic lighting.")
 
     user_content = " ".join(user_parts)
 
@@ -6017,6 +6064,36 @@ async def generate_random_creative_prompt(
         logging.error(f"[generate_random_creative_prompt] LLM failed: {e}")
 
     # Rich procedural fallback if LLM is completely unavailable
+    lighting_list = [
+        "bathed in warm golden hour rim lighting that casts long cinematic shadows",
+        "illuminated by cool moody neon hues reflecting off slick wet surfaces",
+        "soft diffuse morning skylight highlighting natural textures",
+        "dramatic chiaroscuro lighting with deep rich blacks and vibrant warm highlights",
+        "dappled sunlight filtering through lush tree canopy with subtle lens flare",
+        "dim atmospheric twilight lighting creating an intimate serene warmth"
+    ]
+    camera_list = [
+        "sweeping panoramic establishing shot, majestic scale, 28mm lens",
+        "dramatic low-angle ground perspective looking across sculpted geology toward the sky",
+        "high-angle crane shot looking down across deep environmental layers",
+        "cinematic wide-angle view, deep atmospheric backdrop, crystal clear horizon"
+    ]
+    extra_keywords = f", {keywords.strip()}" if (keywords and keywords.strip()) else ""
+    extra_style = f", {style} aesthetic" if style else ""
+
+    if not has_character:
+        landscape_scenes = [
+            "Towering jagged alpine mountain peaks rising above a mirror-like turquoise glacial lake, morning mist weaving through pine forests",
+            "A dramatic wind-swept coastal cliff overlooking churning ocean waves crashing against dark volcanic sea stacks",
+            "Vast rolling desert sand dunes rippled by the wind, casting deep golden shadows under a twilight sky with a crescent moon",
+            "An ancient mystical moss-covered redwood forest, ethereal god rays piercing through dense canopy illuminating a winding river",
+            "A majestic northern lights aurora dancing in vibrant green and violet ribbons across a starry Arctic sky over snow-covered fjords",
+            "A deep sandstone slot canyon with sculpted undulating orange rock walls, warm ambient light glowing from above",
+            "A tranquil secluded tropical cove with turquoise water gently lapping against powdery white sand, framed by wild lush cliffs",
+            "Panoramic view of a sprawling neon-lit metropolis in twilight rain, towering glass spires reflecting amber sunset glow"
+        ]
+        return f"{random.choice(landscape_scenes)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
+
     char_lead = f"{persona_name}, " if persona_name else ""
     if not char_lead and archetypes:
         char_lead = f"{archetypes}, "
@@ -6035,25 +6112,6 @@ async def generate_random_creative_prompt(
         "striding purposefully through a crowded neon-lit market alley under heavy rain with a transparent umbrella",
         "skating fluidly down an oceanfront boulevard between swaying palm trees in warm afternoon light"
     ]
-    lighting_list = [
-        "bathed in warm golden hour rim lighting that casts long cinematic shadows",
-        "illuminated by cool moody neon hues reflecting off slick wet surfaces",
-        "soft diffuse morning skylight highlighting natural skin textures and hair strands",
-        "dramatic chiaroscuro lighting with deep rich blacks and vibrant warm highlights",
-        "dappled sunlight filtering through lush tree canopy with subtle lens flare",
-        "dim atmospheric tungsten lighting creating an intimate nostalgic warmth"
-    ]
-    camera_list = [
-        "cinematic wide full-body shot, entire figure visible from head to boots, immersive environment",
-        "dynamic low-angle action shot looking up from near ground level, heroic architectural perspective",
-        "high-angle crane shot looking down from above, geometric floor shadows, artistic overhead framing",
-        "cinematic Dutch angle framing, dynamic diagonal composition, deep environmental layers",
-        "candid storytelling cowboy shot from mid-thigh up, natural unposed movement, deep atmospheric backdrop",
-        "panoramic establishing shot, subject integrated into monumental scale surroundings, 28mm lens"
-    ]
-    extra_keywords = f", {keywords.strip()}" if (keywords and keywords.strip()) else ""
-    extra_style = f", {style} aesthetic" if style else ""
-
     return f"{char_lead}{random.choice(dynamic_actions)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
 
 
