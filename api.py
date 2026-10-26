@@ -2419,7 +2419,7 @@ async def assistant_info(omd_key: str | None = Depends(get_omd_key)):
             "capabilities": {
                 "image_generation": await core_service.is_comfy_available(),
                 "vision": await core_service.is_vision_available(),
-                "krea2": await core_service.is_krea_available(),
+                "krea2": await core_service.is_krea_available(ctx),
                 "chat": True
             }
         }

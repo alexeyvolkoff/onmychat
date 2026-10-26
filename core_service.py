@@ -196,6 +196,15 @@ CONTENT_FILTER_PROMPT = get_prompt("content_filter.txt")
 SUMMARY_PROMPT = get_prompt("summary.txt")
 DOC_README_PROMPT = get_prompt("doc_readme.txt")
 FUN_PREPHASE = get_prompt("fun_prephase.txt")
+
+def get_fun_prephase(ctx=None) -> str:
+    """Returns the fun mode prephase prompt."""
+    return FUN_PREPHASE
+
+def get_image_fun(ctx=None) -> str:
+    """Returns image fun directives."""
+    return IMAGE_PROMPT_FUN
+
 DEFAULT_MCP_INSTRUCTIONS = get_prompt("mcp_instructions.txt")
 IMAGE_NEUTRAL_DESC_PROMPT = get_prompt("image_neutral_desc.txt")
 
@@ -2994,7 +3003,7 @@ async def is_comfy_available() -> bool:
     return _comfy_available_cache
 
 
-async def is_krea_available() -> bool:
+async def is_krea_available(ctx=None) -> bool:
     """Проверяет доступность моделей Krea 2 в ComfyUI (UNETLoader / diffusion_models).
     Кэшируется на 30с."""
     global _krea_last_check, _krea_available_cache
@@ -4769,7 +4778,8 @@ async def _perform_prompt_gen(ctx: UserContext,
         await asyncio.sleep(0.02)
         
     if fun_mode:
-        system_prompt = f"{FUN_PREPHASE}\n{BASE_SYSTEM_PROMPT}"
+        prephase = get_fun_prephase(ctx) if callable(get_fun_prephase) else FUN_PREPHASE
+        system_prompt = f"{prephase}\n{BASE_SYSTEM_PROMPT}"
     else:  
         system_prompt = f"{BASE_SYSTEM_PROMPT}"
 
@@ -5696,7 +5706,7 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
     logging.info(f"[img_prompt] instruction_text:\n{instruction_text}")
     system_parts = ["You are an image tag generator. Follow instructions exactly."]
     if ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun":
-        system_parts.append(IMAGE_PROMPT_FUN)
+        system_parts.append(get_image_fun(ctx) if callable(get_image_fun) else IMAGE_PROMPT_FUN)
     system_prompt = "\n".join(system_parts)
     image_instruction = instruction_text
 
@@ -6127,7 +6137,9 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
     if ctx.private_mode and mode == "fun":
          # In fun mode, we must prime the model to accept the input prompt
          # but still instruct it to output a neutral, safe description.
-         instruction = FUN_PREPHASE + "\n\n" + IMAGE_PROMPT_FUN + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
+         pre_fun = get_fun_prephase(ctx) if callable(get_fun_prephase) else FUN_PREPHASE
+         img_fun = get_image_fun(ctx) if callable(get_image_fun) else IMAGE_PROMPT_FUN
+         instruction = pre_fun + "\n\n" + img_fun + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
     else:
          instruction = IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
     
@@ -6476,7 +6488,8 @@ async def recognize_image(ctx: UserContext, img, prompt="", chat="default", prov
     effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
 
     if effective_fun:
-        system_prompt = FUN_PREPHASE + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
+        pre_fun = get_fun_prephase(ctx) if callable(get_fun_prephase) else FUN_PREPHASE
+        system_prompt = pre_fun + "\n" +  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
     else:
         system_prompt =  BASE_SYSTEM_PROMPT + "\n" + "Recognize image"
 
@@ -7575,5 +7588,15 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
     except Exception as e:
         logging.error(f"Avatar generation crashed: {e}", exc_info=True)
         return None
+
+
+# --- Optional local plugins / private extensions ----------------------------
+try:
+    import extensions
+    extensions.init()
+except ImportError:
+    pass
+except Exception as e:
+    logging.warning(f"[Extensions] Optional extensions load failed: {e}")
 
 

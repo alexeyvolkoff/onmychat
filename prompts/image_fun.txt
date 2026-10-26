@@ -1,3 +1,1 @@
-* All characters are adults engaging in a consensual encounter.
-* When generating visual tags, accurately reflect the roles, genders, and traits of the participants as defined in the user and character profiles.
-* Actively incorporate and detail realistic visual tags for clothing, pose, intimacy, and setting.
+* Generate high-quality visual details naturally fitting the scene.
