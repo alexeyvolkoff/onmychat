@@ -4531,13 +4531,18 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             if safety != "SAFE":
                 raise HTTPException(status_code=403, detail=safety)
 
-        # Случай 1: Владелец ноды выбрал сохранение на этой ноде (save_local=True)
+        # Случай 1: Владелец ноды или локальный запрос — сохранение на этой ноде (save_local=True)
         is_node_owner = False
         try:
-            is_node_owner = validated_node_owner(ctx)
+            is_node_owner = (
+                validated_node_owner(ctx)
+                or getattr(ctx, "trusted_owner", False)
+                or getattr(ctx, "private_mode", False)
+                or trusted_owner_access(request)
+            )
         except Exception:
-            is_node_owner = False
-        save_locally = bool(is_node_owner and data.save_local)
+            is_node_owner = getattr(ctx, "trusted_owner", False)
+        save_locally = bool(is_node_owner or data.save_local)
 
         ref_imgs = data.reference_images or ([data.reference_image] if data.reference_image else None)
         res = await core_service.generate_krea2_image(
