@@ -3648,7 +3648,8 @@ async def generate_krea2_image(
         if cfg_style.get("trigger"):
             full_parts.append(cfg_style["trigger"])
         if cfg_style.get("lora"):
-            target_loras.append((cfg_style["lora"], cfg_style["strength"]))
+            s_weight = float(sliders.get("style_strength")) if (sliders and sliders.get("style_strength") is not None) else cfg_style["strength"]
+            target_loras.append((cfg_style["lora"], s_weight))
 
     # 2. Character Archetypes & Likeness LoRAs (Loaded dynamically from krea_presets.json)
     ARCHETYPE_CONFIGS = get_krea_archetype_configs()
@@ -3677,7 +3678,8 @@ async def generate_krea2_image(
             style_preset = t_clean
             cfg_style = STYLE_CONFIGS[style_preset]
             full_parts.append(cfg_style["trigger"])
-            target_loras.append((cfg_style["lora"], cfg_style["strength"]))
+            s_weight = float(sliders.get("style_strength")) if (sliders and sliders.get("style_strength") is not None) else cfg_style["strength"]
+            target_loras.append((cfg_style["lora"], s_weight))
             logging.info(f"[Krea2] Extracted style from prompt tag <{t_clean}>: {cfg_style['lora']}")
         elif t_clean in ARCHETYPE_CONFIGS and t_clean not in archetype_list:
             archetype_list.append(t_clean)
@@ -3703,8 +3705,9 @@ async def generate_krea2_image(
         if arch_id in ARCHETYPE_CONFIGS:
             cfg_arch = ARCHETYPE_CONFIGS[arch_id]
             full_parts.append(cfg_arch["trigger"])
-            target_loras.append((cfg_arch["lora"], cfg_arch["strength"]))
-            logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']})")
+            a_weight = float(sliders.get("archetype_strength")) if (sliders and sliders.get("archetype_strength") is not None) else cfg_arch["strength"]
+            target_loras.append((cfg_arch["lora"], a_weight))
+            logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']}, weight={a_weight})")
 
     # Persona LoRA if requested explicitly
     if persona_lora and str(persona_lora).strip():
