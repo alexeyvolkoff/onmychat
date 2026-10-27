@@ -3755,7 +3755,7 @@ async def generate_krea2_image(
                         has_krea2_edit = ("Krea2EditModelPatch" in obj_info) and ("Krea2EditGroundedEncode" in obj_info)
 
                         _krea_model_cache = {
-                            "unet": detected_unet,
+                            "unets": unets or [],
                             "clip": detected_clip,
                             "loras": loras or [],
                             "has_krea2_edit": has_krea2_edit
@@ -3763,10 +3763,20 @@ async def generate_krea2_image(
         except Exception:
             pass
 
+    available_unets = _krea_model_cache.get("unets", []) if _krea_model_cache else []
     if _krea_model_cache:
-        unet_model = _krea_model_cache.get("unet", unet_model)
         clip_model = _krea_model_cache.get("clip", clip_model)
         available_loras = _krea_model_cache.get("loras", [])
+
+    requested_base = (sliders.get("base_model") or sliders.get("model_mode") or "realism").lower() if sliders else "realism"
+    if requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
+        matched_unet = next((u for u in available_unets if "muse" in str(u).lower() or "yogi" in str(u).lower()), "museByStableYogi_v35Int8Extended.safetensors")
+        unet_model = matched_unet
+        logging.info(f"[Krea2] Base model: Semi-Realism (Muse by Stable Yogi: {unet_model})")
+    else:
+        matched_unet = next((u for u in available_unets if "cyber" in str(u).lower() or "realistic" in str(u).lower()), "CyberRealistic_Krea2_V4.0_BF16.safetensors")
+        unet_model = matched_unet
+        logging.info(f"[Krea2] Base model: Realism (CyberRealistic: {unet_model})")
 
     # Match target_loras against available_loras
     resolved_lora_chain = []
