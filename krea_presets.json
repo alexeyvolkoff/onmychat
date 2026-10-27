@@ -1,6 +1,16 @@
 {
   "art_styles": [
     {
+      "id": "none",
+      "name": "Свободный",
+      "description": "Без модификаторов стиля и LoRA — чистый оригинальный промпт",
+      "icon": "✨",
+      "filename": "",
+      "url": "",
+      "trigger": "",
+      "strength": 0.0
+    },
+    {
       "id": "photorealistic",
       "name": "Photorealistic",
       "description": "8K UHD photorealism, natural skin texture, realistic daylight",
