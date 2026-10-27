@@ -499,6 +499,59 @@ def _strip_device_namespace(path: str) -> str | None:
     return None
 
 
+def find_document_id(doc_ref: str, public_only: bool = False) -> str | None:
+    """Находит полный document_id в ChromaDB по фрагменту пути или имени файла."""
+    if not doc_ref or doc_ref.startswith(("http", "user:")):
+        return None
+    clean = doc_ref.strip()
+    pub_tags = set(t.lower() for t in PUBLIC_TAGS)
+    try:
+        coll = get_collection()
+    except Exception:
+        return None
+
+    # 1. Прямая проверка по кандидатам
+    candidates = [clean]
+    stripped = _strip_device_namespace(clean)
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+    if not clean.startswith("/"):
+        candidates.append("/" + clean)
+
+    for c in candidates:
+        try:
+            res = coll.get(where={"document_id": {"$eq": c}}, include=["metadatas"], limit=5)
+            metas = res.get("metadatas", [])
+            if metas:
+                if not public_only:
+                    return metas[0].get("document_id") or c
+                for meta in metas:
+                    meta_tags = set(k[2:].lower() for k in meta if k.startswith("t_"))
+                    if meta.get("tags"):
+                        meta_tags.update(t.strip().lower() for t in str(meta["tags"]).split(",") if t.strip())
+                    if meta_tags & pub_tags:
+                        return meta.get("document_id") or c
+        except Exception:
+            pass
+
+    # 2. Поиск по окончанию пути или имени файла
+    target_name = clean.split("/")[-1].lower()
+    try:
+        where_filter = _tags_match_filter(PUBLIC_TAGS) if public_only else None
+        res = coll.get(where=where_filter, include=["metadatas"], limit=1000)
+        for meta in res.get("metadatas", []):
+            did = meta.get("document_id") or ""
+            if not did:
+                continue
+            did_name = did.split("/")[-1].lower()
+            if did == clean or did.endswith(clean) or did_name == target_name:
+                return did
+    except Exception as e:
+        logger.warning(f"[find_document_id] search failed: {e}")
+
+    return None
+
+
 def resolve_doc_path(document_id: str) -> str | None:
     """Виртуальный путь документа (document_id) → реальный путь на диске ноды,
     если файл/папка существует, иначе None.
@@ -522,6 +575,22 @@ def resolve_doc_path(document_id: str) -> str | None:
         for c in _doc_path_candidates(rest, user):
             if os.path.exists(c):
                 return c
+
+    # Фолбэк: если передан короткий путь или имя файла — ищем полный document_id в ChromaDB
+    try:
+        found_did = find_document_id(document_id, public_only=False)
+        if found_did and found_did != document_id:
+            for c in _doc_path_candidates(found_did, user):
+                if os.path.exists(c):
+                    return c
+            rest = _strip_device_namespace(found_did)
+            if rest:
+                for c in _doc_path_candidates(rest, user):
+                    if os.path.exists(c):
+                        return c
+    except Exception:
+        pass
+
     return None
 
 

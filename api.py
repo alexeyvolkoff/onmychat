@@ -3303,6 +3303,65 @@ async def device_memory_thumb_endpoint(
         raise HTTPException(status_code=423, detail="Unreadable image or file is being written")
 
 
+@app.get("/api/device_memory_file")
+async def device_memory_file_endpoint(
+    request: Request,
+    path: str = "",
+    omd_key: str | None = Depends(get_omd_key),
+):
+    """Отдача файла базы знаний через файловый туннель (для владельцев и гостей).
+
+    path = document_id или имя файла из базы знаний.
+    Для гостей разрешён доступ только к публичным документам (PUBLIC_TAGS).
+    """
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    ctx = get_ctx(omd_key)
+    pm = request.headers.get("X-OMD-Private-Mode")
+    role = trusted_caller_role(request)
+
+    is_owner = False
+    if pm in ("0", "false") or role in ("guest", "shared"):
+        is_owner = False
+    elif trusted_owner_access(request) or validated_node_owner(ctx) or trusted_private_access(request, ctx):
+        is_owner = True
+
+    # Проверка публичности для гостей
+    if not is_owner:
+        is_pub = unified_memory.is_document_public(path)
+        if not is_pub:
+            pub_did = unified_memory.find_document_id(path, public_only=True)
+            if pub_did:
+                path = pub_did
+                is_pub = True
+        if not is_pub:
+            raise HTTPException(status_code=403, detail="Forbidden: Document is not public")
+
+    real = unified_memory.resolve_doc_path(path)
+    if not real:
+        raise HTTPException(status_code=404, detail="File not found on node")
+
+    # Безопасность: исключённые файлы и пути
+    if _is_path_excluded(real):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Если папка — отдаем её Readme.md (если есть)
+    if os.path.isdir(real):
+        _, readme_content = unified_memory.resolve_companion_readme(path)
+        if readme_content:
+            return Response(content=readme_content, media_type="text/markdown; charset=utf-8")
+        raise HTTPException(status_code=404, detail="Directory cannot be served directly")
+
+    try:
+        return serve_file(real, request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.warning(f"[device_memory_file] serve error {real}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.put("/api/device_memory/{mem_id:path}")
 async def edit_device_memory(mem_id: str, request: Request, omd_key: str | None = Depends(get_omd_key)):
     """Редактирование on-device карточки (текст/заголовок/теги) — обновляет memory_card в ChromaDB и Readme.md на диске."""
