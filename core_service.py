@@ -3788,6 +3788,10 @@ async def generate_krea2_image(
                 break
         if matched:
             resolved_lora_chain.append((matched, strength))
+        elif not available_loras:
+            # Running remotely via Modal or headless runner without local object_info discovery
+            resolved_lora_chain.append((lora_file, strength))
+            logging.info(f"[Krea2] Passing LoRA '{lora_file}' directly (strength={strength}) to remote ComfyUI")
         else:
             logging.warning(f"[Krea2] LoRA '{lora_file}' not found in ComfyUI available LoRAs — skipping LoraLoader node.")
 
