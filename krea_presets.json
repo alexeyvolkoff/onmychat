@@ -191,6 +191,16 @@
       "url": "https://civitai.com/api/download/models/3268616",
       "trigger": "",
       "strength": 0.5
+    },
+    {
+      "id": "maddie",
+      "name": "Maddie",
+      "description": "Естественная миловидная девушка, фототекстура кожи и натуральные черты",
+      "icon": "🎀",
+      "filename": "Girly_Maddie.safetensors",
+      "url": "https://civitai.com/api/download/models/3312963",
+      "trigger": "Maddie",
+      "strength": 0.4
     }
   ]
 }
