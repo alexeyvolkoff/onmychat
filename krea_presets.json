@@ -71,6 +71,16 @@
       "strength": 0.8
     },
     {
+      "id": "nix_comic",
+      "name": "Nix Comic",
+      "description": "Стиль комиксов 90s Disney + 2000s Marvel — выразительная анатомия и контур",
+      "icon": "🦸",
+      "filename": "krea2_nix_comic_v2.safetensors",
+      "url": "https://civitai.com/api/download/models/3268616",
+      "trigger": "",
+      "strength": 0.8
+    },
+    {
       "id": "midjourney",
       "name": "Midjourney",
       "description": "Artistic concept art with atmospheric lighting",
