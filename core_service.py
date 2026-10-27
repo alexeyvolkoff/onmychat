@@ -3489,12 +3489,11 @@ async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None
 
 KREA_PRESETS_FILE = os.path.join(os.path.dirname(__file__), "krea_presets.json")
 _KREA_PRESETS_CACHE = None
+_KREA_PRESETS_MTIME = 0
 
 def get_krea_presets() -> dict:
     """Загружает единый конфигурационный файл стилей и LoRA для Krea 2."""
-    global _KREA_PRESETS_CACHE
-    if _KREA_PRESETS_CACHE is not None:
-        return _KREA_PRESETS_CACHE
+    global _KREA_PRESETS_CACHE, _KREA_PRESETS_MTIME
 
     cand_paths = [
         KREA_PRESETS_FILE,
@@ -3504,12 +3503,16 @@ def get_krea_presets() -> dict:
     for cp in cand_paths:
         if os.path.isfile(cp):
             try:
+                mtime = os.path.getmtime(cp)
+                if _KREA_PRESETS_CACHE is not None and mtime <= _KREA_PRESETS_MTIME:
+                    return _KREA_PRESETS_CACHE
                 with open(cp, "r", encoding="utf-8") as f:
                     _KREA_PRESETS_CACHE = json.load(f)
+                    _KREA_PRESETS_MTIME = mtime
                     return _KREA_PRESETS_CACHE
             except Exception as e:
                 logging.warning(f"[KreaPresets] Error reading {cp}: {e}")
-    return {"art_styles": [], "archetypes": []}
+    return _KREA_PRESETS_CACHE or {"art_styles": [], "archetypes": []}
 
 
 def get_krea_style_configs() -> dict[str, dict]:
