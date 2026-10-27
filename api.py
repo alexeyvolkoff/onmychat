@@ -4545,6 +4545,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         save_locally = bool(is_node_owner or data.save_local)
 
         ref_imgs = data.reference_images or ([data.reference_image] if data.reference_image else None)
+        t_start = time.time()
         res = await core_service.generate_krea2_image(
             ctx=ctx,
             prompt=data.prompt,
@@ -4564,6 +4565,14 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             upload_storage=upload_storage_flag,
             save_local=save_locally
         )
+        total_time = round(time.time() - t_start, 2)
+        gpu_time = None
+        try:
+            from extensions.modal_comfy_client import get_last_gpu_time
+            gpu_time = get_last_gpu_time()
+        except Exception:
+            pass
+
         filename, title, description, img_data = res[0], res[1], res[2], res[3]
         raw_prompt = (data.prompt or data.persona_prompt or "").strip()
         if img_data:
@@ -4584,7 +4593,9 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             "description": description,
             "prompt": raw_prompt,
             "persona": data.persona_name or data.persona_id or "",
-            "saved_locally": save_locally
+            "saved_locally": save_locally,
+            "gpu_time": gpu_time,
+            "total_time": total_time,
         }
         return resp
     except Exception as e:
