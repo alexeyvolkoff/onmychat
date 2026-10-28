@@ -2033,7 +2033,7 @@ def is_did_paired(did: str) -> bool:
     """Проверяет, спарен ли данный DID в конфигурации ноды (PairedDIDs)."""
     if not did:
         return False
-    did_clean = did.strip()
+    did_clean = did.strip().lower()
     candidate_paths = [
         "/home/alexey/projects/omd/onmydisk/Node/target/etc/onmydisk/onmydisk.conf.user",
         "/etc/onmydisk/onmydisk.conf.user",
@@ -2046,7 +2046,8 @@ def is_did_paired(did: str) -> bool:
                 cp_cfg.read(cp, encoding="utf-8")
                 if "PairedDIDs" in cp_cfg:
                     for k in cp_cfg["PairedDIDs"]:
-                        if k.strip().lower() == did_clean.lower():
+                        k_clean = k.strip().lower()
+                        if k_clean == did_clean or k_clean.startswith(did_clean) or did_clean.startswith(k_clean):
                             return True
             except Exception as e:
                 logging.debug(f"[is_did_paired] error reading {cp}: {e}")
@@ -2070,6 +2071,12 @@ def trusted_private_access(request: Request, ctx: user_context.UserContext | Non
     if role == "owner" or did_paired:
         return True
 
+    # 1b. Прямой локальный вызов из Svar/Web UI без роли гостя
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "::1", "localhost") and role not in ("guest", "shared"):
+        if request.headers.get("x-client") == "svar" or pm == "1":
+            return True
+
     # 2. Гость без спаренного DID и без private mode отсекается
     if role in ("guest", "shared") and pm != "1":
         return False
@@ -2086,10 +2093,17 @@ def trusted_owner_access(request: Request) -> bool:
     (role=owner, или DID, спаренный на самой ноде). Тот же trust-базис, что и
     в trusted_private_access, но уровень «владелец»: например, владелец читает
     документы СВОЕЙ ноды напрямую с диска, а не через шлюз снаружи."""
-    if trusted_caller_role(request) == "owner":
+    role = trusted_caller_role(request)
+    if role == "owner":
         return True
     caller_did = (request.headers.get("X-OMD-Caller-DID") or request.headers.get("X-OMD-DID") or "").strip()
-    return bool(caller_did) and is_did_paired(caller_did)
+    if bool(caller_did) and is_did_paired(caller_did):
+        return True
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "::1", "localhost") and role not in ("guest", "shared"):
+        if request.headers.get("x-client") == "svar" or request.headers.get("X-OMD-Private-Mode") == "1":
+            return True
+    return False
 
 
 def get_omd_key(
@@ -4657,6 +4671,8 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             "total_time": total_time,
         }
         return resp
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error in /generate/krea2: {e}")
         raise HTTPException(status_code=500, detail=str(e))

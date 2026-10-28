@@ -3608,11 +3608,11 @@ async def generate_krea2_image(
 
     # Применяем микро-слайдеры параметров
     sliders = sliders or {}
-    detail_val = float(sliders.get("detail", 0.0))
-    if detail_val > 0.2:
+    detail_val = float(sliders.get("detail", 0.5))
+    if detail_val >= 0.7:
         full_parts.append("ultra-detailed, natural skin pores, fine textures, sharp focus, 8k uhd")
-    elif detail_val < -0.2:
-        full_parts.append("soft focus, subtle cinematic glow, film look")
+    elif detail_val <= 0.3:
+        full_parts.append("soft focus, subtle cinematic glow, smooth film look")
 
     age_val = float(sliders.get("age", 0.0))
     if age_val > 0.3:
