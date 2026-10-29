@@ -3635,24 +3635,37 @@ async def generate_krea2_image(
     # 1. Art Styles (Loaded dynamically from krea_presets.json)
     STYLE_CONFIGS = get_krea_style_configs()
 
-    # Style alias normalization
-    if style_preset in ["art"]:
-        style_preset = "semireal"
-    elif style_preset in ["3d"]:
-        style_preset = "pixar"
-    elif style_preset in ["cyberpunk"]:
-        style_preset = "neon"
+    style_aliases = {"art": "semireal", "3d": "pixar", "cyberpunk": "neon"}
 
-    if style_preset in STYLE_CONFIGS:
-        cfg_style = STYLE_CONFIGS[style_preset]
-        if cfg_style.get("trigger"):
-            full_parts.append(cfg_style["trigger"])
-        if cfg_style.get("lora"):
-            s_weight = float(sliders.get("style_strength")) if (sliders and sliders.get("style_strength") is not None) else cfg_style["strength"]
-            target_loras.append((cfg_style["lora"], s_weight))
+    raw_styles = sliders.get("styles") or sliders.get("style") or []
+    if isinstance(raw_styles, str):
+        style_list = [s.strip() for s in raw_styles.split(",") if s.strip()]
+    elif isinstance(raw_styles, (list, tuple)):
+        style_list = [str(s).strip() for s in raw_styles if str(s).strip()]
+    else:
+        style_list = []
+
+    style_list = [style_aliases.get(s, s) for s in style_list if s and s != "none"]
+    style_weights = sliders.get("style_weights") if isinstance(sliders.get("style_weights"), dict) else {}
+
+    for st_id in style_list:
+        if st_id in STYLE_CONFIGS:
+            cfg_style = STYLE_CONFIGS[st_id]
+            if cfg_style.get("trigger") and cfg_style["trigger"] not in full_parts:
+                full_parts.append(cfg_style["trigger"])
+            if cfg_style.get("lora"):
+                if st_id in style_weights and style_weights[st_id] is not None:
+                    s_weight = float(style_weights[st_id])
+                elif sliders.get("style_strength") is not None:
+                    s_weight = float(sliders.get("style_strength"))
+                else:
+                    s_weight = float(cfg_style.get("strength", 0.8))
+                target_loras.append((cfg_style["lora"], s_weight))
+                logging.info(f"[Krea2] Applying Style LoRA: {st_id} ({cfg_style['lora']}, weight={s_weight})")
 
     # 2. Character Archetypes & Likeness LoRAs (Loaded dynamically from krea_presets.json)
     ARCHETYPE_CONFIGS = get_krea_archetype_configs()
+    archetype_weights = sliders.get("archetype_weights") if isinstance(sliders.get("archetype_weights"), dict) else {}
 
     raw_archetypes = sliders.get("archetypes") or sliders.get("archetype") or []
     if isinstance(raw_archetypes, str):
@@ -3674,12 +3687,14 @@ async def generate_krea2_image(
     general_tags = re.findall(r"<([^>:]+)>", prompt or "")
     for tag in general_tags:
         t_clean = tag.strip().lower()
-        if t_clean in STYLE_CONFIGS and style_preset == "photorealistic":
-            style_preset = t_clean
-            cfg_style = STYLE_CONFIGS[style_preset]
-            full_parts.append(cfg_style["trigger"])
-            s_weight = float(sliders.get("style_strength")) if (sliders and sliders.get("style_strength") is not None) else cfg_style["strength"]
-            target_loras.append((cfg_style["lora"], s_weight))
+        if t_clean in STYLE_CONFIGS and t_clean not in style_list:
+            style_list.append(t_clean)
+            cfg_style = STYLE_CONFIGS[t_clean]
+            if cfg_style.get("trigger") and cfg_style["trigger"] not in full_parts:
+                full_parts.append(cfg_style["trigger"])
+            if cfg_style.get("lora"):
+                s_weight = float(style_weights[t_clean]) if (t_clean in style_weights and style_weights[t_clean] is not None) else float(cfg_style.get("strength", 0.8))
+                target_loras.append((cfg_style["lora"], s_weight))
             logging.info(f"[Krea2] Extracted style from prompt tag <{t_clean}>: {cfg_style['lora']}")
         elif t_clean in ARCHETYPE_CONFIGS and t_clean not in archetype_list:
             archetype_list.append(t_clean)
@@ -3695,19 +3710,27 @@ async def generate_krea2_image(
             logging.info(f"[Krea2] Extracted custom LoRA file tag <{t_clean}>")
 
     # Also support style_preset as archetype for backward compatibility
-    if style_preset in ARCHETYPE_CONFIGS and style_preset not in archetype_list:
-        archetype_list.append(style_preset)
-    elif style_preset in ["goth"] and "alt" not in archetype_list:
-        archetype_list.append("alt")
+    for st in list(style_list):
+        if st in ARCHETYPE_CONFIGS and st not in archetype_list:
+            archetype_list.append(st)
+        elif st in ["goth"] and "alt" not in archetype_list:
+            archetype_list.append("alt")
 
-    # target_loras already contains any active style LoRA, append archetypes
+    # target_loras already contains any active style LoRAs, append archetypes
     for arch_id in archetype_list:
         if arch_id in ARCHETYPE_CONFIGS:
             cfg_arch = ARCHETYPE_CONFIGS[arch_id]
-            full_parts.append(cfg_arch["trigger"])
-            a_weight = float(sliders.get("archetype_strength")) if (sliders and sliders.get("archetype_strength") is not None) else cfg_arch["strength"]
-            target_loras.append((cfg_arch["lora"], a_weight))
-            logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']}, weight={a_weight})")
+            if cfg_arch.get("trigger") and cfg_arch["trigger"] not in full_parts:
+                full_parts.append(cfg_arch["trigger"])
+            if cfg_arch.get("lora"):
+                if arch_id in archetype_weights and archetype_weights[arch_id] is not None:
+                    a_weight = float(archetype_weights[arch_id])
+                elif sliders.get("archetype_strength") is not None:
+                    a_weight = float(sliders.get("archetype_strength"))
+                else:
+                    a_weight = float(cfg_arch.get("strength", 0.8))
+                target_loras.append((cfg_arch["lora"], a_weight))
+                logging.info(f"[Krea2] Applying Character Archetype: {arch_id} ({cfg_arch['lora']}, weight={a_weight})")
 
     # Persona LoRA if requested explicitly
     if persona_lora and str(persona_lora).strip():
@@ -3772,14 +3795,43 @@ async def generate_krea2_image(
         available_loras = _krea_model_cache.get("loras", [])
 
     requested_base = (sliders.get("base_model") or sliders.get("model_mode") or "realism").lower() if sliders else "realism"
-    if requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
+    clip_type = "krea2"
+    sampler_name = "euler"
+    scheduler = "simple"
+    if requested_base in ["anima", "cyberrealistic_anima", "animaturbo", "anime"]:
+        matched_unet = next((u for u in available_unets if "aesthetic" in str(u).lower()), None)
+        if not matched_unet:
+            matched_unet = next((u for u in available_unets if "anima" in str(u).lower()), "anima_aestheticV11.safetensors")
+        unet_model = matched_unet
+        clip_model = "cyberrealisticAnima_v70Turbo_txt.safetensors"
+        clip_type = "qwen_image"
+        sampler_name = "er_sde"
+        scheduler = "simple"
+        if not (sliders and sliders.get("cfg")) or cfg <= 1.5:
+            cfg = 3.0
+        if not (sliders and sliders.get("steps")) or steps <= 8:
+            steps = 25
+        logging.info(f"[Krea2] Base model: Official Anima Aesthetic (Model: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
+    elif requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
         matched_unet = next((u for u in available_unets if "muse" in str(u).lower() or "yogi" in str(u).lower()), "museByStableYogi_v35Int8Extended.safetensors")
         unet_model = matched_unet
-        logging.info(f"[Krea2] Base model: Semi-Realism (Muse by Stable Yogi: {unet_model})")
+        sampler_name = "euler"
+        scheduler = "simple"
+        if not (sliders and sliders.get("cfg")):
+            cfg = 2.0
+        if not (sliders and sliders.get("steps")) or steps <= 8:
+            steps = 16
+        logging.info(f"[Krea2] Base model: Semi-Realism (Muse by Stable Yogi: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
     else:
         matched_unet = next((u for u in available_unets if "cyber" in str(u).lower() or "realistic" in str(u).lower()), "CyberRealistic_Krea2_V4.0_BF16.safetensors")
         unet_model = matched_unet
-        logging.info(f"[Krea2] Base model: Realism (CyberRealistic: {unet_model})")
+        sampler_name = "euler"
+        scheduler = "simple"
+        if not (sliders and sliders.get("cfg")):
+            cfg = 1.5
+        if not (sliders and sliders.get("steps")) or steps <= 8:
+            steps = 14
+        logging.info(f"[Krea2] Base model: Realism (CyberRealistic: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
 
     # Match target_loras against available_loras
     resolved_lora_chain = []
@@ -3906,10 +3958,18 @@ async def generate_krea2_image(
                 "clip": current_clip_link
             }
         }
+        if requested_base in ["anima", "cyberrealistic_anima", "animaturbo", "anime"]:
+            model_neg = "worst quality, low quality, artist name, (lowres:1.2), (worst quality:1.4), (low quality:1.4), (bad anatomy:1.4), bad hands, multiple views, jpeg artifacts, patreon logo, patreon username, web address, signature, watermark, text, logo, artist name, censored, mosaic censoring"
+        elif requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
+            model_neg = "worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d model render, flat, blurry, bad eyes, crossed eyes, oversaturated, watermark, signature, text, logo"
+        else:
+            model_neg = "worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d render, cgi, cartoon, anime, illustration, painting, drawing, plastic skin, airbrushed, doll, fake, oversaturated, overexposed, blurry, watermark, signature, text, logo"
+
         neg_node = {
-            "class_type": "ConditioningZeroOut",
+            "class_type": "CLIPTextEncode",
             "inputs": {
-                "conditioning": ["4", 0]
+                "text": model_neg,
+                "clip": current_clip_link
             }
         }
 
@@ -3925,7 +3985,7 @@ async def generate_krea2_image(
             "class_type": "CLIPLoader",
             "inputs": {
                 "clip_name": clip_model,
-                "type": "krea2"
+                "type": clip_type
             }
         },
         "3": {
@@ -3950,8 +4010,8 @@ async def generate_krea2_image(
                 "seed": seed,
                 "steps": int(steps),
                 "cfg": float(cfg),
-                "sampler_name": "euler",
-                "scheduler": "simple",
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
                 "denoise": 1.0,
                 "model": active_model_link,
                 "positive": ["4", 0],

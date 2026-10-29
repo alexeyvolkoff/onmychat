@@ -8,7 +8,8 @@
       "filename": "",
       "url": "",
       "trigger": "",
-      "strength": 0.0
+      "strength": 0.0,
+      "models": ["all"]
     },
     {
       "id": "photorealistic",
@@ -18,7 +19,8 @@
       "filename": "",
       "url": "",
       "trigger": "8k uhd photorealistic, authentic raw candid photography, natural skin texture, realistic daylight",
-      "strength": 1.0
+      "strength": 1.0,
+      "models": ["krea2"]
     },
     {
       "id": "semireal",
@@ -28,17 +30,19 @@
       "filename": "eiko_semireal_krea2.safetensors",
       "url": "https://civitai.com/api/download/models/3206634",
       "trigger": "semireal, 2.5d digital art, semi-realistic illustration, ultra detailed 3d render, soft cinematic subsurface scattering, smooth stylized features",
-      "strength": 0.85
+      "strength": 0.85,
+      "models": ["krea2"]
     },
     {
       "id": "anime",
-      "name": "Anime",
+      "name": "Anime Flat",
       "description": "Classic flat 2D anime style with clean lines",
       "icon": "🌸",
       "filename": "k2-anime-classic-flat.safetensors",
       "url": "https://civitai.com/api/download/models/3395512",
       "trigger": "anime style, vibrant masterwork anime portrait, clean detailed linework, expressive eyes, glowing artistic aesthetics",
-      "strength": 0.85
+      "strength": 0.85,
+      "models": ["krea2"]
     },
     {
       "id": "pinup",
@@ -48,7 +52,8 @@
       "filename": "technicolor_pinup_krea2.safetensors",
       "url": "https://civitai.com/api/download/models/3124790",
       "trigger": "technicolor, vintage 1950s pinup art style, gil elvgren aesthetic, retro glamour, painterly warm lighting, classic playful composition",
-      "strength": 0.85
+      "strength": 0.85,
+      "models": ["krea2"]
     },
     {
       "id": "pixar",
@@ -58,7 +63,8 @@
       "filename": "pure_pixar_3d_krea2.safetensors",
       "url": "https://civitai.com/api/download/models/3374517",
       "trigger": "KR2Pix, 3d pixar animation style, expressive stylized character, vibrant Disney Pixar aesthetics, 3d digital render",
-      "strength": 0.85
+      "strength": 0.85,
+      "models": ["krea2"]
     },
     {
       "id": "nix_comic",
@@ -68,7 +74,8 @@
       "filename": "krea2_nix_comic_v2.safetensors",
       "url": "https://civitai.com/api/download/models/3268616",
       "trigger": "",
-      "strength": 0.5
+      "strength": 0.5,
+      "models": ["krea2"]
     },
     {
       "id": "comic",
@@ -78,7 +85,8 @@
       "filename": "krea_comics.safetensors",
       "url": "https://civitai.com/api/download/models/3081942",
       "trigger": "Bradhamel art style, comic book illustration, dynamic ink lines, graphic novel aesthetics, stylized comic art",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "midjourney",
@@ -88,7 +96,107 @@
       "filename": "krea_midjourney.safetensors",
       "url": "https://civitai.com/api/download/models/3095398",
       "trigger": "midjourney style, artistic concept art, ethereal atmospheric lighting, stunning composition, masterpiece",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
+    },
+    {
+      "id": "colored_pencil",
+      "name": "Colored Pencil",
+      "description": "Гипердетализированный рисунок цветными карандашами",
+      "icon": "✏️",
+      "filename": "AnimaHyperdetailedColoredPencil-step00006000.safetensors",
+      "url": "https://civitai.com/api/download/models/3033029",
+      "trigger": "ArsMJStyle, Colored pencil hyperdetailed realism,",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "arcane_violet",
+      "name": "Arcane Violet",
+      "description": "Кинематографичный концепт-арт в стиле Arcane",
+      "icon": "🔮",
+      "filename": "ArcaneViolet_mpt_64.safetensors",
+      "url": "https://civitai.com/api/download/models/2965085",
+      "trigger": "arcane style, painterly concept art, dark atmospheric lighting, dramatic brushstrokes",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "niji_sweet",
+      "name": "Niji Sweet",
+      "description": "Сочный постерный арт в эстетике Midjourney Niji v6",
+      "icon": "🌈",
+      "filename": "Anima_NIJI_SWEET_SPOT_v5.safetensors",
+      "url": "https://civitai.com/api/download/models/3256481",
+      "trigger": "@NJSW33T, niji style, vibrant colorful illustration, artistic composition",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "niji_semireal",
+      "name": "Niji Semi-Real",
+      "description": "2.5D цифровая иллюстрация и мягкий объем в стиле Niji",
+      "icon": "✨",
+      "filename": "Niji_semi_realism_v5.safetensors",
+      "url": "https://civitai.com/api/download/models/3066467",
+      "trigger": "@SemiN2realism, niji semi-realistic, 2.5d digital illustration, soft volumetric lighting",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "ri_mix",
+      "name": "Ri-mix",
+      "description": "Эстетичная аниме-иллюстрация с чистым контуром и сочной палитрой",
+      "icon": "🎭",
+      "filename": "rimixao5050.safetensors",
+      "url": "https://civitai.com/api/download/models/3011920",
+      "trigger": "rimix style, masterpiece anime illustration, clean lineart, rich detailed colors, striking composition",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "dramatic_lighting",
+      "name": "Dramatic Lighting",
+      "description": "Кинематографичный драматичный свет, светотень и глубокие контрасты",
+      "icon": "🌓",
+      "filename": "S1_Dramatic_Lighting_Anima_V2.safetensors",
+      "url": "https://civitai.com/api/download/models/3126711",
+      "trigger": "s1_dram, dramatic lighting, dappled light, cinematic shadows",
+      "strength": 0.7,
+      "models": ["anima"]
+    },
+    {
+      "id": "wadustyle",
+      "name": "WaduStyle",
+      "description": "Авторский живописный стиль с выразительной штриховкой и фактурой",
+      "icon": "🖌️",
+      "filename": "WaduStyle_-_Anima_epoch_10.safetensors",
+      "url": "https://civitai.com/api/download/models/3257517",
+      "trigger": "Wadustyle, expressive illustration, artistic brushstrokes, textured anime art",
+      "strength": 0.45,
+      "models": ["anima"]
+    },
+    {
+      "id": "anime_in_real",
+      "name": "Anime In Real",
+      "description": "2.5D полуреализм, студийный свет и мягкие текстуры",
+      "icon": "🌆",
+      "filename": "Anima_in_real_update_v2_epoch_20.safetensors",
+      "url": "https://civitai.com/api/download/models/3202009",
+      "trigger": "@Ani3rel, 2.5d semi-realistic, studio lighting, soft subsurface scattering, realistic skin texture",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "gothic_neon",
+      "name": "Gothic Neon",
+      "description": "Тёмная киберпанк-готика со светящимся неоном",
+      "icon": "⚡",
+      "filename": "GothicNeonAnima.safetensors",
+      "url": "https://civitai.com/api/download/models/3022620",
+      "trigger": "g0thic n30n, neon lights, glowing, dark moody contrast, cyberpunk rim light",
+      "strength": 0.85,
+      "models": ["anima"]
     },
     {
       "id": "cinematic",
@@ -98,17 +206,19 @@
       "filename": "",
       "url": "",
       "trigger": "cinematic movie still, 35mm film photography, dramatic lighting, anamorphic bokeh, film grain",
-      "strength": 1.0
+      "strength": 1.0,
+      "models": ["all"]
     },
     {
       "id": "neon",
       "name": "Neon Noir",
       "description": "Cyberpunk night city reflections & glowing neon signage",
-      "icon": "⚡",
+      "icon": "🌃",
       "filename": "",
       "url": "",
       "trigger": "neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast",
-      "strength": 1.0
+      "strength": 1.0,
+      "models": ["all"]
     }
   ],
   "archetypes": [
@@ -120,7 +230,8 @@
       "filename": "DomiK4.safetensors",
       "url": "https://civitai.com/api/download/models/3194285",
       "trigger": "DomiK, attractive woman, piercing gaze, modern stylish look",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "ada",
@@ -130,7 +241,8 @@
       "filename": "ada_wong.safetensors",
       "url": "https://civitai.com/api/download/models/3345019",
       "trigger": "ada_wong, short black bob hair, crimson dress, confident femme fatale gaze",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "brie",
@@ -140,7 +252,8 @@
       "filename": "kxbrie.safetensors",
       "url": "https://civitai.com/api/download/models/3402541",
       "trigger": "kxbrie woman, blonde hair, blue eyes, gorgeous cheerful smile",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "tifa",
@@ -150,7 +263,8 @@
       "filename": "tifa_lockhart_krea2.safetensors",
       "url": "https://civitai.com/api/download/models/3095366",
       "trigger": "tifa lockhart style, ruby red eyes, long dark brown tied hair, athletic toned silhouette, stunning portrait",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "alt",
@@ -160,7 +274,8 @@
       "filename": "BSS_AJlbTyIIIKu_V20_Krea2.safetensors",
       "url": "https://civitai.com/api/download/models/3357162",
       "trigger": "alt girl, goth aesthetic, edgy dark eyeliner, choker, colored hair highlights, moody dark shadows, ethereal atmosphere",
-      "strength": 0.75
+      "strength": 0.75,
+      "models": ["krea2"]
     },
     {
       "id": "influencer",
@@ -170,7 +285,8 @@
       "filename": "Famegrid-Natural-V1-Krea-2.safetensors",
       "url": "https://civitai.com/api/download/models/3248281",
       "trigger": "famegrid style, instagram lifestyle influencer, candid portrait, golden hour soft light, authentic natural look, highly detailed",
-      "strength": 0.7
+      "strength": 0.7,
+      "models": ["krea2"]
     },
     {
       "id": "luna",
@@ -180,7 +296,8 @@
       "filename": "Krea_2_Luna_epoch_10.safetensors",
       "url": "https://civitai.com/api/download/models/3382906",
       "trigger": "Lun4, attractive young woman, sweet and flirtatious gaze, charming smile, alluring presence",
-      "strength": 0.8
+      "strength": 0.8,
+      "models": ["krea2"]
     },
     {
       "id": "nix_comic_lora",
@@ -190,7 +307,8 @@
       "filename": "krea2_nix_comic_v2.safetensors",
       "url": "https://civitai.com/api/download/models/3268616",
       "trigger": "",
-      "strength": 0.5
+      "strength": 0.5,
+      "models": ["krea2"]
     },
     {
       "id": "maddie",
@@ -200,7 +318,63 @@
       "filename": "Girly_Maddie.safetensors",
       "url": "https://civitai.com/api/download/models/3312963",
       "trigger": "Maddie",
-      "strength": 0.4
+      "strength": 0.4,
+      "models": ["krea2"]
+    },
+    {
+      "id": "frieren",
+      "name": "Frieren",
+      "description": "Фрирен из Sousou no Frieren — эльфийка с зелёными глазами",
+      "icon": "🧝‍♀️",
+      "filename": "frieren-s1-anima-lora-nochekaiser.safetensors",
+      "url": "https://civitai.com/api/download/models/2983407",
+      "trigger": "frieren, elf, long hair, twintails, green eyes, grey hair, pointy ears, white capelet",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "2b",
+      "name": "2B",
+      "description": "Боевой андроид 2B из NieR: Automata с повязкой на глазах",
+      "icon": "⚔️",
+      "filename": "Sysdeep_2b - Anima v1.safetensors",
+      "url": "https://civitai.com/api/download/models/3198999",
+      "trigger": "sysdeep_2b, blindfold, white hair, black dress, black headband",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "makima",
+      "name": "Makima",
+      "description": "Макима из Chainsaw Man с гипнотическими желтыми глазами",
+      "icon": "👁️",
+      "filename": "MakimaTest.safetensors",
+      "url": "https://civitai.com/api/download/models/2980149",
+      "trigger": "Makima, yellow eyes, ringed eyes, red hair, long hair braid, black tie, white collared shirt",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "lucy",
+      "name": "Lucy",
+      "description": "Люси из Cyberpunk: Edgerunners с неоновыми прядями волос",
+      "icon": "🏙️",
+      "filename": "ANI-CPELucy.safetensors",
+      "url": "https://civitai.com/api/download/models/3225815",
+      "trigger": "CPELucy, short hair, White hair, multicolored hair, multicolored eyes, blue eyes, red Eyeliner",
+      "strength": 0.85,
+      "models": ["anima"]
+    },
+    {
+      "id": "asuka",
+      "name": "Asuka",
+      "description": "Аска Сорью из Evangelion в контактном комбинезоне",
+      "icon": "🚀",
+      "filename": "Sysdeep Asuka - Anima v1.safetensors",
+      "url": "https://civitai.com/api/download/models/3027649",
+      "trigger": "sysdeep_asuka, reddish brown hair, blue eyes, interface headset, red plugsuit",
+      "strength": 0.85,
+      "models": ["anima"]
     }
   ]
 }
