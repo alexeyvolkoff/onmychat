@@ -3637,7 +3637,10 @@ async def generate_krea2_image(
 
     style_aliases = {"art": "semireal", "3d": "pixar", "cyberpunk": "neon"}
 
-    raw_styles = sliders.get("styles") or sliders.get("style") or []
+    if "styles" in sliders and sliders["styles"] is not None:
+        raw_styles = sliders["styles"]
+    else:
+        raw_styles = sliders.get("style") or []
     if isinstance(raw_styles, str):
         style_list = [s.strip() for s in raw_styles.split(",") if s.strip()]
     elif isinstance(raw_styles, (list, tuple)):
@@ -3667,7 +3670,10 @@ async def generate_krea2_image(
     ARCHETYPE_CONFIGS = get_krea_archetype_configs()
     archetype_weights = sliders.get("archetype_weights") if isinstance(sliders.get("archetype_weights"), dict) else {}
 
-    raw_archetypes = sliders.get("archetypes") or sliders.get("archetype") or []
+    if "archetypes" in sliders and sliders["archetypes"] is not None:
+        raw_archetypes = sliders["archetypes"]
+    else:
+        raw_archetypes = sliders.get("archetype") or []
     if isinstance(raw_archetypes, str):
         archetype_list = [a.strip() for a in raw_archetypes.split(",") if a.strip()]
     elif isinstance(raw_archetypes, (list, tuple)):

@@ -2339,6 +2339,7 @@ class GenerateInput(BaseModel):
     prompt_id: str | None = None
     device_push: dict | None = None
     upload_storage: bool | None = None
+    mcp_keys: dict | None = None
 
 
 class KreaGenerateInput(BaseModel):
@@ -2363,6 +2364,7 @@ class KreaGenerateInput(BaseModel):
     upload_storage: bool | None = None
     image_delivery: str | None = "inline"
     save_local: bool | None = False
+    mcp_keys: dict | None = None
 
 
 class PersonaGenerateInput(BaseModel):
@@ -2370,6 +2372,8 @@ class PersonaGenerateInput(BaseModel):
     archetype: str = "alt"
     gender: str = "female"
     style: str | None = None
+    settings: dict | None = None
+    mcp_keys: dict | None = None
 
 
 class RandomPromptInput(BaseModel):
@@ -4482,6 +4486,7 @@ async def generate_character_image(request: Request, data: GenerateInput):
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
+    ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
     try:
         is_p2p = (
             ctx.private_mode
@@ -4539,6 +4544,7 @@ async def generate_general_image(request: Request, data: GenerateInput):
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
+    ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
     try:
         is_p2p = (
             ctx.private_mode
@@ -4586,6 +4592,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
     if data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
+    ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
     try:
         is_p2p = (
             ctx.private_mode
@@ -4683,6 +4690,11 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
     """Генерирует новую персону по типажу (словесный паспорт + портрет Krea 2)."""
     import random, base64
     ctx = get_ctx(data.omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    if data.settings:
+        ctx.settings.update(data.settings)
+    ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
 
     archetype_presets = {
         "domi": {
@@ -4994,6 +5006,7 @@ async def get_krea_presets_endpoint():
 class KreaStatusInput(BaseModel):
     omd_key: Optional[str] = ""
     settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
 
 
 @app.api_route("/krea/status", methods=["GET", "POST"])
@@ -5009,6 +5022,8 @@ async def check_krea_status_endpoint(request: Request, data: Optional[KreaStatus
     if data and data.settings:
         ctx.settings.update(data.settings)
         ctx.storage = ctx.settings.get("defaultStorage", "")
+    if data:
+        ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
     return await core_service.check_krea_status(ctx)
 
 

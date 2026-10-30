@@ -1,5 +1,10 @@
 # OnMyChat — Personal AI Node for OnMyDisk
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![AI Chat](https://img.shields.io/badge/ai%20chat-onmychat.com-purple.svg)](https://onmychat.com)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/qAQpfmrBPW)
+[![Sponsor](https://img.shields.io/badge/Sponsor-On%20My%20Chat-ff69b4.svg?logo=githubsponsors&logoColor=white)](https://whop.com/onmychat/on-my-chat-sponsorship-program)
+
 OnMyChat is a private, local, self-hosted AI orchestrator designed to run as an AI Node on your own hardware. It integrates seamlessly with the **OnMyDisk** ecosystem, allowing you to converse with local LLMs, utilize private RAG (Retrieval-Augmented Generation), search documents semantically, and generate images — all completely offline and within your control.
 
 ---
