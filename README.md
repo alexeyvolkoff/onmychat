@@ -1,4 +1,4 @@
-# OnMyChat — Personal AI Node for On My Disk Direct
+# On My Chat — Personal AI Node for On My Disk Direct
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-On%20My%20Disk%20Direct-0070BB.svg)](https://github.com/alexeyvolkoff/onmydisk)
