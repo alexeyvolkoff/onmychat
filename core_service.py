@@ -6403,8 +6403,19 @@ def _compact_diffusion_prompt(raw_prompt: str) -> str:
 
 
 def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
-    """Extracts prompt, steps, cfg, width, height, model, and LoRAs from raw ComfyUI workflow/prompt JSON."""
-    res = {"prompt": "", "steps": None, "cfg": None, "width": None, "height": None, "models": [], "loras": []}
+    """Extracts prompt, negative_prompt, steps, cfg, seed, sampler, width, height, model, and LoRAs from raw ComfyUI workflow/prompt JSON."""
+    res = {
+        "prompt": "",
+        "negative_prompt": "",
+        "steps": None,
+        "cfg": None,
+        "seed": None,
+        "sampler": None,
+        "width": None,
+        "height": None,
+        "models": [],
+        "loras": [],
+    }
     if not comfy_obj:
         return res
     if isinstance(comfy_obj, str):
@@ -6438,6 +6449,15 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
                     res["cfg"] = float(inputs["cfg"])
                 except Exception:
                     pass
+            raw_seed = inputs.get("seed") if inputs.get("seed") is not None else inputs.get("noise_seed")
+            if raw_seed is not None and res["seed"] is None and not isinstance(raw_seed, (list, dict)):
+                try:
+                    res["seed"] = int(raw_seed)
+                except Exception:
+                    pass
+            raw_sampler = inputs.get("sampler_name")
+            if isinstance(raw_sampler, str) and raw_sampler.strip() and not res["sampler"]:
+                res["sampler"] = raw_sampler.strip()
             pos_ref = inputs.get("positive")
             if isinstance(pos_ref, list) and pos_ref:
                 positive_node_ids.add(str(pos_ref[0]))
@@ -6475,19 +6495,26 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
                         w = 0.8
                     res["loras"].append({"name": str(v["lora"]).strip(), "weight": w})
 
-    # Extract positive text
+    # Extract positive and negative texts
     pos_texts = []
+    neg_texts = []
     fallback_texts = []
     for nid, node in prompt_graph.items():
-        if not isinstance(node, dict) or str(nid) in negative_node_ids:
+        if not isinstance(node, dict):
             continue
         ctype = str(node.get("class_type") or "").lower()
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
         if "textencode" in ctype or "prompt" in ctype:
             txt = inputs.get("text") or inputs.get("prompt") or inputs.get("positive")
-            if isinstance(txt, str) and len(txt.strip()) > 10:
+            if isinstance(txt, str) and len(txt.strip()) > 3:
+                if str(nid) in negative_node_ids:
+                    neg_texts.append(txt.strip())
+                    continue
+                if len(txt.strip()) <= 10:
+                    continue
                 low = txt.lower()
                 if "worst quality" in low and "low quality" in low and "watermark" in low and len(txt) < 350:
+                    neg_texts.append(txt.strip())
                     continue
                 if str(nid) in positive_node_ids:
                     pos_texts.append(txt.strip())
@@ -6497,6 +6524,8 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
     chosen_texts = pos_texts or fallback_texts
     if chosen_texts:
         res["prompt"] = max(chosen_texts, key=len)
+    if neg_texts:
+        res["negative_prompt"] = max(neg_texts, key=len)
     return res
 
 
@@ -6892,6 +6921,532 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
         "matched_style_labels": matched_style_labels,
         "matched_archetype_labels": matched_archetype_labels,
     }, remaining
+
+
+_civitai_me_cache: dict[str, tuple[float, dict]] = {}
+
+_BUILTIN_CHECKPOINT_VIDS: dict[str, tuple[int, str]] = {
+    _norm_lora_key("CyberRealistic_Krea2_V4.0_BF16.safetensors"): (3357068, "CyberRealistic Krea 2 V4.0"),
+    _norm_lora_key("museByStableYogi_v35Int8Extended.safetensors"): (3258954, "Muse Krea 2 v3.5"),
+    _norm_lora_key("cyberrealisticAnima_v70Turbo_bf16.safetensors"): (3287420, "CyberRealistic Anima V7.0"),
+    _norm_lora_key("anima_aestheticV11.safetensors"): (3126581, "Anima Aesthetic V1.1"),
+}
+
+
+def _is_civitai_server_owner(ctx: UserContext | None) -> bool:
+    if not ctx:
+        return False
+    if getattr(ctx, "trusted_owner", False) or getattr(ctx, "type", "") == "owner":
+        return True
+    try:
+        from auth_helpers import validated_node_owner
+        return bool(validated_node_owner(ctx))
+    except Exception:
+        return False
+
+
+def _read_server_civitai_env_map() -> dict[str, str]:
+    found: dict[str, str] = {}
+    key_names = ("CIVITAI_API_KEY", "CIVITAI_TOKEN", "CIVITAI_INFLUENCER_API_KEY", "CIVITAI_INFLUENCER_USERNAME")
+    for kn in key_names:
+        v = (SETTINGS.get(kn) or os.environ.get(kn) or "").strip()
+        if v:
+            found[kn] = v
+
+    for cand in (
+        os.path.join(os.path.dirname(__file__), "..", "API_KEYS.env"),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ):
+        if os.path.isfile(cand):
+            try:
+                with open(cand, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k in key_names and v and k not in found:
+                            found[k] = v
+            except Exception:
+                pass
+    return found
+
+
+async def _fetch_civitai_me(token: str) -> dict | None:
+    if not token:
+        return None
+    import hashlib
+    h = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+    now = time.time()
+    cached = _civitai_me_cache.get(h)
+    if cached and (now - cached[0]) < 3600:
+        return cached[1]
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; OnMyChatStudio/1.0)",
+    }
+    timeout = aiohttp.ClientTimeout(total=7)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for base in ("https://civitai.com", "https://civitai.red"):
+            try:
+                async with session.get(f"{base}/api/v1/me", headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict) and data.get("username"):
+                            info = {
+                                "id": data.get("id"),
+                                "username": str(data.get("username")),
+                            }
+                            _civitai_me_cache[h] = (now, info)
+                            return info
+            except Exception:
+                continue
+    return None
+
+
+def _extract_user_mcp_civitai_token(ctx: UserContext | None) -> str:
+    if not ctx:
+        return ""
+    for src in (getattr(ctx, "mcp_keys", None), (ctx.settings.get("mcp_keys") if isinstance(getattr(ctx, "settings", None), dict) else None)):
+        if isinstance(src, dict):
+            raw_civ = src.get("civitai")
+            if isinstance(raw_civ, dict) and raw_civ.get("key"):
+                return str(raw_civ["key"]).strip()
+            if isinstance(raw_civ, str) and raw_civ.strip():
+                return raw_civ.strip()
+    return ""
+
+
+async def list_civitai_publish_accounts(ctx: UserContext | None) -> list[dict]:
+    """Returns available CivitAI publishing accounts (IDs + usernames, NEVER raw tokens)."""
+    candidates: list[tuple[str, str, str, bool]] = []
+    seen_tokens: set[str] = set()
+
+    if _is_civitai_server_owner(ctx):
+        env_map = _read_server_civitai_env_map()
+        inf_tok = env_map.get("CIVITAI_INFLUENCER_API_KEY", "").strip()
+        if inf_tok and inf_tok not in seen_tokens:
+            seen_tokens.add(inf_tok)
+            candidates.append(("influencer", "Инфлюенсер", inf_tok, True))
+        pers_tok = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
+        if pers_tok and pers_tok not in seen_tokens:
+            seen_tokens.add(pers_tok)
+            candidates.append(("personal", "Личный", pers_tok, False))
+
+    mcp_tok = _extract_user_mcp_civitai_token(ctx)
+    if mcp_tok and mcp_tok not in seen_tokens:
+        seen_tokens.add(mcp_tok)
+        candidates.append(("mcp", "Ключ из настроек", mcp_tok, False))
+
+    if not candidates:
+        return []
+
+    me_results = await asyncio.gather(*[_fetch_civitai_me(c[2]) for c in candidates], return_exceptions=True)
+    accounts: list[dict] = []
+    for (acc_id, role_label, _tok, is_inf), me in zip(candidates, me_results):
+        uname = ""
+        uid = None
+        if isinstance(me, dict):
+            uname = me.get("username") or ""
+            uid = me.get("id")
+        label = f"@{uname} ({role_label})" if uname else role_label
+        accounts.append({
+            "id": acc_id,
+            "username": uname,
+            "user_id": uid,
+            "role": role_label,
+            "label": label,
+            "is_influencer": is_inf,
+        })
+    return accounts
+
+
+def _resolve_civitai_publish_token(
+    ctx: UserContext | None,
+    account_id: str = "",
+    custom_token: str = "",
+    persona_id: str = "",
+) -> tuple[str, str]:
+    """Resolves (token, account_id_used) for publishing to CivitAI."""
+    if custom_token and custom_token.strip():
+        return custom_token.strip(), "custom"
+
+    acc = (account_id or "").strip().lower()
+    is_owner = _is_civitai_server_owner(ctx)
+    env_map = _read_server_civitai_env_map() if is_owner else {}
+    mcp_tok = _extract_user_mcp_civitai_token(ctx)
+
+    if (not acc or acc == "auto") and persona_id and is_owner:
+        try:
+            for p in load_personas_from_disk(ctx):
+                if str(p.get("id") or "") == str(persona_id):
+                    bound = str(p.get("civitai_account") or "").strip().lower()
+                    if bound in ("influencer", "personal"):
+                        acc = bound
+                    break
+        except Exception:
+            pass
+
+    if acc == "influencer" and is_owner:
+        tok = env_map.get("CIVITAI_INFLUENCER_API_KEY", "").strip()
+        if tok:
+            return tok, "influencer"
+    elif acc == "personal" and is_owner:
+        tok = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
+        if tok:
+            return tok, "personal"
+    elif acc == "mcp" and mcp_tok:
+        return mcp_tok, "mcp"
+
+    if is_owner:
+        if persona_id and persona_id not in ("", "none", "june", "default") and env_map.get("CIVITAI_INFLUENCER_API_KEY"):
+            return env_map["CIVITAI_INFLUENCER_API_KEY"].strip(), "influencer"
+        if env_map.get("CIVITAI_INFLUENCER_API_KEY"):
+            return env_map["CIVITAI_INFLUENCER_API_KEY"].strip(), "influencer"
+        pers = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
+        if pers:
+            return pers, "personal"
+    if mcp_tok:
+        return mcp_tok, "mcp"
+
+    raise ValueError("Не найден API-ключ CivitAI для выбранного аккаунта. Добавьте ключ в настройках или укажите его вручную.")
+
+
+def _resolve_civitai_publish_image_file(ctx: UserContext | None, item_spec: dict) -> tuple[bytes, str, str]:
+    """Returns (img_bytes, filename, readme_text) from either data_b64 or local generated directory."""
+    raw_name = os.path.basename(str(item_spec.get("image_name") or item_spec.get("name") or "creation.png").strip()) or "creation.png"
+    readme_text = str(item_spec.get("readme_text") or "").strip()
+
+    b64_str = str(item_spec.get("data_b64") or "").strip()
+    if b64_str:
+        if "," in b64_str and b64_str.startswith("data:"):
+            b64_str = b64_str.split(",", 1)[1]
+        img_bytes = base64.b64decode(b64_str)
+        if img_bytes:
+            return img_bytes, raw_name, readme_text
+
+    if not _is_civitai_server_owner(ctx):
+        raise ValueError(f"Файл {raw_name} не передан с клиентского хранилища.")
+
+    rel_candidates: list[str] = []
+    raw_path = str(item_spec.get("image_path") or item_spec.get("path") or "").strip().lstrip("/")
+    if raw_path:
+        for pref in ("OnMyChat/generated/", "generated/"):
+            if raw_path.startswith(pref):
+                rel_candidates.append(raw_path[len(pref):])
+        rel_candidates.append(raw_path)
+    story_slug = str(item_spec.get("story_slug") or "").strip()
+    if story_slug and raw_name:
+        rel_candidates.append(f"{sanitize_story_slug(story_slug)}/{raw_name}")
+    if raw_name:
+        rel_candidates.append(raw_name)
+
+    base_dirs = [resolve_local_target_dir(ctx, "generated")]
+    home_omc = os.path.join(os.path.expanduser("~"), "OnMyChat", "generated")
+    if os.path.isdir(home_omc) and os.path.abspath(home_omc) not in [os.path.abspath(d) for d in base_dirs]:
+        base_dirs.append(home_omc)
+
+    for bdir in base_dirs:
+        if not os.path.isdir(bdir):
+            continue
+        bdir_abs = os.path.abspath(bdir)
+        for rel in rel_candidates:
+            cand = os.path.abspath(os.path.join(bdir_abs, rel))
+            try:
+                if os.path.commonpath([bdir_abs, cand]) != bdir_abs:
+                    continue
+            except Exception:
+                continue
+            if os.path.isfile(cand):
+                with open(cand, "rb") as f:
+                    img_bytes = f.read()
+                if not readme_text:
+                    rm_cand = os.path.splitext(cand)[0] + ".Readme.md"
+                    if os.path.isfile(rm_cand):
+                        try:
+                            with open(rm_cand, "r", encoding="utf-8") as rf:
+                                readme_text = rf.read()
+                        except Exception:
+                            pass
+                return img_bytes, os.path.basename(cand), readme_text
+
+    raise ValueError(f"Не удалось найти файл изображения '{raw_name}' на диске.")
+
+
+def _build_civitai_image_meta(
+    img_bytes: bytes,
+    readme_text: str = "",
+    explicit_prompt: str = "",
+    include_meta: bool = True,
+) -> tuple[int, int, str, dict | None, int | None, list[str]]:
+    """
+    Inspects PNG/JPEG bytes & ComfyUI workflow chunk, returning:
+    (width, height, mime_type, civitai_meta_dict, primary_checkpoint_vid, linked_resource_labels).
+    """
+    from PIL import Image
+    import io
+
+    with Image.open(io.BytesIO(img_bytes)) as im:
+        width, height = im.size
+        fmt = (im.format or "PNG").upper()
+        mime_type = "image/jpeg" if fmt in ("JPEG", "JPG") else ("image/webp" if fmt == "WEBP" else "image/png")
+        png_info = dict(im.info or {})
+
+    if not include_meta:
+        return width, height, mime_type, None, None, []
+
+    raw_comfy_prompt = png_info.get("prompt")
+    comfy_graph_dict = None
+    if isinstance(raw_comfy_prompt, str) and raw_comfy_prompt.strip().startswith("{"):
+        try:
+            comfy_graph_dict = json.loads(raw_comfy_prompt)
+        except Exception:
+            comfy_graph_dict = None
+    elif isinstance(raw_comfy_prompt, dict):
+        comfy_graph_dict = raw_comfy_prompt
+
+    parsed = _extract_comfy_graph_data(comfy_graph_dict) if comfy_graph_dict else {}
+
+    prompt_val = (parsed.get("prompt") or "").strip()
+    if not prompt_val and readme_text:
+        m_pr = re.search(r"<!--\s*prompt:\s*([\s\S]*?)-->", readme_text, re.IGNORECASE)
+        if m_pr:
+            prompt_val = m_pr.group(1).strip()
+    if not prompt_val and explicit_prompt:
+        prompt_val = explicit_prompt.strip()
+    prompt_val = _compact_diffusion_prompt(prompt_val) if prompt_val else ""
+
+    civitai_resources: list[dict] = []
+    seen_vids: set[int] = set()
+    linked_labels: list[str] = []
+    primary_checkpoint_vid: int | None = None
+
+    for m_fname in (parsed.get("models") or []):
+        nk = _norm_lora_key(m_fname)
+        if nk in _BUILTIN_CHECKPOINT_VIDS:
+            vid, label = _BUILTIN_CHECKPOINT_VIDS[nk]
+            if vid not in seen_vids:
+                seen_vids.add(vid)
+                primary_checkpoint_vid = primary_checkpoint_vid or vid
+                civitai_resources.append({"type": "checkpoint", "modelVersionId": vid})
+                linked_labels.append(label)
+
+    presets = get_krea_presets()
+    lora_vid_map: dict[str, tuple[int, str]] = {}
+    for cat_key in ("art_styles", "archetypes"):
+        for it in (presets.get(cat_key) or []):
+            fname = str(it.get("filename") or "").strip()
+            url = str(it.get("url") or "").strip()
+            if not fname or not url:
+                continue
+            vm = re.search(r"/models/(\d+)", url)
+            if vm:
+                lora_vid_map[_norm_lora_key(fname)] = (int(vm.group(1)), str(it.get("name") or fname))
+
+    for l_entry in (parsed.get("loras") or []):
+        nk = _norm_lora_key(l_entry.get("name") or "")
+        if nk and nk in lora_vid_map:
+            vid, label = lora_vid_map[nk]
+            if vid not in seen_vids:
+                seen_vids.add(vid)
+                w = round(float(l_entry.get("weight", 0.8) or 0.8), 2)
+                civitai_resources.append({"type": "lora", "modelVersionId": vid, "weight": w})
+                linked_labels.append(f"{label} ({w})")
+
+    meta: dict = {}
+    if prompt_val:
+        meta["prompt"] = prompt_val
+    if parsed.get("negative_prompt"):
+        meta["negativePrompt"] = parsed["negative_prompt"]
+    if parsed.get("steps") is not None:
+        meta["steps"] = int(parsed["steps"])
+    if parsed.get("cfg") is not None:
+        meta["cfgScale"] = float(parsed["cfg"])
+    if parsed.get("sampler"):
+        meta["sampler"] = str(parsed["sampler"])
+    if parsed.get("seed") is not None:
+        meta["seed"] = int(parsed["seed"])
+    if civitai_resources:
+        meta["civitaiResources"] = civitai_resources
+    if isinstance(comfy_graph_dict, dict):
+        serialized_comfy = json.dumps({"prompt": comfy_graph_dict}, ensure_ascii=False)
+        if len(serialized_comfy) < 500_000:
+            meta["comfy"] = {"prompt": comfy_graph_dict}
+
+    return width, height, mime_type, (meta if meta else None), primary_checkpoint_vid, linked_labels
+
+
+async def publish_to_civitai(
+    ctx: UserContext | None,
+    images: list[dict],
+    title: str = "",
+    detail: str = "",
+    tags: list[str] | str | None = None,
+    publish: bool = True,
+    include_meta: bool = True,
+    account_id: str = "",
+    custom_token: str = "",
+    persona_id: str = "",
+) -> dict:
+    """
+    Uploads 1..20 images directly to CivitAI via /api/v1/image-upload + S3 PUT
+    and creates/publishes a post via /api/trpc/post.createWithImages under the chosen API key's account.
+    """
+    if not images:
+        raise ValueError("Нет изображений для публикации.")
+    if len(images) > 20:
+        raise ValueError("В один пост CivitAI можно добавить максимум 20 изображений.")
+
+    token, resolved_acc_id = _resolve_civitai_publish_token(
+        ctx=ctx,
+        account_id=account_id,
+        custom_token=custom_token,
+        persona_id=persona_id,
+    )
+
+    me_info = await _fetch_civitai_me(token)
+    username = (me_info or {}).get("username") or ""
+
+    auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; OnMyChatStudio/1.0)",
+    }
+
+    prepared_images: list[dict] = []
+    all_linked_labels: list[str] = []
+    post_model_version_id: int | None = None
+
+    timeout = aiohttp.ClientTimeout(total=90)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for idx, item_spec in enumerate(images):
+            img_bytes, fname, readme_text = _resolve_civitai_publish_image_file(ctx, item_spec)
+            explicit_pr = str(item_spec.get("prompt") or "").strip()
+            width, height, mime_type, meta_dict, ckpt_vid, linked_labels = _build_civitai_image_meta(
+                img_bytes=img_bytes,
+                readme_text=readme_text,
+                explicit_prompt=explicit_pr,
+                include_meta=include_meta,
+            )
+            if ckpt_vid and not post_model_version_id:
+                post_model_version_id = ckpt_vid
+            for lbl in linked_labels:
+                if lbl not in all_linked_labels:
+                    all_linked_labels.append(lbl)
+
+            async with session.post(
+                "https://civitai.com/api/v1/image-upload",
+                headers=auth_headers,
+                json={"filename": fname, "metadata": {}},
+            ) as up_req:
+                if up_req.status == 401:
+                    raise ValueError("CivitAI отклонил API-ключ (401 Unauthorized). Проверьте токен аккаунта.")
+                if up_req.status != 200:
+                    err_body = (await up_req.text())[:300]
+                    raise ValueError(f"Ошибка подготовки загрузки на CivitAI (HTTP {up_req.status}): {err_body}")
+                up_data = await up_req.json()
+
+            upload_uuid = up_data.get("id")
+            upload_url = up_data.get("uploadURL")
+            if not upload_uuid or not upload_url:
+                raise ValueError(f"CivitAI image-upload не вернул uploadURL: {up_data}")
+
+            put_ok = False
+            last_put_status = 0
+            last_put_err = ""
+            for put_headers in ({"Content-Type": mime_type}, {}):
+                async with session.put(upload_url, data=img_bytes, headers=put_headers) as put_resp:
+                    last_put_status = put_resp.status
+                    if 200 <= put_resp.status < 300:
+                        put_ok = True
+                        break
+                    last_put_err = (await put_resp.text())[:250]
+                    if put_resp.status not in (400, 403):
+                        break
+            if not put_ok:
+                raise ValueError(f"Не удалось загрузить файл '{fname}' в хранилище CivitAI (HTTP {last_put_status}): {last_put_err}")
+
+            img_entry: dict = {
+                "url": str(upload_uuid),
+                "index": idx,
+                "name": fname,
+                "width": width,
+                "height": height,
+                "mimeType": mime_type,
+                "type": "image",
+            }
+            if meta_dict:
+                img_entry["meta"] = meta_dict
+            if ckpt_vid:
+                img_entry["modelVersionId"] = ckpt_vid
+            prepared_images.append(img_entry)
+
+        tag_list: list[str] = []
+        if isinstance(tags, str):
+            tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip().lower() for t in tags if str(t).strip()]
+
+        post_input: dict = {
+            "publish": bool(publish),
+            "images": prepared_images,
+        }
+        if title and title.strip():
+            post_input["title"] = title.strip()[:255]
+        if detail and detail.strip():
+            post_input["detail"] = detail.strip()
+        if post_model_version_id:
+            post_input["modelVersionId"] = post_model_version_id
+        if tag_list:
+            post_input["tags"] = tag_list[:15]
+
+        async with session.post(
+            "https://civitai.com/api/trpc/post.createWithImages",
+            headers=auth_headers,
+            json={"json": post_input},
+        ) as create_resp:
+            resp_text = await create_resp.text()
+            try:
+                resp_json = json.loads(resp_text)
+            except Exception:
+                resp_json = {}
+
+            if create_resp.status >= 400 or "error" in resp_json:
+                err_obj = resp_json.get("error") or {}
+                err_msg = (
+                    (err_obj.get("json") or {}).get("message")
+                    or err_obj.get("message")
+                    or resp_text[:300]
+                )
+                raise ValueError(f"Ошибка создания поста на CivitAI: {err_msg}")
+
+            res_data = ((resp_json.get("result") or {}).get("data") or {})
+            post_obj = res_data.get("json") if isinstance(res_data, dict) and "json" in res_data else res_data
+            post_id = post_obj.get("id") if isinstance(post_obj, dict) else None
+            if not post_id:
+                raise ValueError(f"CivitAI создал ответ без ID поста: {resp_text[:300]}")
+
+    post_url = f"https://civitai.com/posts/{post_id}" if publish else f"https://civitai.com/posts/{post_id}/edit"
+    logging.info(
+        f"[CivitAI Publish] Published post #{post_id} (publish={publish}, images={len(prepared_images)}, "
+        f"account=@{username or resolved_acc_id}, resources={all_linked_labels})"
+    )
+    return {
+        "ok": True,
+        "post_id": post_id,
+        "post_url": post_url,
+        "edit_url": f"https://civitai.com/posts/{post_id}/edit",
+        "published": bool(publish),
+        "account_id": resolved_acc_id,
+        "username": username,
+        "image_count": len(prepared_images),
+        "linked_resources": all_linked_labels,
+    }
 
 
 def _format_civitai_import_badge(meta_summary: dict, is_ru: bool = True) -> str:

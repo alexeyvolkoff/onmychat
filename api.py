@@ -5080,7 +5080,14 @@ async def check_krea_status_endpoint(request: Request, data: Optional[KreaStatus
         ctx.storage = ctx.settings.get("defaultStorage", "")
     if data:
         ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
-    return await core_service.check_krea_status(ctx)
+    res = await core_service.check_krea_status(ctx)
+    if isinstance(res, dict) and res.get("allowed"):
+        try:
+            res = dict(res)
+            res["civitai_accounts"] = await core_service.list_civitai_publish_accounts(ctx)
+        except Exception as e:
+            logging.debug(f"[CivitAI] Accounts lookup in status skipped: {e}")
+    return res
 
 
 class DirectorPromptInput(BaseModel):
@@ -5186,6 +5193,59 @@ async def krea_civitai_extract_endpoint(request: Request, data: CivitaiExtractIn
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logging.error(f"Error in /krea/civitai/extract: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CivitaiPublishInput(BaseModel):
+    omd_key: Optional[str] = ""
+    images: list[dict] = []
+    title: Optional[str] = ""
+    detail: Optional[str] = ""
+    tags: Optional[list[str] | str] = None
+    publish: bool = True
+    include_meta: bool = True
+    account_id: Optional[str] = ""
+    custom_token: Optional[str] = ""
+    persona_id: Optional[str] = ""
+    settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
+
+
+@app.post("/krea/civitai/accounts")
+async def krea_civitai_accounts_endpoint(request: Request, data: Optional[KreaStatusInput] = None):
+    """Returns available CivitAI publishing accounts (IDs + usernames, never exposing tokens)."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    accounts = await core_service.list_civitai_publish_accounts(ctx)
+    return {"accounts": accounts}
+
+
+@app.post("/krea/civitai/publish")
+async def krea_civitai_publish_endpoint(request: Request, data: CivitaiPublishInput):
+    """Uploads 1..20 images directly to CivitAI and creates/publishes a post under the selected API key's account."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    try:
+        return await core_service.publish_to_civitai(
+            ctx=ctx,
+            images=data.images or [],
+            title=data.title or "",
+            detail=data.detail or "",
+            tags=data.tags,
+            publish=bool(data.publish),
+            include_meta=bool(data.include_meta),
+            account_id=data.account_id or "",
+            custom_token=data.custom_token or "",
+            persona_id=data.persona_id or "",
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.error(f"Error in /krea/civitai/publish: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
