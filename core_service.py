@@ -3788,11 +3788,12 @@ async def generate_krea2_image(
     vae_model = SETTINGS.get("KREA_VAE", "qwen_image_vae.safetensors")
 
     available_loras = []
+    use_remote_modal = bool(str(SETTINGS.get("MODAL_COMFY_URL") or "").strip())
     global _krea_model_cache
     if "_krea_model_cache" not in globals():
         _krea_model_cache = None
 
-    if _krea_model_cache is None:
+    if not use_remote_modal and _krea_model_cache is None:
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.0)) as session:
                 async with session.get(f"{COMFY_API_URL}/object_info") as resp:
@@ -3820,8 +3821,8 @@ async def generate_krea2_image(
         except Exception:
             pass
 
-    available_unets = _krea_model_cache.get("unets", []) if _krea_model_cache else []
-    if _krea_model_cache:
+    available_unets = (_krea_model_cache.get("unets", []) if (_krea_model_cache and not use_remote_modal) else [])
+    if _krea_model_cache and not use_remote_modal:
         clip_model = _krea_model_cache.get("clip", clip_model)
         available_loras = _krea_model_cache.get("loras", [])
 

@@ -322,6 +322,17 @@
       "models": ["krea2"]
     },
     {
+      "id": "kate",
+      "name": "Kate",
+      "description": "Платиновая блондинка с гипнотическими голубыми глазами (Krea 2)",
+      "icon": "🦋",
+      "filename": "kate_krea2.safetensors",
+      "url": "https://civitai.com/api/download/models/3426749",
+      "trigger": "kate, platinum blonde hair, mesmerizing blue eyes",
+      "strength": 0.8,
+      "models": ["krea2"]
+    },
+    {
       "id": "frieren",
       "name": "Frieren",
       "description": "Фрирен из Sousou no Frieren — эльфийка с зелёными глазами",
