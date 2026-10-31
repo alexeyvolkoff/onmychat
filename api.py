@@ -2365,6 +2365,11 @@ class KreaGenerateInput(BaseModel):
     image_delivery: str | None = "inline"
     save_local: bool | None = False
     mcp_keys: dict | None = None
+    subfolder: str | None = None
+    filename_prefix: str | None = None
+    custom_title: str | None = None
+    custom_description: str | None = None
+    stream: bool | None = False
 
 
 class PersonaGenerateInput(BaseModel):
@@ -4625,59 +4630,110 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         save_locally = bool(is_node_owner or data.save_local)
 
         ref_imgs = data.reference_images or ([data.reference_image] if data.reference_image else None)
-        t_start = time.time()
-        res = await core_service.generate_krea2_image(
-            ctx=ctx,
-            prompt=data.prompt,
-            persona_prompt=data.persona_prompt or "",
-            persona_lora=data.persona_lora,
-            persona_id=data.persona_id,
-            persona_name=data.persona_name,
-            force_avatar_ref=bool(data.force_avatar_ref),
-            sliders=data.sliders,
-            reference_image=ref_imgs[0] if ref_imgs else None,
-            reference_images=ref_imgs,
-            width=data.width,
-            height=data.height,
-            steps=data.steps,
-            cfg=data.cfg,
-            seed=data.seed,
-            upload_storage=upload_storage_flag,
-            save_local=save_locally
-        )
-        total_time = round(time.time() - t_start, 2)
-        gpu_time = None
-        try:
-            from extensions.modal_comfy_client import get_last_gpu_time
-            gpu_time = get_last_gpu_time()
-        except Exception:
-            pass
 
-        filename, title, description, img_data = res[0], res[1], res[2], res[3]
-        raw_prompt = (data.prompt or data.persona_prompt or "").strip()
-        if img_data:
-            store_ephemeral_image(filename, img_data)
-            readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
-            readme_text = f"# {title}\n\n{description}\n"
-            if raw_prompt:
-                readme_text += f"\n<!-- prompt: {raw_prompt} -->\n"
-            store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
-            if data.device_push:
-                schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx, prompt=raw_prompt)
+        async def _run_krea2_core() -> dict:
+            t_start = time.time()
+            res = await core_service.generate_krea2_image(
+                ctx=ctx,
+                prompt=data.prompt,
+                persona_prompt=data.persona_prompt or "",
+                persona_lora=data.persona_lora,
+                persona_id=data.persona_id,
+                persona_name=data.persona_name,
+                force_avatar_ref=bool(data.force_avatar_ref),
+                sliders=data.sliders,
+                reference_image=ref_imgs[0] if ref_imgs else None,
+                reference_images=ref_imgs,
+                width=data.width,
+                height=data.height,
+                steps=data.steps,
+                cfg=data.cfg,
+                seed=data.seed,
+                upload_storage=upload_storage_flag,
+                save_local=save_locally,
+                subfolder=data.subfolder,
+                filename_prefix=data.filename_prefix,
+                custom_title=data.custom_title,
+                custom_description=data.custom_description,
+            )
+            total_time = round(time.time() - t_start, 2)
+            gpu_time = None
+            try:
+                from extensions.modal_comfy_client import get_last_gpu_time
+                gpu_time = get_last_gpu_time()
+            except Exception:
+                pass
 
-        resp = {
-            "image": filename,
-            "path": filename,
-            "url": f"/chat/image/{filename}",
-            "title": title,
-            "description": description,
-            "prompt": raw_prompt,
-            "persona": data.persona_name or data.persona_id or "",
-            "saved_locally": save_locally,
-            "gpu_time": gpu_time,
-            "total_time": total_time,
-        }
-        return resp
+            await core_service.emit_generation_progress("saving")
+
+            filename, title, description, img_data = res[0], res[1], res[2], res[3]
+            raw_prompt = (data.prompt or data.persona_prompt or "").strip()
+            if img_data:
+                store_ephemeral_image(filename, img_data)
+                readme_filename = os.path.splitext(filename)[0] + ".Readme.md"
+                readme_text = f"# {title}\n\n{description}\n"
+                if raw_prompt:
+                    readme_text += f"\n<!-- prompt: {raw_prompt} -->\n"
+                store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
+                if data.device_push:
+                    schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx, prompt=raw_prompt)
+
+            safe_subfolder = core_service.sanitize_story_slug(data.subfolder) if data.subfolder else ""
+            return {
+                "image": filename,
+                "path": f"{safe_subfolder}/{filename}" if safe_subfolder else filename,
+                "subfolder": safe_subfolder,
+                "url": f"/chat/image/{filename}",
+                "title": title,
+                "description": description,
+                "prompt": raw_prompt,
+                "persona": data.persona_name or data.persona_id or "",
+                "saved_locally": save_locally,
+                "gpu_time": gpu_time,
+                "total_time": total_time,
+            }
+
+        if not data.stream:
+            return await _run_krea2_core()
+
+        async def _ndjson_stream():
+            prog_q: asyncio.Queue = asyncio.Queue()
+
+            def _on_progress(stage: str, **info):
+                prog_q.put_nowait({"type": "progress", "stage": stage, **info})
+
+            token_var = core_service.generation_progress_var.set(_on_progress)
+            task = asyncio.create_task(_run_krea2_core())
+            core_service.generation_progress_var.reset(token_var)
+            task.add_done_callback(lambda _: prog_q.put_nowait(None))
+
+            yield (json.dumps({"type": "progress", "stage": "warming", "phase": "preparing"}) + "\n").encode("utf-8")
+
+            try:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(prog_q.get(), timeout=8.0)
+                        if ev is None:
+                            while not prog_q.empty():
+                                tail = prog_q.get_nowait()
+                                if tail is not None:
+                                    yield (json.dumps(tail) + "\n").encode("utf-8")
+                            break
+                        yield (json.dumps(ev) + "\n").encode("utf-8")
+                    except asyncio.TimeoutError:
+                        if task.done():
+                            break
+                        yield (json.dumps({"type": "ping"}) + "\n").encode("utf-8")
+
+                result_dict = await task
+                yield (json.dumps({"type": "result", "data": result_dict}) + "\n").encode("utf-8")
+            except HTTPException as he:
+                yield (json.dumps({"type": "error", "detail": str(he.detail)}) + "\n").encode("utf-8")
+            except Exception as exc:
+                logging.error(f"Error in streamed /generate/krea2: {exc}")
+                yield (json.dumps({"type": "error", "detail": str(exc)}) + "\n").encode("utf-8")
+
+        return StreamingResponse(_ndjson_stream(), media_type="application/x-ndjson")
     except HTTPException:
         raise
     except Exception as e:
@@ -5025,6 +5081,204 @@ async def check_krea_status_endpoint(request: Request, data: Optional[KreaStatus
     if data:
         ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
     return await core_service.check_krea_status(ctx)
+
+
+class DirectorPromptInput(BaseModel):
+    omd_key: Optional[str] = ""
+    instruction: str = ""
+    current_prompt: Optional[str] = ""
+    base_model: Optional[str] = "realism"
+    persona_name: Optional[str] = ""
+    persona_prompt: Optional[str] = ""
+    styles: Optional[str] = ""
+    archetypes: Optional[str] = ""
+    history: Optional[list] = None
+    warmup_gpu: Optional[bool] = False
+    settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
+
+
+class DirectorStoryboardInput(BaseModel):
+    omd_key: Optional[str] = ""
+    action: str = "plan"  # "plan" | "continue" | "refine_scene"
+    story_title: Optional[str] = ""
+    setting: Optional[str] = ""
+    idea: Optional[str] = ""
+    scene_count: int = 4
+    base_model: Optional[str] = "realism"
+    personas: Optional[list] = None
+    styles: Optional[str] = ""
+    archetypes: Optional[str] = ""
+    existing_scenes: Optional[list] = None
+    target_scene_index: Optional[int] = None
+    warmup_gpu: Optional[bool] = False
+    settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
+
+
+class StorySaveInput(BaseModel):
+    omd_key: Optional[str] = ""
+    story_title: str = "Untitled Story"
+    story_slug: Optional[str] = ""
+    setting: Optional[str] = ""
+    personas: Optional[list] = None
+    scenes: list = []
+    save_local: Optional[bool] = True
+    settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
+
+
+def _build_krea_ctx(request: Request, data=None):
+    effective_key = (getattr(data, "omd_key", "") if data else "") or request.headers.get("Token", "") or request.query_params.get("omd_key", "")
+    ctx = get_ctx(effective_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    if data and getattr(data, "settings", None):
+        ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
+    if data:
+        ctx.mcp_keys = getattr(data, "mcp_keys", None) or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
+    return ctx
+
+
+@app.post("/krea/warmup")
+async def krea_warmup_endpoint(request: Request, data: Optional[KreaStatusInput] = None):
+    """Triggers lazy background GPU warmup right when a generation or scene shoot begins."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Not authorized"))
+    try:
+        from extensions.hooks import maybe_start_gpu_warmup_for_generation
+        await maybe_start_gpu_warmup_for_generation(ctx)
+    except Exception:
+        pass
+    return {"status": "warming", "gpu_warm": status.get("gpu_warm", False)}
+
+
+@app.post("/krea/director/prompt")
+async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptInput):
+    """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima prompts in natural language)."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    if data.warmup_gpu:
+        try:
+            from extensions.hooks import maybe_start_gpu_warmup_for_generation
+            await maybe_start_gpu_warmup_for_generation(ctx)
+        except Exception:
+            pass
+    try:
+        return await core_service.krea_director_rewrite_prompt(
+            ctx=ctx,
+            instruction=data.instruction,
+            current_prompt=data.current_prompt or "",
+            base_model=data.base_model or "realism",
+            persona_name=data.persona_name or "",
+            persona_prompt=data.persona_prompt or "",
+            styles=data.styles or "",
+            archetypes=data.archetypes or "",
+            history=data.history,
+        )
+    except Exception as e:
+        logging.error(f"Error in /krea/director/prompt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/krea/director/storyboard")
+async def krea_director_storyboard_endpoint(request: Request, data: DirectorStoryboardInput):
+    """AI Director's Chair — Multi-scene Storyboard & Visual Novel Planner."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    if data.warmup_gpu:
+        try:
+            from extensions.hooks import maybe_start_gpu_warmup_for_generation
+            await maybe_start_gpu_warmup_for_generation(ctx)
+        except Exception:
+            pass
+    try:
+        return await core_service.krea_director_storyboard(
+            ctx=ctx,
+            action=data.action or "plan",
+            story_title=data.story_title or "",
+            setting=data.setting or "",
+            idea=data.idea or "",
+            scene_count=data.scene_count or 4,
+            base_model=data.base_model or "realism",
+            personas=data.personas,
+            styles=data.styles or "",
+            archetypes=data.archetypes or "",
+            existing_scenes=data.existing_scenes,
+            target_scene_index=data.target_scene_index,
+        )
+    except Exception as e:
+        logging.error(f"Error in /krea/director/storyboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/krea/story/save")
+async def krea_story_save_endpoint(request: Request, data: StorySaveInput):
+    """Builds illustrated Readme.md + story.json and saves locally for Node Owner."""
+    ctx = _build_krea_ctx(request, data)
+    is_owner = False
+    try:
+        is_owner = (
+            validated_node_owner(ctx)
+            or getattr(ctx, "trusted_owner", False)
+            or getattr(ctx, "private_mode", False)
+            or trusted_owner_access(request)
+        )
+    except Exception:
+        is_owner = getattr(ctx, "trusted_owner", False)
+
+    story_dict = {
+        "story_title": data.story_title,
+        "story_slug": core_service.sanitize_story_slug(data.story_slug or data.story_title),
+        "setting": data.setting or "",
+        "personas": data.personas or [],
+        "scenes": data.scenes or [],
+    }
+    if is_owner and data.save_local:
+        saved = core_service.save_story_to_local_disk(ctx, story_dict)
+        return {
+            "status": "ok",
+            "saved_locally": True,
+            "story_slug": saved["story_slug"],
+            "readme_markdown": saved["readme_markdown"],
+            "story_json": saved["story_json"],
+        }
+    md_text = core_service.build_story_markdown(story_dict)
+    return {
+        "status": "ok",
+        "saved_locally": False,
+        "story_slug": story_dict["story_slug"],
+        "readme_markdown": md_text,
+        "story_json": story_dict,
+    }
+
+
+@app.get("/krea/stories")
+async def krea_list_stories_endpoint(request: Request, omd_key: str | None = Depends(get_omd_key)):
+    """Lists saved story projects on the AI node (for Node Owner)."""
+    ctx = get_ctx(omd_key or "")
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    is_owner = False
+    try:
+        is_owner = (
+            validated_node_owner(ctx)
+            or getattr(ctx, "trusted_owner", False)
+            or getattr(ctx, "private_mode", False)
+            or trusted_owner_access(request)
+        )
+    except Exception:
+        is_owner = False
+    if not is_owner:
+        return {"stories": []}
+    return {"stories": core_service.list_stories_on_local_disk(ctx)}
 
 
 

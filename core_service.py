@@ -12,8 +12,22 @@ import base64
 
 import aiohttp
 import asyncio
+import contextvars
 import time
 import subprocess
+
+generation_progress_var: contextvars.ContextVar = contextvars.ContextVar("generation_progress_cb", default=None)
+
+
+async def emit_generation_progress(stage: str, **info) -> None:
+    cb = generation_progress_var.get()
+    if callable(cb):
+        try:
+            res = cb(stage=stage, **info)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception:
+            pass
 
 from typing import AsyncGenerator
 
@@ -3077,10 +3091,21 @@ async def generate_image_workflow(workflow) -> bytes:
                             # Log heartbeat or node executing
                             if data_content["node"] is None and data_content["prompt_id"] == prompt_id:
                                 logging.info(f"Execution finished for prompt {prompt_id}")
-                                # Determine if we should break or wait for pending fetches
-                                # If we have an image, great. If not, maybe we missed it or it is coming?
-                                # Usually 'executed' comes before 'executing' (finished).
                                 break
+                            elif data_content.get("prompt_id") == prompt_id:
+                                nid = str(data_content.get("node", ""))
+                                node_cls = str(workflow.get(nid, {}).get("class_type", "")) if isinstance(workflow, dict) else ""
+                                if "Sampler" in node_cls:
+                                    await emit_generation_progress("generating", step=0)
+                                else:
+                                    await emit_generation_progress("warming", phase="loading_models")
+
+                        elif msg_type == "progress":
+                            data_content = data.get("data", {})
+                            val = int(data_content.get("value", 0) or 0)
+                            mx = int(data_content.get("max", 0) or 0)
+                            if mx >= 4:
+                                await emit_generation_progress("generating", step=val, total_steps=mx)
                                 
                         elif msg_type == "executed":
                             data_content = data["data"]
@@ -4050,24 +4075,37 @@ async def generate_krea2_image(
 
     orig_filename = filename
 
-    # Форматируем имя файла
+    # Форматируем имя файла (с поддержкой префикса сцены и подпапки истории)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_prefix = str(kwargs.get("filename_prefix") or "").strip()
+    safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "", raw_prefix)[:32]
     match = re.search(r"_(\d{5})_\.png$", filename or "")
     if match:
         index = match.group(1)
-        filename = f"KREA_{index}_{timestamp}.png"
+        base_fn = f"KREA_{index}_{timestamp}.png"
     else:
-        filename = f"KREA_{timestamp}.png"
+        base_fn = f"KREA_{timestamp}.png"
+    filename = f"{safe_prefix}_{base_fn}" if safe_prefix else base_fn
+
+    raw_subfolder = str(kwargs.get("subfolder") or "").strip()
+    safe_subfolder = sanitize_story_slug(raw_subfolder) if raw_subfolder else ""
 
     clean_user_prompt = (prompt or persona_prompt or "").strip()
+    custom_title = str(kwargs.get("custom_title") or "").strip()
+    custom_description = str(kwargs.get("custom_description") or "").strip()
+
     neutral_title, neutral_description = "", ""
-    try:
-        neutral_title, neutral_description = await asyncio.wait_for(
-            generate_neutral_description_and_title(ctx, clean_user_prompt),
-            timeout=8.0
-        )
-    except Exception as e:
-        logging.warning(f"[Krea2] generate_neutral_description_and_title timed out or failed: {e}")
+    if custom_title or custom_description:
+        neutral_title = custom_title
+        neutral_description = custom_description
+    else:
+        try:
+            neutral_title, neutral_description = await asyncio.wait_for(
+                generate_neutral_description_and_title(ctx, clean_user_prompt),
+                timeout=8.0
+            )
+        except Exception as e:
+            logging.warning(f"[Krea2] generate_neutral_description_and_title timed out or failed: {e}")
 
     if not neutral_description:
         sentences = [s.strip() for s in clean_user_prompt.split(".") if s.strip()]
@@ -4087,7 +4125,8 @@ async def generate_krea2_image(
     target_img_path = None
     if save_local:
         try:
-            target_dir = resolve_local_target_dir(ctx, "generated")
+            rel_gen = f"generated/{safe_subfolder}" if safe_subfolder else "generated"
+            target_dir = resolve_local_target_dir(ctx, rel_gen)
             os.makedirs(target_dir, exist_ok=True)
             target_img_path = os.path.join(target_dir, filename)
             with open(target_img_path, "wb") as f:
@@ -4099,7 +4138,7 @@ async def generate_krea2_image(
             logging.info(f"[Krea2] Saved generated image locally on AI node: {target_img_path}")
 
             home_dir = os.path.expanduser("~")
-            omc_dir = os.path.join(home_dir, "OnMyChat", "generated")
+            omc_dir = os.path.join(home_dir, "OnMyChat", *rel_gen.split("/"))
             if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
                 os.makedirs(omc_dir, exist_ok=True)
                 with open(os.path.join(omc_dir, filename), "wb") as f:
@@ -6209,6 +6248,542 @@ async def generate_random_creative_prompt(
         "skating fluidly down an oceanfront boulevard between swaying palm trees in warm afternoon light"
     ]
     return f"{char_lead}{random.choice(dynamic_actions)}, {random.choice(lighting_list)}, {random.choice(camera_list)}{extra_style}{extra_keywords}."
+
+
+_CYR_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "zh",
+    "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def sanitize_story_slug(raw_slug: str) -> str:
+    """Converts a Russian or English story title/slug into a clean filesystem-safe folder name."""
+    if not raw_slug:
+        return ""
+    s = str(raw_slug).strip().lower()
+    out = []
+    for ch in s:
+        if ch in _CYR_TRANSLIT:
+            out.append(_CYR_TRANSLIT[ch])
+        elif ch.isascii() and (ch.isalnum() or ch in ("_", "-")):
+            out.append(ch)
+        elif ch in (" ", ".", "/", "\\", ":", ";", ","):
+            out.append("_")
+    slug = re.sub(r"_+", "_", "".join(out)).strip("_-")
+    return slug[:48] or f"story_{datetime.now().strftime('%Y%m%d_%H%M')}"
+
+
+def _extract_json_object(raw_text: str) -> dict | None:
+    """Extracts a JSON object robustly from LLM output (handles <think>, code fences, trailing commas)."""
+    if not raw_text:
+        return None
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw_text).strip()
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, flags=re.IGNORECASE)
+    candidate = fence_match.group(1).strip() if fence_match else cleaned
+    for text_try in (candidate, cleaned):
+        start = text_try.find("{")
+        end = text_try.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = text_try[start:end + 1]
+            try:
+                return json.loads(snippet)
+            except Exception:
+                # Remove trailing commas before } or ]
+                fixed = re.sub(r",\s*([}\]])", r"\1", snippet)
+                try:
+                    return json.loads(fixed)
+                except Exception:
+                    pass
+    return None
+
+
+def _get_director_model() -> str:
+    """Uses the uncensored creative FUN_MODEL when configured, falling back to DEFAULT_MODEL."""
+    return (FUN_MODEL or DEFAULT_MODEL or "gemma4:latest").strip()
+
+
+def _detect_is_russian(text: str, ctx: UserContext | None = None) -> bool:
+    if text and re.search(r"[А-Яа-яЁё]", text):
+        return True
+    if ctx and getattr(ctx, "settings", None):
+        lang = str(ctx.settings.get("language") or ctx.settings.get("locale") or "").lower()
+        if lang.startswith("ru"):
+            return True
+    return False
+
+
+async def krea_director_rewrite_prompt(
+    ctx: UserContext,
+    instruction: str,
+    current_prompt: str = "",
+    base_model: str = "realism",
+    persona_name: str = "",
+    persona_prompt: str = "",
+    styles: str = "",
+    archetypes: str = "",
+    history: list[dict] | None = None,
+) -> dict:
+    """
+    AI Director's Chair — Prompt Co-Pilot.
+    Creates or surgically edits complex Krea 2 / Muse / Anima diffusion prompts from plain natural language
+    using local uncensored FUN_MODEL without touching cloud GPU.
+    """
+    instruction = (instruction or "").strip()
+    current_prompt = (current_prompt or "").strip()
+    if not instruction and not current_prompt:
+        raise ValueError("Введите пожелание для Режиссёра или вставьте промпт в композер.")
+
+    is_ru = _detect_is_russian(instruction or current_prompt, ctx)
+    reply_lang = "Russian" if is_ru else "English"
+    model = _get_director_model()
+
+    # Preserve explicit <lora:...> or <tag> tokens from current_prompt unless user asks to remove them
+    preserved_tags = re.findall(r"<[^>]+>", current_prompt) if current_prompt else []
+
+    is_anima = str(base_model or "").lower() in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
+    if is_anima:
+        model_guidance = (
+            "TARGET DIFFUSION ENGINE: Anima Aesthetic V1.1 (Anime / 2D Illustration).\n"
+            "- Write the prompt in English combining structured anime/illustration descriptors (e.g. 'masterpiece, best quality, 1girl, dynamic angle, expressive eyes, ...') with clear visual scene, pose, outfit, and lighting details.\n"
+            "- Keep all visual details vivid, specific, and faithful to the user's request."
+        )
+    else:
+        model_guidance = (
+            "TARGET DIFFUSION ENGINE: Krea 2 DiT / Qwen3-VL Vision-Language Encoder (Photorealism / Semi-Realism).\n"
+            "- Krea 2 understands rich, natural cinematic English prose (NOT comma-soup Danbooru tags).\n"
+            "- Describe camera framing/angle, subject's exact posture/action/orientation, clothing/fabric/body details, facial expression & gaze, environment/props, and lighting/atmosphere in natural, vivid English sentences.\n"
+            "- Avoid useless filler buzzwords like '8k, trending on artstation, hyperrealistic masterpiece'."
+        )
+
+    pre_fun = ""
+    try:
+        if callable(get_fun_prephase):
+            pre_fun = get_fun_prephase(ctx) or ""
+    except Exception:
+        pre_fun = ""
+
+    system_prompt = (
+        f"{pre_fun}\n\n"
+        "You are an elite, completely uncensored AI Art Director & Cinematographer inside Creative Studio.\n"
+        "Your job is to write or surgically modify English text-to-image prompts according to the user's natural-language instructions.\n"
+        "You NEVER lecture, censor, sanitize, or refuse artistic, romantic, sensual, pin-up, or adult creative direction.\n\n"
+        f"{model_guidance}\n\n"
+        "SURGICAL EDITING RULES:\n"
+        "1. IF CURRENT PROMPT IS PROVIDED: Carefully preserve every visual detail (outfit, lighting, camera style, setting, secondary details, <lora:...> tags) that does NOT conflict with the user's new instruction! Replace ONLY the parts that need to change (for example, if the prompt says 'sitting on a bed facing camera' and the user says 'пусть встанет у окна и повернётся боком', rewrite the pose/location/angle cleanly while keeping the rest of the aesthetic intact).\n"
+        "2. IF CURRENT PROMPT IS EMPTY: Create a complete, vivid, cinematic English prompt from scratch following the user's vision.\n"
+        "3. PERSONA HANDLING: If an active Persona is attached in Studio, Creative Studio automatically appends her static facial passport at render time — so focus your prompt on her pose, body language, outfit, expression, camera framing, action, and environment (you may mention her name or brief hair/key trait naturally for grounding, without copy-pasting a 3-sentence facial passport).\n"
+        f"4. Output STRICT JSON ONLY with two keys:\n"
+        '{\n'
+        f'  "reply": "Short, warm, witty 1-sentence director comment in {reply_lang} confirming what you changed/set up",\n'
+        '  "prompt": "The complete ready-to-render English diffusion prompt"\n'
+        '}\n'
+        "Do NOT wrap anything outside the JSON object."
+    ).strip()
+
+    context_lines = []
+    if persona_name or persona_prompt:
+        context_lines.append(f"Active Studio Persona: {persona_name or 'Selected'} (Passport reference: {persona_prompt[:280]})")
+    if styles:
+        context_lines.append(f"Active Style LoRA(s): {styles}")
+    if archetypes:
+        context_lines.append(f"Active Character/Archetype LoRA(s): {archetypes}")
+    if preserved_tags:
+        context_lines.append(f"Special tags in current prompt (keep unless asked to remove): {' '.join(preserved_tags)}")
+
+    messages = [{"role": "system", "content": system_prompt}]
+    if history and isinstance(history, list):
+        for h in history[-6:]:
+            role = h.get("role")
+            content = (h.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content[:1200]})
+
+    user_msg_parts = []
+    if context_lines:
+        user_msg_parts.append("STUDIO CONTEXT:\n" + "\n".join(context_lines))
+    if current_prompt:
+        user_msg_parts.append(f"CURRENT PROMPT IN COMPOSER:\n{current_prompt}")
+    else:
+        user_msg_parts.append("CURRENT PROMPT IN COMPOSER: (empty — create a new prompt)")
+    user_msg_parts.append(f"DIRECTOR INSTRUCTION FROM USER:\n{instruction}")
+
+    messages.append({"role": "user", "content": "\n\n".join(user_msg_parts)})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": False,
+        "options": {
+            "temperature": 0.75,
+            "top_p": 0.92,
+            "num_predict": 900,
+        },
+    }
+
+    data = await llm_request(payload)
+    raw = ""
+    if data and isinstance(data, dict):
+        raw = (data.get("message", {}) or {}).get("content", "") or data.get("content", "")
+    raw = (raw or "").strip()
+
+    parsed = _extract_json_object(raw)
+    if parsed and isinstance(parsed.get("prompt"), str) and parsed["prompt"].strip():
+        new_prompt = parsed["prompt"].strip()
+        reply = str(parsed.get("reply") or "").strip()
+    else:
+        # Clean fallback if model output plain text instead of JSON
+        cleaned_raw = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+        cleaned_raw = re.sub(r"^```(?:json|text)?\s*|\s*```$", "", cleaned_raw).strip()
+        new_prompt = cleaned_raw or current_prompt
+        reply = "Промпт обновлён и готов к съёмке!" if is_ru else "Prompt updated and ready to shoot!"
+
+    # Re-attach preserved <lora:...> tags if model accidentally dropped them and user didn't ask to clear LoRAs
+    if preserved_tags and not any(k in instruction.lower() for k in ("убери лор", "удали лор", "без лор", "remove lora", "no lora")):
+        for tag in preserved_tags:
+            if tag.lower().startswith("<lora:") and tag not in new_prompt:
+                new_prompt = f"{new_prompt} {tag}".strip()
+
+    if not reply:
+        reply = "Готово — обновил сцену в композере." if is_ru else "Done — updated the scene in the composer."
+
+    return {
+        "prompt": new_prompt,
+        "reply": reply,
+        "model": model,
+    }
+
+
+async def krea_director_storyboard(
+    ctx: UserContext,
+    action: str = "plan",
+    story_title: str = "",
+    setting: str = "",
+    idea: str = "",
+    scene_count: int = 4,
+    base_model: str = "realism",
+    personas: list[dict] | None = None,
+    styles: str = "",
+    archetypes: str = "",
+    existing_scenes: list[dict] | None = None,
+    target_scene_index: int | None = None,
+) -> dict:
+    """
+    AI Director's Chair — Multi-Scene Storyboard & Visual Novel Planner.
+    Supports:
+      - action='plan': Plans N scenes (literary prose/dialogues + continuous English visual prompts).
+      - action='continue': Appends N new scenes continuing seamlessly in the same setting.
+      - action='refine_scene': Rewrites a single scene's narrative & visual prompt per instruction.
+    """
+    scene_count = max(1, min(8, int(scene_count or 4)))
+    combined_sample = f"{story_title} {setting} {idea}"
+    if existing_scenes:
+        combined_sample += " " + " ".join(str(s.get("narrative", "")) for s in existing_scenes[:2])
+    is_ru = _detect_is_russian(combined_sample, ctx)
+    story_lang = "Russian" if is_ru else "English"
+    model = _get_director_model()
+
+    is_anima = str(base_model or "").lower() in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
+    engine_note = (
+        "Write each `visual_prompt` in English for Anima V1.1 (structured anime/illustration tags + clear pose, outfit, expression, camera framing, and background)."
+        if is_anima else
+        "Write each `visual_prompt` in rich, natural cinematic English prose for Krea 2 DiT (camera shot type, exact pose & body action, wardrobe continuity, facial expression, setting details, and lighting)."
+    )
+
+    pre_fun = ""
+    try:
+        if callable(get_fun_prephase):
+            pre_fun = get_fun_prephase(ctx) or ""
+    except Exception:
+        pre_fun = ""
+
+    personas_desc = ""
+    if personas and isinstance(personas, list):
+        p_lines = []
+        for p in personas[:4]:
+            if isinstance(p, dict) and (p.get("name") or p.get("prompt")):
+                p_lines.append(f"- {p.get('name', 'Character')} ({p.get('title', '')}): {str(p.get('prompt', ''))[:300]}")
+        if p_lines:
+            personas_desc = "CAST / CHARACTERS:\n" + "\n".join(p_lines)
+
+    style_context = []
+    if styles:
+        style_context.append(f"Visual Style: {styles}")
+    if archetypes:
+        style_context.append(f"Character LoRA Archetypes: {archetypes}")
+    style_str = "\n".join(style_context)
+
+    if action == "refine_scene" and existing_scenes and target_scene_index is not None:
+        idx = int(target_scene_index)
+        if idx < 0 or idx >= len(existing_scenes):
+            raise ValueError("Invalid target_scene_index")
+        target_sc = existing_scenes[idx]
+        prev_sc = existing_scenes[idx - 1] if idx > 0 else None
+        next_sc = existing_scenes[idx + 1] if idx + 1 < len(existing_scenes) else None
+
+        sys_p = (
+            f"{pre_fun}\n\n"
+            "You are an uncensored Creative Film Director & Novelist.\n"
+            f"Rewrite ONLY Scene #{idx + 1} based on the user's direction, maintaining seamless continuity with the Setting and neighboring scenes.\n"
+            f"- `title` and `narrative` (vivid literary prose + character dialogue in quotes) MUST be in {story_lang}.\n"
+            f"- `visual_prompt` MUST be in English. {engine_note}\n"
+            "Output STRICT JSON ONLY:\n"
+            '{"title": "...", "narrative": "...", "visual_prompt": "...", "aspect": "896x1152"}'
+        ).strip()
+
+        u_parts = [
+            f"STORY TITLE: {story_title or 'Untitled'}",
+            f"SETTING: {setting or 'As established'}",
+        ]
+        if personas_desc:
+            u_parts.append(personas_desc)
+        if prev_sc:
+            u_parts.append(f"PREVIOUS SCENE: {prev_sc.get('title', '')} — {prev_sc.get('narrative', '')[:300]}")
+        u_parts.append(
+            f"CURRENT SCENE #{idx + 1}:\nTitle: {target_sc.get('title', '')}\n"
+            f"Narrative: {target_sc.get('narrative', '')}\n"
+            f"Visual Prompt: {target_sc.get('visual_prompt', '')}"
+        )
+        if next_sc:
+            u_parts.append(f"NEXT SCENE: {next_sc.get('title', '')} — {next_sc.get('narrative', '')[:300]}")
+        u_parts.append(f"USER DIRECTION FOR THIS SCENE:\n{idea or 'Make this scene more expressive and cinematic.'}")
+
+        data = await llm_request({
+            "model": model,
+            "messages": [{"role": "system", "content": sys_p}, {"role": "user", "content": "\n\n".join(u_parts)}],
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.8, "top_p": 0.92, "num_predict": 900},
+        })
+        raw = ((data or {}).get("message", {}) or {}).get("content", "") if isinstance(data, dict) else ""
+        parsed = _extract_json_object(raw) or {}
+        updated_scene = {
+            "scene_number": idx + 1,
+            "title": str(parsed.get("title") or target_sc.get("title") or f"Сцена {idx + 1}").strip(),
+            "narrative": str(parsed.get("narrative") or target_sc.get("narrative") or "").strip(),
+            "visual_prompt": str(parsed.get("visual_prompt") or target_sc.get("visual_prompt") or "").strip(),
+            "aspect": str(parsed.get("aspect") or target_sc.get("aspect") or "896x1152").strip(),
+        }
+        return {"scene": updated_scene, "index": idx, "model": model}
+
+    # Plan new storyboard or continue existing storyboard
+    start_num = (len(existing_scenes) + 1) if (action == "continue" and existing_scenes) else 1
+    sys_p = (
+        f"{pre_fun}\n\n"
+        "You are an uncensored Film Director, Visual Novel Writer, and Master Cinematographer.\n"
+        "You turn rough ideas and settings into captivating, atmospheric multi-scene illustrated stories / comics with vivid literary prose, lively character dialogue, and ready-to-shoot diffusion prompts.\n"
+        "You NEVER censor, moralize, or water down sensual, romantic, ironic, dark, or bold adult storylines.\n\n"
+        "CRITICAL STORYBOARD RULES:\n"
+        f"1. LANGUAGE: Write `story_title`, `setting_summary`, and every scene's `title` and `narrative` in **{story_lang}**. Write `story_slug` in lowercase ASCII snake_case (2-4 English words, e.g. `neon_penthouse_rain`).\n"
+        "2. LITERARY QUALITY (`narrative`): Each scene's `narrative` should be 2–4 atmospheric literary sentences INCLUDING natural character dialogue or inner monologue where fitting, reading like an engaging illustrated novella or comic panel script.\n"
+        f"3. VISUAL PROMPTS (`visual_prompt`): ALWAYS in **English**. {engine_note}\n"
+        "4. VISUAL CONTINUITY & CINEMATOGRAPHY: Keep wardrobe, hair, props, time of day, and location details strictly consistent across scenes (unless changed by story action in that scene — then explicitly describe the new state!). Vary camera shots dynamically across scenes (e.g. wide establishing shot -> medium action/dialogue shot -> intimate close-up / over-the-shoulder -> dramatic angle).\n"
+        "5. `aspect`: Choose `'896x1152'` (portrait/character), `'1152x896'` (cinematic wide scene/two characters), or `'1024x1024'` per scene.\n"
+        f"6. Generate EXACTLY {scene_count} scenes starting at `scene_number`: {start_num}.\n\n"
+        "OUTPUT STRICT JSON ONLY in this exact schema:\n"
+        "{\n"
+        '  "story_title": "...",\n'
+        '  "story_slug": "english_snake_case",\n'
+        '  "setting_summary": "...",\n'
+        '  "scenes": [\n'
+        '    {\n'
+        f'      "scene_number": {start_num},\n'
+        '      "title": "...",\n'
+        '      "narrative": "...",\n'
+        '      "visual_prompt": "...",\n'
+        '      "aspect": "896x1152"\n'
+        "    }\n"
+        "  ]\n"
+        "}"
+    ).strip()
+
+    u_parts = []
+    if story_title:
+        u_parts.append(f"STORY TITLE: {story_title}")
+    if setting:
+        u_parts.append(f"WORLD / SETTING & ATMOSPHERE:\n{setting}")
+    if personas_desc:
+        u_parts.append(personas_desc)
+    if style_str:
+        u_parts.append(style_str)
+
+    if action == "continue" and existing_scenes:
+        recap_lines = []
+        for s in existing_scenes[-5:]:
+            recap_lines.append(
+                f"Scene {s.get('scene_number', '?')} ({s.get('title', '')}): {str(s.get('narrative', ''))[:260]} "
+                f"[Visual state: {str(s.get('visual_prompt', ''))[:180]}]"
+            )
+        u_parts.append("PREVIOUS SCENES SO FAR (continue seamlessly from the last scene!):\n" + "\n".join(recap_lines))
+        u_parts.append(
+            f"WHAT HAPPENS NEXT (plan the next {scene_count} scenes starting at Scene #{start_num}):\n"
+            f"{idea or 'Continue the story naturally with escalating chemistry, plot twist, or expressive scene progression.'}"
+        )
+    else:
+        u_parts.append(
+            f"STORY IDEA / PLOT OUTLINE (plan {scene_count} scenes):\n"
+            f"{idea or 'Create an intriguing, atmospheric character story set in this world.'}"
+        )
+
+    data = await llm_request({
+        "model": model,
+        "messages": [{"role": "system", "content": sys_p}, {"role": "user", "content": "\n\n".join(u_parts)}],
+        "stream": False,
+        "think": False,
+        "options": {
+            "temperature": 0.85,
+            "top_p": 0.94,
+            "num_predict": 2400,
+        },
+    })
+    raw = ((data or {}).get("message", {}) or {}).get("content", "") if isinstance(data, dict) else ""
+    parsed = _extract_json_object(raw)
+    if not parsed or not isinstance(parsed.get("scenes"), list) or len(parsed["scenes"]) == 0:
+        logging.error(f"[Director Storyboard] Failed to parse JSON from LLM output: {raw[:400]}")
+        raise RuntimeError("Режиссёр задумался и выдал нестандартный формат — попробуйте нажать ещё раз или уточнить завязку." if is_ru else "Could not parse storyboard JSON — please try again.")
+
+    final_title = str(parsed.get("story_title") or story_title or ("Новая история" if is_ru else "New Story")).strip()
+    raw_slug = str(parsed.get("story_slug") or story_title or final_title).strip()
+    final_slug = sanitize_story_slug(raw_slug)
+    final_setting = str(setting or parsed.get("setting_summary") or "").strip()
+
+    valid_aspects = {"896x1152", "1024x1024", "1152x896"}
+    norm_scenes = []
+    for i, sc in enumerate(parsed["scenes"][:scene_count]):
+        if not isinstance(sc, dict):
+            continue
+        asp = str(sc.get("aspect") or "896x1152").strip()
+        if asp not in valid_aspects:
+            asp = "896x1152"
+        norm_scenes.append({
+            "scene_number": start_num + i,
+            "title": str(sc.get("title") or f"{'Сцена' if is_ru else 'Scene'} {start_num + i}").strip(),
+            "narrative": str(sc.get("narrative") or "").strip(),
+            "visual_prompt": str(sc.get("visual_prompt") or "").strip(),
+            "aspect": asp,
+        })
+
+    return {
+        "story_title": final_title,
+        "story_slug": final_slug,
+        "setting": final_setting,
+        "scenes": norm_scenes,
+        "model": model,
+    }
+
+
+def build_story_markdown(story_data: dict) -> str:
+    """Builds a rich illustrated Markdown file (Readme.md) for a multi-scene story folder."""
+    title = str(story_data.get("story_title") or "Story").strip()
+    setting = str(story_data.get("setting") or "").strip()
+    personas = story_data.get("personas") or []
+    scenes = story_data.get("scenes") or []
+
+    lines = [f"# {title}", ""]
+    if setting:
+        lines.append(f"> **Setting:** {setting}")
+        lines.append("")
+    if personas and isinstance(personas, list):
+        names = [str(p.get("name", "")).strip() for p in personas if isinstance(p, dict) and p.get("name")]
+        if names:
+            lines.append(f"**Cast:** {', '.join(names)}")
+            lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    for idx, sc in enumerate(scenes):
+        if not isinstance(sc, dict):
+            continue
+        num = sc.get("scene_number") or (idx + 1)
+        sc_title = str(sc.get("title") or f"Scene {num}").strip()
+        narrative = str(sc.get("narrative") or "").strip()
+        img_name = str(sc.get("image_name") or "").strip()
+        vis_prompt = str(sc.get("visual_prompt") or "").strip()
+
+        lines.append(f"## {num}. {sc_title}")
+        lines.append("")
+        if img_name:
+            lines.append(f"![{sc_title}](./{img_name})")
+            lines.append("")
+        if narrative:
+            lines.append(narrative)
+            lines.append("")
+        if vis_prompt:
+            lines.append(f"<!-- scene_{num}_prompt: {vis_prompt} -->")
+        lines.append("---")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def save_story_to_local_disk(ctx: UserContext, story_data: dict) -> dict:
+    """Saves Readme.md and story.json into generated/<story_slug>/ on the AI node (for Node Owner)."""
+    raw_slug = str(story_data.get("story_slug") or story_data.get("story_title") or "").strip()
+    slug = sanitize_story_slug(raw_slug)
+    story_data = dict(story_data)
+    story_data["story_slug"] = slug
+    story_data["updated_at"] = datetime.now().isoformat()
+
+    md_text = build_story_markdown(story_data)
+    json_text = json.dumps(story_data, ensure_ascii=False, indent=2)
+
+    rel_gen = f"generated/{slug}"
+    target_dir = resolve_local_target_dir(ctx, rel_gen)
+    os.makedirs(target_dir, exist_ok=True)
+    with open(os.path.join(target_dir, "Readme.md"), "w", encoding="utf-8") as f:
+        f.write(md_text)
+    with open(os.path.join(target_dir, "story.json"), "w", encoding="utf-8") as f:
+        f.write(json_text)
+
+    home_dir = os.path.expanduser("~")
+    omc_dir = os.path.join(home_dir, "OnMyChat", "generated", slug)
+    if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
+        os.makedirs(omc_dir, exist_ok=True)
+        with open(os.path.join(omc_dir, "Readme.md"), "w", encoding="utf-8") as f:
+            f.write(md_text)
+        with open(os.path.join(omc_dir, "story.json"), "w", encoding="utf-8") as f:
+            f.write(json_text)
+
+    return {"story_slug": slug, "readme_markdown": md_text, "story_json": story_data}
+
+
+def list_stories_on_local_disk(ctx: UserContext) -> list[dict]:
+    """Lists saved story projects in generated/<slug>/story.json on the AI node."""
+    gen_dir = resolve_local_target_dir(ctx, "generated")
+    results = []
+    seen = set()
+    cand_dirs = [gen_dir]
+    home_omc = os.path.join(os.path.expanduser("~"), "OnMyChat", "generated")
+    if os.path.isdir(home_omc) and os.path.abspath(home_omc) != os.path.abspath(gen_dir):
+        cand_dirs.append(home_omc)
+
+    for base in cand_dirs:
+        if not os.path.isdir(base):
+            continue
+        for entry in sorted(os.listdir(base)):
+            if entry.startswith(".") or entry in seen:
+                continue
+            sub = os.path.join(base, entry)
+            sjson = os.path.join(sub, "story.json")
+            if os.path.isdir(sub) and os.path.isfile(sjson):
+                try:
+                    with open(sjson, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    seen.add(entry)
+                    results.append({
+                        "story_slug": entry,
+                        "story_title": data.get("story_title") or entry,
+                        "setting": data.get("setting") or "",
+                        "scene_count": len(data.get("scenes") or []),
+                        "updated_at": data.get("updated_at") or "",
+                        "story": data,
+                    })
+                except Exception as e:
+                    logging.warning(f"[Director] Could not read {sjson}: {e}")
+    results.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return results
 
 
 
