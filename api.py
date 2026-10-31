@@ -5156,9 +5156,17 @@ async def krea_warmup_endpoint(request: Request, data: Optional[KreaStatusInput]
     return {"status": "warming", "gpu_warm": status.get("gpu_warm", False)}
 
 
-@app.post("/krea/director/prompt")
-async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptInput):
-    """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima prompts in natural language)."""
+class CivitaiExtractInput(BaseModel):
+    omd_key: Optional[str] = ""
+    url: str
+    warmup_gpu: Optional[bool] = False
+    settings: Optional[dict] = None
+    mcp_keys: Optional[dict] = None
+
+
+@app.post("/krea/civitai/extract")
+async def krea_civitai_extract_endpoint(request: Request, data: CivitaiExtractInput):
+    """Extracts prompt, base model, LoRA styles/archetypes & weights, steps, CFG, and aspect ratio from a CivitAI image/post URL."""
     ctx = _build_krea_ctx(request, data)
     status = await core_service.check_krea_status(ctx)
     if not status.get("allowed"):
@@ -5166,7 +5174,32 @@ async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptIn
     if data.warmup_gpu:
         try:
             from extensions.hooks import maybe_start_gpu_warmup_for_generation
-            await maybe_start_gpu_warmup_for_generation(ctx)
+            asyncio.create_task(maybe_start_gpu_warmup_for_generation(ctx))
+        except Exception:
+            pass
+    try:
+        imported, remaining = await core_service.extract_civitai_image_preset(ctx, data.url)
+        if not imported:
+            raise ValueError("Не найдена ссылка на CivitAI (ожидается https://civitai.com/images/... или https://civitai.red/images/...).")
+        return {**imported, "remaining_instruction": remaining}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.error(f"Error in /krea/civitai/extract: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/krea/director/prompt")
+async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptInput):
+    """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima prompts in natural language, with CivitAI URL auto-import)."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed"):
+        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    if data.warmup_gpu:
+        try:
+            from extensions.hooks import maybe_start_gpu_warmup_for_generation
+            asyncio.create_task(maybe_start_gpu_warmup_for_generation(ctx))
         except Exception:
             pass
     try:
@@ -5181,6 +5214,8 @@ async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptIn
             archetypes=data.archetypes or "",
             history=data.history,
         )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logging.error(f"Error in /krea/director/prompt: {e}")
         raise HTTPException(status_code=500, detail=str(e))

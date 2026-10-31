@@ -3826,6 +3826,8 @@ async def generate_krea2_image(
         available_loras = _krea_model_cache.get("loras", [])
 
     requested_base = (sliders.get("base_model") or sliders.get("model_mode") or "realism").lower() if sliders else "realism"
+    explicit_cfg = sliders.get("cfg") if isinstance(sliders, dict) and sliders.get("cfg") is not None else (cfg if cfg is not None and float(cfg) != 1.0 else None)
+    explicit_steps = sliders.get("steps") if isinstance(sliders, dict) and sliders.get("steps") is not None else (steps if steps is not None and int(steps) != 6 else None)
     clip_type = "krea2"
     sampler_name = "euler"
     scheduler = "simple"
@@ -3838,30 +3840,24 @@ async def generate_krea2_image(
         clip_type = "qwen_image"
         sampler_name = "er_sde"
         scheduler = "simple"
-        if not (sliders and sliders.get("cfg")) or cfg <= 1.5:
-            cfg = 3.0
-        if not (sliders and sliders.get("steps")) or steps <= 8:
-            steps = 25
+        cfg = float(explicit_cfg) if explicit_cfg is not None and float(explicit_cfg) >= 1.0 else 3.0
+        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 8 else 25
         logging.info(f"[Krea2] Base model: Official Anima Aesthetic (Model: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
     elif requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
         matched_unet = next((u for u in available_unets if "muse" in str(u).lower() or "yogi" in str(u).lower()), "museByStableYogi_v35Int8Extended.safetensors")
         unet_model = matched_unet
         sampler_name = "euler"
         scheduler = "simple"
-        if not (sliders and sliders.get("cfg")):
-            cfg = 2.0
-        if not (sliders and sliders.get("steps")) or steps <= 8:
-            steps = 16
+        cfg = float(explicit_cfg) if explicit_cfg is not None and float(explicit_cfg) >= 1.0 else 2.0
+        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 16
         logging.info(f"[Krea2] Base model: Semi-Realism (Muse by Stable Yogi: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
     else:
         matched_unet = next((u for u in available_unets if "cyber" in str(u).lower() or "realistic" in str(u).lower()), "CyberRealistic_Krea2_V4.0_BF16.safetensors")
         unet_model = matched_unet
         sampler_name = "euler"
         scheduler = "simple"
-        if not (sliders and sliders.get("cfg")):
-            cfg = 1.5
-        if not (sliders and sliders.get("steps")) or steps <= 8:
-            steps = 14
+        cfg = float(explicit_cfg) if explicit_cfg is not None and float(explicit_cfg) >= 1.0 else 1.5
+        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 14
         logging.info(f"[Krea2] Base model: Realism (CyberRealistic: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
 
     # Match target_loras against available_loras
@@ -6314,6 +6310,601 @@ def _detect_is_russian(text: str, ctx: UserContext | None = None) -> bool:
     return False
 
 
+_CIVITAI_URL_RE = re.compile(
+    r"https?://(?:www\.)?civitai\.(?:com|red)/(images|posts)/(\d+)(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
+_cached_server_civitai_token: str | None = None
+
+
+def _norm_lora_key(val: str) -> str:
+    if not val:
+        return ""
+    base = os.path.basename(str(val).strip().replace("\\", "/"))
+    if base.lower().endswith((".safetensors", ".ckpt", ".pt", ".bin")):
+        base = os.path.splitext(base)[0]
+    return re.sub(r"[^a-z0-9]", "", base.lower())
+
+
+def _resolve_civitai_token(ctx: UserContext | None = None) -> str:
+    """Resolves CivitAI API token from user's MCP keys, environment/config, or local server API_KEYS.env."""
+    if ctx:
+        for src in (getattr(ctx, "mcp_keys", None), (ctx.settings.get("mcp_keys") if isinstance(getattr(ctx, "settings", None), dict) else None)):
+            if isinstance(src, dict):
+                raw_civ = src.get("civitai")
+                if isinstance(raw_civ, dict) and raw_civ.get("key"):
+                    return str(raw_civ["key"]).strip()
+                if isinstance(raw_civ, str) and raw_civ.strip():
+                    return raw_civ.strip()
+
+    for env_key in ("CIVITAI_API_KEY", "CIVITAI_INFLUENCER_API_KEY"):
+        val = (SETTINGS.get(env_key) or os.environ.get(env_key) or "").strip()
+        if val:
+            return val
+
+    global _cached_server_civitai_token
+    if _cached_server_civitai_token is not None:
+        return _cached_server_civitai_token
+
+    token_val = ""
+    for cand in (
+        os.path.join(os.path.dirname(__file__), "..", "API_KEYS.env"),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ):
+        if os.path.isfile(cand):
+            try:
+                with open(cand, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k in ("CIVITAI_API_KEY", "CIVITAI_INFLUENCER_API_KEY") and v:
+                            token_val = v
+                            break
+                if token_val:
+                    break
+            except Exception:
+                pass
+    _cached_server_civitai_token = token_val
+    return token_val
+
+
+def _compact_diffusion_prompt(raw_prompt: str) -> str:
+    """Strips inline <lora:...> syntax and collapses double-spaced lines into clean readable text."""
+    if not raw_prompt:
+        return ""
+    cleaned = re.sub(r"<lora:[^>]+>", "", raw_prompt, flags=re.IGNORECASE)
+    lines = [ln.strip() for ln in cleaned.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if not lines:
+        return ""
+    out_parts = []
+    for ln in lines:
+        if not out_parts:
+            out_parts.append(ln)
+        elif out_parts[-1].endswith((",", ";", ".", ":")):
+            out_parts.append(" " + ln)
+        else:
+            out_parts.append(", " + ln)
+    joined = "".join(out_parts)
+    joined = re.sub(r"\s*,\s*,+", ", ", joined)
+    joined = re.sub(r"\s{2,}", " ", joined).strip(" ,")
+    return joined
+
+
+def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
+    """Extracts prompt, steps, cfg, width, height, model, and LoRAs from raw ComfyUI workflow/prompt JSON."""
+    res = {"prompt": "", "steps": None, "cfg": None, "width": None, "height": None, "models": [], "loras": []}
+    if not comfy_obj:
+        return res
+    if isinstance(comfy_obj, str):
+        try:
+            comfy_obj = json.loads(comfy_obj)
+        except Exception:
+            return res
+    if not isinstance(comfy_obj, dict):
+        return res
+
+    prompt_graph = comfy_obj.get("prompt") if isinstance(comfy_obj.get("prompt"), dict) else comfy_obj
+    if not isinstance(prompt_graph, dict):
+        return res
+
+    positive_node_ids = set()
+    negative_node_ids = set()
+    for nid, node in prompt_graph.items():
+        if not isinstance(node, dict):
+            continue
+        ctype = str(node.get("class_type") or "").lower()
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+
+        if "ksampler" in ctype or "samplercustom" in ctype:
+            if inputs.get("steps") is not None and res["steps"] is None:
+                try:
+                    res["steps"] = int(inputs["steps"])
+                except Exception:
+                    pass
+            if inputs.get("cfg") is not None and res["cfg"] is None:
+                try:
+                    res["cfg"] = float(inputs["cfg"])
+                except Exception:
+                    pass
+            pos_ref = inputs.get("positive")
+            if isinstance(pos_ref, list) and pos_ref:
+                positive_node_ids.add(str(pos_ref[0]))
+            neg_ref = inputs.get("negative")
+            if isinstance(neg_ref, list) and neg_ref:
+                negative_node_ids.add(str(neg_ref[0]))
+
+        if "emptylatent" in ctype or "emptysd3latent" in ctype or "latentimage" in ctype:
+            if inputs.get("width") and inputs.get("height") and not res["width"]:
+                try:
+                    res["width"] = int(inputs["width"])
+                    res["height"] = int(inputs["height"])
+                except Exception:
+                    pass
+
+        if "unetloader" in ctype or "checkpointloader" in ctype:
+            mname = inputs.get("unet_name") or inputs.get("ckpt_name")
+            if isinstance(mname, str) and mname.strip():
+                res["models"].append(mname.strip())
+
+        if "lora" in ctype:
+            lname = inputs.get("lora_name")
+            if isinstance(lname, str) and lname.strip():
+                w = inputs.get("strength_model", inputs.get("strength", 0.8))
+                try:
+                    w = float(w)
+                except Exception:
+                    w = 0.8
+                res["loras"].append({"name": lname.strip(), "weight": w})
+            for k, v in inputs.items():
+                if k.startswith("lora_") and isinstance(v, dict) and v.get("on") and v.get("lora"):
+                    try:
+                        w = float(v.get("strength", 0.8))
+                    except Exception:
+                        w = 0.8
+                    res["loras"].append({"name": str(v["lora"]).strip(), "weight": w})
+
+    # Extract positive text
+    pos_texts = []
+    fallback_texts = []
+    for nid, node in prompt_graph.items():
+        if not isinstance(node, dict) or str(nid) in negative_node_ids:
+            continue
+        ctype = str(node.get("class_type") or "").lower()
+        inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+        if "textencode" in ctype or "prompt" in ctype:
+            txt = inputs.get("text") or inputs.get("prompt") or inputs.get("positive")
+            if isinstance(txt, str) and len(txt.strip()) > 10:
+                low = txt.lower()
+                if "worst quality" in low and "low quality" in low and "watermark" in low and len(txt) < 350:
+                    continue
+                if str(nid) in positive_node_ids:
+                    pos_texts.append(txt.strip())
+                else:
+                    fallback_texts.append(txt.strip())
+
+    chosen_texts = pos_texts or fallback_texts
+    if chosen_texts:
+        res["prompt"] = max(chosen_texts, key=len)
+    return res
+
+
+async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tuple[dict | None, str]:
+    """
+    Detects a CivitAI image/post URL (civitai.com or civitai.red) in `text`, fetches its ComfyUI/generation
+    metadata using the user's or server's CivitAI token, and maps base model, Style LoRAs, Archetype LoRAs,
+    weights, steps, CFG, and aspect ratio onto Creative Studio presets.
+    Returns `(imported_dict, remaining_text)` or `(None, text)` when no URL is present.
+    """
+    if not text:
+        return None, ""
+    m = _CIVITAI_URL_RE.search(text)
+    if not m:
+        return None, text
+
+    kind = m.group(1).lower()
+    raw_id = m.group(2)
+    source_url = m.group(0)
+
+    remaining = (text[:m.start()] + " " + text[m.end():]).strip()
+    remaining = re.sub(r"^[\s,;:—–\-]+", "", remaining).strip()
+
+    token = _resolve_civitai_token(ctx)
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) CreativeStudio/2.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    import urllib.parse
+    timeout = aiohttp.ClientTimeout(total=12.0)
+
+    async def _fetch_json(session: aiohttp.ClientSession, urls: list[str]) -> dict | None:
+        for u in urls:
+            try:
+                async with session.get(u, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        if isinstance(data, dict):
+                            return data
+            except Exception as e:
+                logging.debug(f"[CivitAI Import] Fetch note for {u}: {e}")
+        return None
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        image_id = raw_id
+        v1_item = None
+        if kind == "posts":
+            post_data = await _fetch_json(session, [
+                f"https://civitai.com/api/v1/images?postId={raw_id}&nsfw=true&limit=1",
+                f"https://civitai.red/api/v1/images?postId={raw_id}&nsfw=true&limit=1",
+            ])
+            items = (post_data or {}).get("items") or []
+            if not items:
+                raise ValueError(f"Не удалось найти изображения в посте CivitAI #{raw_id} (проверьте ссылку или токен CivitAI).")
+            v1_item = items[0]
+            image_id = str(v1_item.get("id") or raw_id)
+
+        trpc_input = urllib.parse.quote(json.dumps({"json": {"id": int(image_id), "authed": True}}))
+        trpc_urls = [
+            f"https://civitai.com/api/trpc/image.getGenerationData?input={trpc_input}",
+            f"https://civitai.red/api/trpc/image.getGenerationData?input={trpc_input}",
+        ]
+        v1_urls = [
+            f"https://civitai.com/api/v1/images?imageId={image_id}&nsfw=true",
+            f"https://civitai.red/api/v1/images?imageId={image_id}&nsfw=true",
+        ]
+
+        if v1_item is not None:
+            trpc_resp = await _fetch_json(session, trpc_urls)
+            v1_resp = None
+        else:
+            trpc_resp, v1_resp = await asyncio.gather(
+                _fetch_json(session, trpc_urls),
+                _fetch_json(session, v1_urls),
+            )
+            items = (v1_resp or {}).get("items") or []
+            if items:
+                v1_item = items[0]
+
+    gen_json = (((trpc_resp or {}).get("result") or {}).get("data") or {}).get("json") or {}
+    gen_meta = gen_json.get("meta") if isinstance(gen_json.get("meta"), dict) else {}
+    v1_meta = (v1_item or {}).get("meta") if isinstance((v1_item or {}).get("meta"), dict) else {}
+    comfy_parsed = _extract_comfy_graph_data(gen_meta.get("comfy") or v1_meta.get("comfy"))
+
+    raw_prompt = (
+        str(gen_meta.get("prompt") or "").strip()
+        or str(v1_meta.get("prompt") or "").strip()
+        or str(comfy_parsed.get("prompt") or "").strip()
+    )
+    if not raw_prompt and not v1_item and not gen_json:
+        raise ValueError(
+            f"Не удалось получить данные кадра CivitAI #{image_id}. Проверьте ссылку или добавьте токен CivitAI в настройках ключей."
+        )
+    if not raw_prompt:
+        raise ValueError(
+            f"У кадра CivitAI #{image_id} автор скрыл промпт и метаданные генерации (Generation Data отсутствует)."
+        )
+
+    inline_loras = re.findall(r"<lora:([^:>]+)(?::([\-0-9.]+))?>", raw_prompt, flags=re.IGNORECASE)
+    clean_prompt = _compact_diffusion_prompt(raw_prompt)
+
+    # Collect LoRA weights & identifiers across all CivitAI / ComfyUI metadata sources
+    weight_by_vid: dict[str, float] = {}
+    weight_by_norm: dict[str, float] = {}
+    discovered_loras: list[dict] = []
+
+    def _record_lora(name: str = "", vid: str = "", weight=None, base_hint: str = ""):
+        w_val = None
+        if weight is not None:
+            try:
+                w_val = round(float(weight), 2)
+            except Exception:
+                w_val = None
+        vid_s = str(vid).strip() if vid else ""
+        n_key = _norm_lora_key(name)
+        if vid_s and w_val is not None:
+            weight_by_vid[vid_s] = w_val
+        if n_key and w_val is not None:
+            weight_by_norm[n_key] = w_val
+        discovered_loras.append({
+            "name": str(name or "").strip(),
+            "norm": n_key,
+            "vid": vid_s,
+            "weight": w_val,
+            "base": str(base_hint or "").strip(),
+        })
+
+    for ar in (gen_meta.get("additionalResources") or v1_meta.get("additionalResources") or []):
+        if isinstance(ar, dict) and str(ar.get("type") or "lora").lower() in ("lora", "locon", "dora"):
+            _record_lora(name=ar.get("name") or "", vid=ar.get("modelVersionId") or "", weight=ar.get("strength", ar.get("weight")))
+
+    for cr in (gen_meta.get("civitaiResources") or v1_meta.get("civitaiResources") or []):
+        if isinstance(cr, dict) and str(cr.get("type") or "").lower() in ("lora", "locon", "dora"):
+            _record_lora(name=cr.get("modelVersionName") or cr.get("modelName") or "", vid=cr.get("modelVersionId") or "", weight=cr.get("weight", cr.get("strength")))
+
+    for mr in (gen_meta.get("resources") or v1_meta.get("resources") or []):
+        if isinstance(mr, dict) and str(mr.get("type") or "").lower() in ("lora", "locon", "dora"):
+            _record_lora(name=mr.get("name") or "", vid=mr.get("modelVersionId") or "", weight=mr.get("weight", mr.get("strength")))
+
+    for cl in (comfy_parsed.get("loras") or []):
+        _record_lora(name=cl.get("name") or "", weight=cl.get("weight"))
+
+    for il_name, il_w in inline_loras:
+        _record_lora(name=il_name, weight=il_w or 0.8)
+
+    checkpoint_hints: list[str] = []
+    checkpoint_vids: set[str] = set()
+    for tr_res in (gen_json.get("resources") or []):
+        if not isinstance(tr_res, dict):
+            continue
+        mtype = str(tr_res.get("modelType") or "").upper()
+        vid = str(tr_res.get("modelVersionId") or tr_res.get("versionId") or "").strip()
+        mname = str(tr_res.get("modelName") or "").strip()
+        vname = str(tr_res.get("versionName") or "").strip()
+        bmodel = str(tr_res.get("baseModel") or "").strip()
+        if mtype == "CHECKPOINT":
+            if vid:
+                checkpoint_vids.add(vid)
+            checkpoint_hints.extend([mname, vname, bmodel])
+        elif mtype in ("LORA", "LOCON", "DORA"):
+            _record_lora(name=mname, vid=vid, weight=tr_res.get("strength"), base_hint=bmodel)
+
+    if v1_item and v1_item.get("baseModel"):
+        checkpoint_hints.append(str(v1_item["baseModel"]))
+    for mk in ("Model", "model"):
+        if gen_meta.get(mk):
+            checkpoint_hints.append(str(gen_meta[mk]))
+        if v1_meta.get(mk):
+            checkpoint_hints.append(str(v1_meta[mk]))
+    for m_entry in (gen_meta.get("models") or []) + (comfy_parsed.get("models") or []):
+        if m_entry:
+            checkpoint_hints.append(str(m_entry))
+
+    # Index Creative Studio presets from krea_presets.json
+    presets = get_krea_presets()
+    def _build_preset_index(items: list[dict]) -> list[dict]:
+        indexed = []
+        for it in (items or []):
+            pid = str(it.get("id") or "").strip()
+            if not pid or pid == "none":
+                continue
+            url = str(it.get("url") or "")
+            vid_m = re.search(r"/models/(\d+)", url)
+            vid = vid_m.group(1) if vid_m else ""
+            fname = str(it.get("filename") or "")
+            indexed.append({
+                "id": pid,
+                "name": str(it.get("name") or pid),
+                "vid": vid,
+                "norm_file": _norm_lora_key(fname),
+                "norm_name": _norm_lora_key(it.get("name") or ""),
+                "norm_id": _norm_lora_key(pid),
+                "default_strength": float(it.get("strength", 0.8) or 0.8),
+                "models": it.get("models") or ["all"],
+                "has_lora": bool(fname),
+            })
+        return indexed
+
+    style_index = _build_preset_index(presets.get("art_styles") or [])
+    arch_index = _build_preset_index(presets.get("archetypes") or [])
+
+    # Determine base_model ("anima" | "semi_realism" | "realism")
+    joined_hints = " ".join(checkpoint_hints).lower()
+    lora_base_hints = " ".join(d["base"] for d in discovered_loras).lower()
+    detected_base = None
+    if ("3126581" in checkpoint_vids or "3287420" in checkpoint_vids
+            or any(k in joined_hints for k in ("anima", "illustrious", "pony", "noob", "niji", "wai"))
+            or "anima" in lora_base_hints):
+        detected_base = "anima"
+    elif "3258954" in checkpoint_vids or any(k in joined_hints for k in ("muse", "yogi", "semi_realism", "semireal")):
+        detected_base = "semi_realism"
+    elif "3357068" in checkpoint_vids or any(k in joined_hints for k in ("krea", "cyberrealistic", "flux", "qwen")):
+        detected_base = "realism"
+
+    # Match discovered LoRAs to Studio styles & archetypes
+    matched_styles: list[str] = []
+    style_weights: dict[str, float] = {}
+    matched_style_labels: list[str] = []
+
+    matched_archetypes: list[str] = []
+    archetype_weights: dict[str, float] = {}
+    matched_archetype_labels: list[str] = []
+
+    unmatched_lora_names: list[str] = []
+    matched_norms_or_vids: set[str] = set()
+
+    def _find_preset_match(dl: dict, index_list: list[dict]) -> dict | None:
+        for p in index_list:
+            if not p["has_lora"]:
+                continue
+            if dl["vid"] and p["vid"] and dl["vid"] == p["vid"]:
+                return p
+            if dl["norm"] and p["norm_file"] and dl["norm"] == p["norm_file"]:
+                return p
+            if dl["norm"] and len(dl["norm"]) >= 4 and (dl["norm"] == p["norm_name"] or dl["norm"] == p["norm_id"]):
+                return p
+        return None
+
+    def _resolve_preset_weight(p: dict, dl: dict) -> float:
+        if dl["weight"] is not None:
+            return dl["weight"]
+        if p["vid"] and p["vid"] in weight_by_vid:
+            return weight_by_vid[p["vid"]]
+        if p["norm_file"] and p["norm_file"] in weight_by_norm:
+            return weight_by_norm[p["norm_file"]]
+        if p["norm_name"] and p["norm_name"] in weight_by_norm:
+            return weight_by_norm[p["norm_name"]]
+        return round(float(p["default_strength"]), 2)
+
+    for dl in discovered_loras:
+        st_match = _find_preset_match(dl, style_index)
+        if st_match:
+            pid = st_match["id"]
+            w = _resolve_preset_weight(st_match, dl)
+            if pid not in matched_styles:
+                matched_styles.append(pid)
+            style_weights[pid] = w
+            if dl["vid"]:
+                matched_norms_or_vids.add(f"v:{dl['vid']}")
+            if dl["norm"]:
+                matched_norms_or_vids.add(f"n:{dl['norm']}")
+            if st_match["norm_file"]:
+                matched_norms_or_vids.add(f"n:{st_match['norm_file']}")
+            if detected_base is None and "anima" in st_match["models"]:
+                detected_base = "anima"
+            continue
+
+        ar_match = _find_preset_match(dl, arch_index)
+        if ar_match:
+            pid = ar_match["id"]
+            w = _resolve_preset_weight(ar_match, dl)
+            if pid not in matched_archetypes:
+                matched_archetypes.append(pid)
+            archetype_weights[pid] = w
+            if dl["vid"]:
+                matched_norms_or_vids.add(f"v:{dl['vid']}")
+            if dl["norm"]:
+                matched_norms_or_vids.add(f"n:{dl['norm']}")
+            if ar_match["norm_file"]:
+                matched_norms_or_vids.add(f"n:{ar_match['norm_file']}")
+            if detected_base is None and "anima" in ar_match["models"]:
+                detected_base = "anima"
+
+    if detected_base is None:
+        detected_base = "anima" if ("1girl" in clean_prompt.lower() or "1woman" in clean_prompt.lower() and "masterpiece" in clean_prompt.lower()) else "realism"
+
+    target_cat = "anima" if detected_base == "anima" else "krea2"
+    style_by_id = {p["id"]: p for p in style_index}
+    arch_by_id = {p["id"]: p for p in arch_index}
+
+    matched_styles = [
+        sid for sid in matched_styles
+        if "all" in style_by_id[sid]["models"] or target_cat in style_by_id[sid]["models"]
+    ]
+    style_weights = {sid: style_weights[sid] for sid in matched_styles if sid in style_weights}
+    matched_style_labels = [f"{style_by_id[sid]['name']} ({style_weights.get(sid, style_by_id[sid]['default_strength'])})" for sid in matched_styles]
+
+    matched_archetypes = [
+        aid for aid in matched_archetypes
+        if "all" in arch_by_id[aid]["models"] or target_cat in arch_by_id[aid]["models"]
+    ]
+    archetype_weights = {aid: archetype_weights[aid] for aid in matched_archetypes if aid in archetype_weights}
+    matched_archetype_labels = [f"{arch_by_id[aid]['name']} ({archetype_weights.get(aid, arch_by_id[aid]['default_strength'])})" for aid in matched_archetypes]
+
+    # Collect unmatched non-utility LoRAs (for transparent reporting)
+    utility_keywords = ("highres", "hires", "upscale", "detail", "lightning", "hyper", "lcm", "turbo", "slider")
+    seen_unmatched = set()
+    for dl in discovered_loras:
+        if (dl["vid"] and f"v:{dl['vid']}" in matched_norms_or_vids) or (dl["norm"] and f"n:{dl['norm']}" in matched_norms_or_vids):
+            continue
+        disp = os.path.splitext(dl["name"])[0].strip()
+        if not disp or disp.lower() in seen_unmatched:
+            continue
+        if any(uk in disp.lower() for uk in utility_keywords):
+            continue
+        seen_unmatched.add(disp.lower())
+        unmatched_lora_names.append(disp)
+
+    # Steps, CFG, and Aspect Ratio
+    raw_steps = gen_meta.get("steps") or v1_meta.get("steps") or comfy_parsed.get("steps")
+    raw_cfg = gen_meta.get("cfgScale") or gen_meta.get("cfg") or v1_meta.get("cfgScale") or comfy_parsed.get("cfg")
+
+    default_steps = 25 if detected_base == "anima" else (16 if detected_base == "semi_realism" else 14)
+    default_cfg = 3.0 if detected_base == "anima" else (2.0 if detected_base == "semi_realism" else 1.5)
+
+    try:
+        final_steps = max(4, min(40, int(raw_steps))) if raw_steps is not None else default_steps
+    except Exception:
+        final_steps = default_steps
+
+    try:
+        final_cfg = round(max(1.0, min(7.0, float(raw_cfg))), 1) if raw_cfg is not None else default_cfg
+    except Exception:
+        final_cfg = default_cfg
+
+    w = gen_meta.get("width") or (v1_item or {}).get("width") or comfy_parsed.get("width")
+    h = gen_meta.get("height") or (v1_item or {}).get("height") or comfy_parsed.get("height")
+    if not (w and h):
+        sz = str(gen_meta.get("Size") or v1_meta.get("Size") or "")
+        if "x" in sz:
+            try:
+                w, h = [int(x) for x in sz.lower().split("x", 1)]
+            except Exception:
+                pass
+    aspect = "896x1152"
+    aspect_human = "3:4"
+    try:
+        if w and h and int(h) > 0:
+            ratio = float(w) / float(h)
+            if ratio > 1.14:
+                aspect = "1152x896"
+                aspect_human = "4:3"
+            elif ratio >= 0.88:
+                aspect = "1024x1024"
+                aspect_human = "1:1"
+    except Exception:
+        pass
+
+    applied_settings = {
+        "base_model": detected_base,
+        "styles": matched_styles,
+        "style_weights": style_weights,
+        "archetypes": matched_archetypes,
+        "archetype_weights": archetype_weights,
+        "steps": final_steps,
+        "cfg": final_cfg,
+        "aspect": aspect,
+    }
+
+    meta_summary = {
+        "image_id": str(image_id),
+        "source_url": source_url,
+        "base_model": detected_base,
+        "matched_styles": matched_style_labels,
+        "matched_archetypes": matched_archetype_labels,
+        "unmatched_loras": unmatched_lora_names[:4],
+        "steps": final_steps,
+        "cfg": final_cfg,
+        "aspect": aspect,
+        "aspect_label": aspect_human,
+    }
+
+    logging.info(
+        f"[CivitAI Import] Extracted #{image_id}: model={detected_base}, "
+        f"styles={matched_style_labels}, archetypes={matched_archetype_labels}, "
+        f"steps={final_steps}, cfg={final_cfg}, aspect={aspect}"
+    )
+
+    return {
+        "prompt": clean_prompt,
+        "applied_settings": applied_settings,
+        "meta_summary": meta_summary,
+        "matched_style_labels": matched_style_labels,
+        "matched_archetype_labels": matched_archetype_labels,
+    }, remaining
+
+
+def _format_civitai_import_badge(meta_summary: dict, is_ru: bool = True) -> str:
+    model_names = {
+        "anima": "Anima V1.1",
+        "semi_realism": "Muse Semi-Real",
+        "realism": "Krea 2 Realism",
+    }
+    m_label = model_names.get(meta_summary.get("base_model") or "", "Krea 2")
+    loras = (meta_summary.get("matched_styles") or []) + (meta_summary.get("matched_archetypes") or [])
+    lora_part = f" • LoRA: {', '.join(loras)}" if loras else ""
+    step_lbl = "ш." if is_ru else "steps"
+    prefix = f"📥 CivitAI #{meta_summary.get('image_id')}:"
+    line = f"{prefix} {m_label}{lora_part} • {meta_summary.get('steps')} {step_lbl} / {meta_summary.get('cfg')} cfg • {meta_summary.get('aspect_label', '3:4')}"
+    unmatched = meta_summary.get("unmatched_loras") or []
+    if unmatched:
+        skip_note = f" (внешние LoRA пропущены: {', '.join(unmatched)})" if is_ru else f" (skipped external LoRAs: {', '.join(unmatched)})"
+        line += skip_note
+    return line
+
+
 async def krea_director_rewrite_prompt(
     ctx: UserContext,
     instruction: str,
@@ -6328,16 +6919,58 @@ async def krea_director_rewrite_prompt(
     """
     AI Director's Chair — Prompt Co-Pilot.
     Creates or surgically edits complex Krea 2 / Muse / Anima diffusion prompts from plain natural language
-    using local uncensored FUN_MODEL without touching cloud GPU.
+    using local uncensored FUN_MODEL, and auto-extracts prompt + LoRA/model settings when given a CivitAI URL.
     """
     instruction = (instruction or "").strip()
     current_prompt = (current_prompt or "").strip()
     if not instruction and not current_prompt:
-        raise ValueError("Введите пожелание для Режиссёра или вставьте промпт в композер.")
+        raise ValueError("Введите пожелание для Режиссёра, ссылку на CivitAI или вставьте промпт в композер.")
+
+    # Auto-detect CivitAI image/post URL in Director instruction (or bare URL in current_prompt)
+    civitai_imported = None
+    if _CIVITAI_URL_RE.search(instruction):
+        civitai_imported, instruction = await extract_civitai_image_preset(ctx, instruction)
+    elif _CIVITAI_URL_RE.search(current_prompt):
+        civitai_imported, leftover_cp = await extract_civitai_image_preset(ctx, current_prompt)
+        if leftover_cp and not instruction:
+            instruction = leftover_cp
 
     is_ru = _detect_is_russian(instruction or current_prompt, ctx)
     reply_lang = "Russian" if is_ru else "English"
     model = _get_director_model()
+
+    applied_settings = None
+    civitai_meta = None
+    import_badge_text = ""
+
+    if civitai_imported:
+        current_prompt = civitai_imported["prompt"]
+        applied_settings = civitai_imported["applied_settings"]
+        civitai_meta = civitai_imported["meta_summary"]
+        base_model = applied_settings["base_model"]
+        styles = ", ".join(civitai_imported["matched_style_labels"])
+        archetypes = ", ".join(civitai_imported["matched_archetype_labels"])
+        import_badge_text = _format_civitai_import_badge(civitai_meta, is_ru=is_ru)
+
+        # Fast-path: bare CivitAI URL without extra edit instructions and no active Persona override -> instant import!
+        if not instruction and not (persona_name or persona_prompt):
+            fast_reply = (
+                f"{import_badge_text}\nГотово — промпт и настройки перенесены в Студию!"
+                if is_ru
+                else f"{import_badge_text}\nDone — prompt and preset settings applied to Studio!"
+            )
+            return {
+                "prompt": current_prompt,
+                "reply": fast_reply,
+                "model": "civitai-direct",
+                "applied_settings": applied_settings,
+                "civitai_import": civitai_meta,
+            }
+
+        if not instruction and (persona_name or persona_prompt):
+            instruction = (
+                "Adapt this imported scene naturally for the active Studio Persona while preserving the exact pose, outfit, camera framing, lighting, and environment."
+            )
 
     # Preserve explicit <lora:...> or <tag> tokens from current_prompt unless user asks to remove them
     preserved_tags = re.findall(r"<[^>]+>", current_prompt) if current_prompt else []
@@ -6371,7 +7004,7 @@ async def krea_director_rewrite_prompt(
         "You NEVER lecture, censor, sanitize, or refuse artistic, romantic, sensual, pin-up, or adult creative direction.\n\n"
         f"{model_guidance}\n\n"
         "SURGICAL EDITING RULES:\n"
-        "1. IF CURRENT PROMPT IS PROVIDED: Carefully preserve every visual detail (outfit, lighting, camera style, setting, secondary details, <lora:...> tags) that does NOT conflict with the user's new instruction! Replace ONLY the parts that need to change (for example, if the prompt says 'sitting on a bed facing camera' and the user says 'пусть встанет у окна и повернётся боком', rewrite the pose/location/angle cleanly while keeping the rest of the aesthetic intact).\n"
+        "1. IF CURRENT PROMPT IS PROVIDED: Carefully preserve every visual detail (outfit, body proportions, hair/eyes, lighting, camera style, setting, secondary details) that does NOT conflict with the user's new instruction! Replace ONLY the parts that need to change — and make sure to remove or update ALL secondary mentions of any replaced object/action (for example, if replacing a magical staff with a sword, also replace 'crystal inside gold staff head' and 'staff casting light' with matching sword details so zero traces of the old prop remain).\n"
         "2. IF CURRENT PROMPT IS EMPTY: Create a complete, vivid, cinematic English prompt from scratch following the user's vision.\n"
         "3. PERSONA HANDLING: If an active Persona is attached in Studio, Creative Studio automatically appends her static facial passport at render time — so focus your prompt on her pose, body language, outfit, expression, camera framing, action, and environment (you may mention her name or brief hair/key trait naturally for grounding, without copy-pasting a 3-sentence facial passport).\n"
         f"4. Output STRICT JSON ONLY with two keys:\n"
@@ -6419,7 +7052,7 @@ async def krea_director_rewrite_prompt(
         "options": {
             "temperature": 0.75,
             "top_p": 0.92,
-            "num_predict": 900,
+            "num_predict": 1100,
         },
     }
 
@@ -6449,11 +7082,19 @@ async def krea_director_rewrite_prompt(
     if not reply:
         reply = "Готово — обновил сцену в композере." if is_ru else "Done — updated the scene in the composer."
 
-    return {
+    if import_badge_text:
+        reply = f"{import_badge_text}\n\n{reply}"
+
+    result = {
         "prompt": new_prompt,
         "reply": reply,
         "model": model,
     }
+    if applied_settings:
+        result["applied_settings"] = applied_settings
+    if civitai_meta:
+        result["civitai_import"] = civitai_meta
+    return result
 
 
 async def krea_director_storyboard(
