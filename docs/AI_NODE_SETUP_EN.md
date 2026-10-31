@@ -1,6 +1,6 @@
 # Personal AI Node Setup Guide
 
-> Run your own AI infrastructure: private, uncensored, unlimited.
+> Run your own AI infrastructure: private, self-hosted, unlimited.
 
 This guide walks you through deploying a personal **OnMyChat** AI node on your own hardware and connecting it to your **OnMyDisk** account via the **OnMyDisk Connector**. Once set up, you get:
 
@@ -190,7 +190,7 @@ ollama pull gemma4:12b
 # Lightweight model for utility tasks
 ollama pull gemma4:4b
 
-# (Optional) uncensored model
+# (Optional) creative roleplay model
 ollama pull igorls/gemma-4-E4B-it-heretic-GGUF:latest
 ```
 

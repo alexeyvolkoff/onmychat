@@ -1,6 +1,6 @@
 # Nastavitev osebnega AI vozlišča
 
-> Zaženi svojo lastno AI infrastrukturo: zasebno, brez cenzure, brez omejitev.
+> Zaženi svojo lastno AI infrastrukturo: zasebno, lastno gostovano, brez omejitev.
 
 Ta vodnik opisuje namestitev osebnega OnMyChat AI vozlišča na vaši lastni opremi in njegovo povezavo z vašim OnMyDisk računom prek **OnMyDisk Connector**. Po nastavitvi boste imeli:
 
@@ -190,7 +190,7 @@ ollama pull gemma4:12b
 # Lahek model za pomožne naloge
 ollama pull gemma4:4b
 
-# (Izbirno) model brez cenzure
+# (Izbirno) ustvarjalni model za igranje vlog
 ollama pull igorls/gemma-4-E4B-it-heretic-GGUF:latest
 ```
 
