@@ -4064,9 +4064,24 @@ async def generate_krea2_image(
     krea_workflow.update(lora_nodes)
     krea_workflow.update(face_ref_nodes)
 
+    clean_user_prompt = (prompt or persona_prompt or "").strip()
+    custom_title = str(kwargs.get("custom_title") or "").strip()
+    custom_description = str(kwargs.get("custom_description") or "").strip()
+
+    desc_task = None
+    if not (custom_title or custom_description) and clean_user_prompt:
+        desc_task = asyncio.create_task(generate_neutral_description_and_title(ctx, clean_user_prompt))
+
     logging.info(f"[Krea2] Generating with {unet_model} + {clip_model} (steps={steps}, size={width}x{height}, ref={bool(comfy_ref_name)})")
-    img_data, filename = await generate_image_workflow(krea_workflow)
+    try:
+        img_data, filename = await generate_image_workflow(krea_workflow)
+    except Exception:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
+        raise
     if not img_data:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
         raise Exception("Krea 2 image generation failed")
 
     orig_filename = filename
@@ -4086,20 +4101,13 @@ async def generate_krea2_image(
     raw_subfolder = str(kwargs.get("subfolder") or "").strip()
     safe_subfolder = sanitize_story_slug(raw_subfolder) if raw_subfolder else ""
 
-    clean_user_prompt = (prompt or persona_prompt or "").strip()
-    custom_title = str(kwargs.get("custom_title") or "").strip()
-    custom_description = str(kwargs.get("custom_description") or "").strip()
-
     neutral_title, neutral_description = "", ""
     if custom_title or custom_description:
         neutral_title = custom_title
         neutral_description = custom_description
-    else:
+    elif desc_task is not None:
         try:
-            neutral_title, neutral_description = await asyncio.wait_for(
-                generate_neutral_description_and_title(ctx, clean_user_prompt),
-                timeout=8.0
-            )
+            neutral_title, neutral_description = await asyncio.wait_for(desc_task, timeout=6.0)
         except Exception as e:
             logging.warning(f"[Krea2] generate_neutral_description_and_title timed out or failed: {e}")
 
@@ -7514,11 +7522,11 @@ async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
 
 async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) -> tuple[str, str]:
     """Generate a safe, neutral title and description for the image prompt."""
-    mode = ctx.settings.get("content_mode", "work")
-    model = get_fast_model(ctx)
-    if ctx.private_mode and mode == "fun":
-         # In fun mode, we must prime the model to accept the input prompt
-         # but still instruct it to output a neutral, safe description.
+    mode = ctx.settings.get("content_mode", "work") if ctx and getattr(ctx, "settings", None) else "work"
+    is_priv = bool(ctx and (getattr(ctx, "private_mode", False) or getattr(ctx, "trusted_owner", False)))
+    model = _get_director_model() if is_priv else get_fast_model(ctx)
+    if is_priv or mode == "fun":
+         # Prime uncensored model to accept artistic/sensual prompts while outputting a clean gallery title & summary
          pre_fun = get_fun_prephase(ctx) if callable(get_fun_prephase) else FUN_PREPHASE
          img_fun = get_image_fun(ctx) if callable(get_image_fun) else IMAGE_PROMPT_FUN
          instruction = pre_fun + "\n\n" + img_fun + "\n\n" + IMAGE_NEUTRAL_DESC_PROMPT.format(prompt=prompt)
@@ -7536,7 +7544,7 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
     }
     
     try:
-        data = await asyncio.wait_for(llm_request(payload), timeout=7.0)
+        data = await asyncio.wait_for(llm_request(payload), timeout=15.0)
         if data and "message" in data and "content" in data["message"]:
             raw_content = data["message"]["content"].strip()
             lines = [l.strip() for l in raw_content.split("\n") if l.strip()]
