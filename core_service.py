@@ -6322,9 +6322,6 @@ _CIVITAI_URL_RE = re.compile(
     r"https?://(?:www\.)?civitai\.(?:com|red)/(images|posts)/(\d+)(?:[/?#][^\s]*)?",
     re.IGNORECASE,
 )
-_cached_server_civitai_token: str | None = None
-
-
 def _norm_lora_key(val: str) -> str:
     if not val:
         return ""
@@ -6334,50 +6331,60 @@ def _norm_lora_key(val: str) -> str:
     return re.sub(r"[^a-z0-9]", "", base.lower())
 
 
+def _extract_user_mcp_civitai_entries(ctx: UserContext | None) -> list[tuple[str, str, str]]:
+    """
+    Extracts all CivitAI API key entries from the user's E2EE MCP keys payload.
+    Returns list of (app_id, display_name, token).
+    """
+    if not ctx:
+        return []
+    entries: list[tuple[str, str, str]] = []
+    seen_tokens: set[str] = set()
+    sources = (
+        getattr(ctx, "mcp_keys", None),
+        (ctx.settings.get("mcp_keys") if isinstance(getattr(ctx, "settings", None), dict) else None),
+    )
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for raw_id, raw_val in src.items():
+            app_id = str(raw_id or "").strip()
+            if not app_id or app_id.endswith(("_url", "_name")):
+                continue
+            low_id = app_id.lower()
+            token = ""
+            name_hint = ""
+            url_hint = ""
+            if isinstance(raw_val, dict):
+                token = str(raw_val.get("key") or "").strip()
+                name_hint = str(raw_val.get("name") or "").strip()
+                url_hint = str(raw_val.get("url") or "").strip()
+            elif isinstance(raw_val, str):
+                token = raw_val.strip()
+                name_hint = str(src.get(f"{app_id}_name") or "").strip()
+                url_hint = str(src.get(f"{app_id}_url") or "").strip()
+            if not token or token in seen_tokens:
+                continue
+            is_civitai = (
+                low_id == "civitai"
+                or low_id.startswith(("civitai_", "civitai-"))
+                or "civitai." in url_hint.lower()
+                or "civitai" in name_hint.lower()
+            )
+            if is_civitai:
+                seen_tokens.add(token)
+                entries.append((app_id, name_hint, token))
+    return entries
+
+
 def _resolve_civitai_token(ctx: UserContext | None = None) -> str:
-    """Resolves CivitAI API token from user's MCP keys, environment/config, or local server API_KEYS.env."""
-    if ctx:
-        for src in (getattr(ctx, "mcp_keys", None), (ctx.settings.get("mcp_keys") if isinstance(getattr(ctx, "settings", None), dict) else None)):
-            if isinstance(src, dict):
-                raw_civ = src.get("civitai")
-                if isinstance(raw_civ, dict) and raw_civ.get("key"):
-                    return str(raw_civ["key"]).strip()
-                if isinstance(raw_civ, str) and raw_civ.strip():
-                    return raw_civ.strip()
+    """Resolves CivitAI API token from user's MCP keys, or standard CIVITAI_API_KEY config if set."""
+    user_entries = _extract_user_mcp_civitai_entries(ctx)
+    if user_entries:
+        return user_entries[0][2]
 
-    for env_key in ("CIVITAI_API_KEY", "CIVITAI_INFLUENCER_API_KEY"):
-        val = (SETTINGS.get(env_key) or os.environ.get(env_key) or "").strip()
-        if val:
-            return val
-
-    global _cached_server_civitai_token
-    if _cached_server_civitai_token is not None:
-        return _cached_server_civitai_token
-
-    token_val = ""
-    for cand in (
-        os.path.join(os.path.dirname(__file__), "..", "API_KEYS.env"),
-        os.path.join(os.path.dirname(__file__), ".env"),
-    ):
-        if os.path.isfile(cand):
-            try:
-                with open(cand, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip().strip('"').strip("'")
-                        if k in ("CIVITAI_API_KEY", "CIVITAI_INFLUENCER_API_KEY") and v:
-                            token_val = v
-                            break
-                if token_val:
-                    break
-            except Exception:
-                pass
-    _cached_server_civitai_token = token_val
-    return token_val
+    val = (SETTINGS.get("CIVITAI_API_KEY") or os.environ.get("CIVITAI_API_KEY") or "").strip()
+    return val
 
 
 def _compact_diffusion_prompt(raw_prompt: str) -> str:
@@ -6945,35 +6952,6 @@ def _is_civitai_server_owner(ctx: UserContext | None) -> bool:
         return False
 
 
-def _read_server_civitai_env_map() -> dict[str, str]:
-    found: dict[str, str] = {}
-    key_names = ("CIVITAI_API_KEY", "CIVITAI_TOKEN", "CIVITAI_INFLUENCER_API_KEY", "CIVITAI_INFLUENCER_USERNAME")
-    for kn in key_names:
-        v = (SETTINGS.get(kn) or os.environ.get(kn) or "").strip()
-        if v:
-            found[kn] = v
-
-    for cand in (
-        os.path.join(os.path.dirname(__file__), "..", "API_KEYS.env"),
-        os.path.join(os.path.dirname(__file__), ".env"),
-    ):
-        if os.path.isfile(cand):
-            try:
-                with open(cand, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        k = k.strip()
-                        v = v.strip().strip('"').strip("'")
-                        if k in key_names and v and k not in found:
-                            found[k] = v
-            except Exception:
-                pass
-    return found
-
-
 async def _fetch_civitai_me(token: str) -> dict | None:
     if not token:
         return None
@@ -7008,59 +6986,33 @@ async def _fetch_civitai_me(token: str) -> dict | None:
     return None
 
 
-def _extract_user_mcp_civitai_token(ctx: UserContext | None) -> str:
-    if not ctx:
-        return ""
-    for src in (getattr(ctx, "mcp_keys", None), (ctx.settings.get("mcp_keys") if isinstance(getattr(ctx, "settings", None), dict) else None)):
-        if isinstance(src, dict):
-            raw_civ = src.get("civitai")
-            if isinstance(raw_civ, dict) and raw_civ.get("key"):
-                return str(raw_civ["key"]).strip()
-            if isinstance(raw_civ, str) and raw_civ.strip():
-                return raw_civ.strip()
-    return ""
-
-
 async def list_civitai_publish_accounts(ctx: UserContext | None) -> list[dict]:
-    """Returns available CivitAI publishing accounts (IDs + usernames, NEVER raw tokens)."""
-    candidates: list[tuple[str, str, str, bool]] = []
-    seen_tokens: set[str] = set()
-
-    if _is_civitai_server_owner(ctx):
-        env_map = _read_server_civitai_env_map()
-        inf_tok = env_map.get("CIVITAI_INFLUENCER_API_KEY", "").strip()
-        if inf_tok and inf_tok not in seen_tokens:
-            seen_tokens.add(inf_tok)
-            candidates.append(("influencer", "Инфлюенсер", inf_tok, True))
-        pers_tok = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
-        if pers_tok and pers_tok not in seen_tokens:
-            seen_tokens.add(pers_tok)
-            candidates.append(("personal", "Личный", pers_tok, False))
-
-    mcp_tok = _extract_user_mcp_civitai_token(ctx)
-    if mcp_tok and mcp_tok not in seen_tokens:
-        seen_tokens.add(mcp_tok)
-        candidates.append(("mcp", "Ключ из настроек", mcp_tok, False))
-
-    if not candidates:
+    """Returns user's CivitAI publishing accounts from E2EE MCP keys (IDs + resolved @usernames, NEVER raw tokens)."""
+    user_entries = _extract_user_mcp_civitai_entries(ctx)
+    if not user_entries:
         return []
 
-    me_results = await asyncio.gather(*[_fetch_civitai_me(c[2]) for c in candidates], return_exceptions=True)
+    me_results = await asyncio.gather(*[_fetch_civitai_me(tok) for (_aid, _nm, tok) in user_entries], return_exceptions=True)
     accounts: list[dict] = []
-    for (acc_id, role_label, _tok, is_inf), me in zip(candidates, me_results):
+    for (acc_id, display_name, _tok), me in zip(user_entries, me_results):
         uname = ""
         uid = None
         if isinstance(me, dict):
             uname = me.get("username") or ""
             uid = me.get("id")
-        label = f"@{uname} ({role_label})" if uname else role_label
+        clean_name = (display_name or "").strip()
+        if uname:
+            norm_name = clean_name.lower()
+            redundant_names = {"", "civitai", f"@{uname.lower()}", uname.lower(), f"civitai @{uname.lower()}", f"civitai ({uname.lower()})"}
+            label = f"@{uname}" if norm_name in redundant_names else f"@{uname} ({clean_name})"
+        else:
+            label = clean_name or acc_id
         accounts.append({
             "id": acc_id,
             "username": uname,
             "user_id": uid,
-            "role": role_label,
+            "role": clean_name or "MCP",
             "label": label,
-            "is_influencer": is_inf,
         })
     return accounts
 
@@ -7071,49 +7023,37 @@ def _resolve_civitai_publish_token(
     custom_token: str = "",
     persona_id: str = "",
 ) -> tuple[str, str]:
-    """Resolves (token, account_id_used) for publishing to CivitAI."""
+    """Resolves (token, account_id_used) for publishing to CivitAI from user's MCP keys or custom_token."""
     if custom_token and custom_token.strip():
         return custom_token.strip(), "custom"
 
-    acc = (account_id or "").strip().lower()
-    is_owner = _is_civitai_server_owner(ctx)
-    env_map = _read_server_civitai_env_map() if is_owner else {}
-    mcp_tok = _extract_user_mcp_civitai_token(ctx)
+    user_entries = _extract_user_mcp_civitai_entries(ctx)
+    by_id: dict[str, str] = {aid.lower(): tok for (aid, _nm, tok) in user_entries}
+    orig_id: dict[str, str] = {aid.lower(): aid for (aid, _nm, _tok) in user_entries}
 
-    if (not acc or acc == "auto") and persona_id and is_owner:
+    acc = (account_id or "").strip().lower()
+
+    if (not acc or acc == "auto") and persona_id and _is_civitai_server_owner(ctx):
         try:
             for p in load_personas_from_disk(ctx):
                 if str(p.get("id") or "") == str(persona_id):
                     bound = str(p.get("civitai_account") or "").strip().lower()
-                    if bound in ("influencer", "personal"):
+                    if bound and bound in by_id:
                         acc = bound
                     break
         except Exception:
             pass
 
-    if acc == "influencer" and is_owner:
-        tok = env_map.get("CIVITAI_INFLUENCER_API_KEY", "").strip()
-        if tok:
-            return tok, "influencer"
-    elif acc == "personal" and is_owner:
-        tok = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
-        if tok:
-            return tok, "personal"
-    elif acc == "mcp" and mcp_tok:
-        return mcp_tok, "mcp"
+    if acc and acc in by_id:
+        return by_id[acc], orig_id[acc]
 
-    if is_owner:
-        if persona_id and persona_id not in ("", "none", "june", "default") and env_map.get("CIVITAI_INFLUENCER_API_KEY"):
-            return env_map["CIVITAI_INFLUENCER_API_KEY"].strip(), "influencer"
-        if env_map.get("CIVITAI_INFLUENCER_API_KEY"):
-            return env_map["CIVITAI_INFLUENCER_API_KEY"].strip(), "influencer"
-        pers = (env_map.get("CIVITAI_API_KEY") or env_map.get("CIVITAI_TOKEN") or "").strip()
-        if pers:
-            return pers, "personal"
-    if mcp_tok:
-        return mcp_tok, "mcp"
+    if acc == "mcp" and "civitai" in by_id:
+        return by_id["civitai"], orig_id["civitai"]
 
-    raise ValueError("Не найден API-ключ CivitAI для выбранного аккаунта. Добавьте ключ в настройках или укажите его вручную.")
+    if user_entries:
+        return user_entries[0][2], user_entries[0][0]
+
+    raise ValueError("Не найден API-ключ CivitAI. Добавьте ключ в Настройках → MCP API Keys или выберите «+ Другой API-ключ...» в окне публикации.")
 
 
 def _resolve_civitai_publish_image_file(ctx: UserContext | None, item_spec: dict) -> tuple[bytes, str, str]:
