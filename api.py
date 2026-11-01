@@ -179,6 +179,14 @@ async def on_startup():
             })
     except Exception as e:
         logging.error(f"[api] agentic mode init error: {e}")
+    try:
+        import extensions
+        if hasattr(extensions, "on_startup") and callable(extensions.on_startup):
+            await extensions.on_startup(app)
+    except ImportError:
+        pass
+    except Exception as e:
+        logging.error(f"[api] extensions startup error: {e}")
 
 
 @app.get("/api/agentic/status")
@@ -4843,6 +4851,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
         passport = k_arch.get("trigger", "")
         style = data.style or "photorealistic"
         arch_val = arch_key
+        arch_lora = k_arch.get("lora", "")
     else:
         arch = archetype_presets[arch_key]
         name = random.choice(arch["names"])
@@ -4850,6 +4859,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
         passport = arch["passport"]
         style = data.style or arch["style"]
         arch_val = arch.get("archetype")
+        arch_lora = arch.get("lora", "")
 
     timestamp = int(time.time())
     persona_id = f"persona_{arch_key}_{timestamp}"
@@ -4858,7 +4868,6 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
     b64_str = ""
     try:
         if await core_service.is_krea_available():
-            arch_val = arch.get("archetype")
             res = await core_service.generate_krea2_image(
                 ctx=ctx,
                 prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
@@ -4884,7 +4893,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
         "title": title,
         "prompt": passport,
         "archetype": arch_key,
-        "lora": arch.get("lora", ""),
+        "lora": arch_lora,
         "style": style,
         "avatar": b64_str,
         "avatarData": b64_str
@@ -5097,6 +5106,7 @@ class DirectorPromptInput(BaseModel):
     base_model: Optional[str] = "realism"
     persona_name: Optional[str] = ""
     persona_prompt: Optional[str] = ""
+    persona_personality: Optional[str] = ""
     styles: Optional[str] = ""
     archetypes: Optional[str] = ""
     history: Optional[list] = None
@@ -5270,6 +5280,7 @@ async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptIn
             base_model=data.base_model or "realism",
             persona_name=data.persona_name or "",
             persona_prompt=data.persona_prompt or "",
+            persona_personality=data.persona_personality or "",
             styles=data.styles or "",
             archetypes=data.archetypes or "",
             history=data.history,
@@ -5984,9 +5995,147 @@ async def synthesize_speech(data: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Custom Web Push Notifications (RFC 8291 VAPID) ---
+class PushSubscribeInput(BaseModel):
+    subscription: dict
+    omd_key: Optional[str] = ""
+    default_storage: Optional[str] = ""
+    device_label: Optional[str] = ""
+    settings: Optional[dict] = None
+
+
+class PushUnsubscribeInput(BaseModel):
+    endpoint: str
+    omd_key: Optional[str] = ""
+
+
+class PushStatusInput(BaseModel):
+    endpoint: Optional[str] = ""
+    omd_key: Optional[str] = ""
+
+
+class PushTestInput(BaseModel):
+    endpoint: Optional[str] = ""
+    omd_key: Optional[str] = ""
+    default_storage: Optional[str] = ""
+    title: Optional[str] = ""
+    body: Optional[str] = ""
+
+
+def _resolve_push_caller_owner(request: Request, omd_key: str = "") -> tuple[user_context.UserContext, bool]:
+    eff_key = (omd_key or "").strip() or (_extract_omd_key(request) or "").strip()
+    ctx = get_ctx(eff_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    is_owner = False
+    try:
+        is_owner = bool(
+            validated_node_owner(ctx)
+            or getattr(ctx, "trusted_owner", False)
+            or getattr(ctx, "private_mode", False)
+            or trusted_owner_access(request)
+        )
+    except Exception:
+        is_owner = bool(getattr(ctx, "trusted_owner", False))
+    return ctx, is_owner
+
+
+@app.get("/push/vapid-key")
+async def get_push_vapid_key():
+    import push_service
+    return {"publicKey": push_service.get_public_vapid_key()}
+
+
+@app.post("/push/subscribe")
+async def push_subscribe_endpoint(request: Request, data: PushSubscribeInput):
+    import push_service
+    ctx, is_owner = _resolve_push_caller_owner(request, data.omd_key or "")
+    default_storage = (data.default_storage or "").strip()
+    if not default_storage and isinstance(data.settings, dict):
+        default_storage = str(data.settings.get("defaultStorage") or "").strip()
+    try:
+        entry = push_service.save_subscription(
+            subscription=data.subscription,
+            user_id=ctx.user_id if ctx.user_id != "guest" else "",
+            omd_key=data.omd_key or _extract_omd_key(request) or "",
+            default_storage=default_storage,
+            device_label=data.device_label or "",
+            user_agent=request.headers.get("User-Agent", ""),
+            is_owner=is_owner,
+        )
+        return {
+            "status": "ok",
+            "is_owner": entry.get("is_owner", False),
+            "default_storage": entry.get("default_storage", ""),
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.error(f"[/push/subscribe] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/push/unsubscribe")
+async def push_unsubscribe_endpoint(data: PushUnsubscribeInput):
+    import push_service
+    removed = push_service.remove_subscription(data.endpoint)
+    return {"status": "ok", "removed": removed}
+
+
+@app.post("/push/status")
+async def push_status_endpoint(request: Request, data: Optional[PushStatusInput] = None):
+    import push_service
+    ep = (data.endpoint if data else "") or ""
+    key = (data.omd_key if data else "") or _extract_omd_key(request) or ""
+    ctx, is_owner = _resolve_push_caller_owner(request, key)
+    subs = push_service.list_subscriptions(
+        owner_only=is_owner,
+        user_id="" if is_owner else (ctx.user_id if ctx.user_id != "guest" else ""),
+        omd_key="" if is_owner else key,
+    )
+    matched = any(s.get("endpoint") == ep for s in subs) if ep else len(subs) > 0
+    return {
+        "subscribed": matched,
+        "device_count": len(subs),
+        "is_owner": is_owner,
+        "publicKey": push_service.get_public_vapid_key(),
+    }
+
+
+@app.post("/push/test")
+async def push_test_endpoint(request: Request, data: Optional[PushTestInput] = None):
+    import push_service
+    ep = (data.endpoint if data else "") or ""
+    key = (data.omd_key if data else "") or _extract_omd_key(request) or ""
+    ctx, is_owner = _resolve_push_caller_owner(request, key)
+    title = (data.title if data and data.title else "") or "On My Disk — Push активен"
+    body = (data.body if data and data.body else "") or "Кастомные уведомления работают! Превью и кнопки модерации готовы к приёму."
+    res = await push_service.send_custom_push(
+        title=title,
+        body=body,
+        target_endpoint=ep,
+        owner_only=is_owner if not ep else False,
+        user_id="" if (ep or is_owner) else (ctx.user_id if ctx.user_id != "guest" else ""),
+        omd_key="" if (ep or is_owner) else key,
+        fallback_storage=(data.default_storage if data else "") or "",
+        tag="omd-push-test",
+        require_interaction=False,
+    )
+    return {"status": "ok", **res}
+
+
 # --- On My Document: native Univer docs converter (odt/docx -> univer.json) ---
 import ondoc as _ondoc_module
 _ondoc_module.mount(app)
+
+try:
+    import extensions as _extensions_module
+    if hasattr(_extensions_module, "mount") and callable(_extensions_module.mount):
+        _extensions_module.mount(app)
+except ImportError:
+    pass
+except Exception as _ext_mount_err:
+    logging.error(f"[api] Optional extensions mount error: {_ext_mount_err}")
 
 
 if __name__ == "__main__":

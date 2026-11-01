@@ -16,3 +16,5 @@ asset/
 *.imported
 *.tar.gz
 extensions/
+vapid_keys.json
+push_subscriptions.json

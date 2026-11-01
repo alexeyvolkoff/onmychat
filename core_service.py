@@ -3421,6 +3421,20 @@ def save_persona_to_disk(persona_data: dict, ctx: UserContext | None = None) -> 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(json_obj, f, indent=2, ensure_ascii=False)
 
+    # Mirror to ~/OnMyChat/personas if present so P2P Drive and AI Node share one source of truth
+    omc_personas = os.path.join(os.path.expanduser("~"), "OnMyChat", "personas")
+    if os.path.isdir(os.path.join(os.path.expanduser("~"), "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_personas):
+        try:
+            os.makedirs(omc_personas, exist_ok=True)
+            with open(os.path.join(omc_personas, f"{p_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(json_obj, f, indent=2, ensure_ascii=False)
+            src_png = os.path.join(target_dir, f"{p_id}.png")
+            if os.path.isfile(src_png):
+                import shutil
+                shutil.copy2(src_png, os.path.join(omc_personas, f"{p_id}.png"))
+        except Exception as e:
+            logging.debug(f"[Personas] Mirror to OnMyChat/personas skipped: {e}")
+
     logging.info(f"[Personas] Saved persona '{p_id}' to {json_path}")
     return json_obj
 
@@ -3449,14 +3463,18 @@ def load_personas_from_disk(ctx: UserContext | None = None) -> list[dict]:
                                 if not p_obj.get("avatar"):
                                     p_obj["avatar"] = f"/personas/{p_id}/avatar"
 
-                            if p_id not in personas_map:
+                            if p_id not in personas_map or os.path.getmtime(p_path) > personas_map[p_id].get("_mtime", 0):
+                                p_obj["_mtime"] = os.path.getmtime(p_path)
                                 personas_map[p_id] = p_obj
                     except Exception as e:
                         logging.warning(f"[Personas] Failed to read persona file {p_path}: {e}")
         except Exception as e:
             logging.warning(f"[Personas] Error scanning personas dir {p_dir}: {e}")
 
-    return list(personas_map.values())
+    out_list = list(personas_map.values())
+    for item in out_list:
+        item.pop("_mtime", None)
+    return out_list
 
 
 def delete_persona_from_disk(persona_id: str, ctx: UserContext | None = None) -> bool:
@@ -7416,6 +7434,7 @@ async def krea_director_rewrite_prompt(
     base_model: str = "realism",
     persona_name: str = "",
     persona_prompt: str = "",
+    persona_personality: str = "",
     styles: str = "",
     archetypes: str = "",
     history: list[dict] | None = None,
@@ -7522,6 +7541,8 @@ async def krea_director_rewrite_prompt(
     context_lines = []
     if persona_name or persona_prompt:
         context_lines.append(f"Active Studio Persona: {persona_name or 'Selected'} (Passport reference: {persona_prompt[:280]})")
+    if persona_personality and str(persona_personality).strip():
+        context_lines.append(f"Persona Character / Lore / Demeanor: {str(persona_personality).strip()[:400]}")
     if styles:
         context_lines.append(f"Active Style LoRA(s): {styles}")
     if archetypes:
@@ -7649,7 +7670,10 @@ async def krea_director_storyboard(
         p_lines = []
         for p in personas[:4]:
             if isinstance(p, dict) and (p.get("name") or p.get("prompt")):
-                p_lines.append(f"- {p.get('name', 'Character')} ({p.get('title', '')}): {str(p.get('prompt', ''))[:300]}")
+                line = f"- {p.get('name', 'Character')} ({p.get('title', '')}): Appearance: {str(p.get('prompt', ''))[:280]}"
+                if p.get("personality"):
+                    line += f" | Character/Lore & Voice: {str(p.get('personality', ''))[:320]}"
+                p_lines.append(line)
         if p_lines:
             personas_desc = "CAST / CHARACTERS:\n" + "\n".join(p_lines)
 
