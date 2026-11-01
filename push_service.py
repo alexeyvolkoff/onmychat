@@ -1,7 +1,9 @@
 """
-Custom Web Push Notification Service (RFC 8291 VAPID) for OnMyChat & Svar PWA.
-Provides peer-to-peer / self-hosted rich push notifications with preview images
-(e.g. /p2p/{defaultStorage}/generated/...) and interactive action buttons.
+Custom Rich Push Notification Service for OnMyChat, Svar PWA & OMD Native Mobile (Android/iOS).
+Supports:
+  1. Direct Peer-to-Peer Web Push (RFC 8291 VAPID) for desktop & mobile browsers / PWAs.
+  2. Native Mobile Push (Android FCM HTTP v1 & iOS APNs HTTP/2) via OMD Push Relay on onmydisk.net,
+     keeping Apple/Firebase developer credentials off self-hosted user nodes.
 """
 
 import asyncio
@@ -12,6 +14,8 @@ import logging
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -24,6 +28,9 @@ logger = logging.getLogger("push_service")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VAPID_KEYS_PATH = os.path.join(BASE_DIR, "vapid_keys.json")
 SUBSCRIPTIONS_PATH = os.path.join(BASE_DIR, "push_subscriptions.json")
+
+DEFAULT_NATIVE_RELAY_URL = os.environ.get("OMD_PUSH_RELAY_URL", "https://direct.onmydisk.net:8765/api/push/native")
+DEFAULT_PUBLIC_ORIGIN = os.environ.get("OMD_PUBLIC_ORIGIN", "https://direct.onmydisk.net").rstrip("/")
 
 _lock = threading.Lock()
 _vapid_cache: Optional[dict[str, str]] = None
@@ -137,19 +144,57 @@ def save_subscription(
     user_agent: str = "",
     is_owner: bool = False,
 ) -> dict[str, Any]:
-    """Saves or updates a browser PushSubscription."""
+    """Saves or updates either a browser Web Push subscription or a Capacitor Native Push subscription."""
     if not isinstance(subscription, dict):
         raise ValueError("Invalid subscription object")
+
+    kind = str(subscription.get("kind") or "").strip().lower()
+    platform = str(subscription.get("platform") or "").strip().lower()
+    native_token = str(subscription.get("token") or "").strip()
+
+    is_native = kind == "native" or (platform in ("android", "ios") and bool(native_token))
+    now = int(time.time())
+
+    if is_native:
+        if platform not in ("android", "ios") or not native_token:
+            raise ValueError("Native subscription requires platform ('android'|'ios') and token")
+        endpoint = str(subscription.get("endpoint") or f"native://{platform}/{native_token}").strip()
+        relay_url = str(subscription.get("relay_url") or DEFAULT_NATIVE_RELAY_URL).strip()
+        public_origin = str(subscription.get("public_origin") or DEFAULT_PUBLIC_ORIGIN).strip().rstrip("/")
+        with _lock:
+            subs = _load_subscriptions_unlocked()
+            existing = subs.get(endpoint) or {}
+            entry = {
+                "kind": "native",
+                "platform": platform,
+                "token": native_token,
+                "endpoint": endpoint,
+                "relay_url": relay_url,
+                "public_origin": public_origin,
+                "user_id": user_id or existing.get("user_id") or "",
+                "omd_key_hash": _hash_key(omd_key) or existing.get("omd_key_hash") or "",
+                "default_storage": default_storage.strip() if default_storage and default_storage.strip() else (existing.get("default_storage") or ""),
+                "device_label": (device_label or existing.get("device_label") or f"{platform.upper()} App")[:120],
+                "user_agent": (user_agent or existing.get("user_agent") or "")[:240],
+                "is_owner": bool(is_owner or existing.get("is_owner")),
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+            }
+            subs[endpoint] = entry
+            _save_subscriptions_unlocked(subs)
+        logger.info(f"[Push] Registered native {platform} subscription (owner={entry['is_owner']}, storage='{entry['default_storage']}', label='{entry['device_label']}')")
+        return entry
+
     endpoint = str(subscription.get("endpoint") or "").strip()
     keys = subscription.get("keys")
     if not endpoint or not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
         raise ValueError("Subscription must contain endpoint and keys (p256dh, auth)")
 
-    now = int(time.time())
     with _lock:
         subs = _load_subscriptions_unlocked()
         existing = subs.get(endpoint) or {}
         entry = {
+            "kind": "webpush",
             "endpoint": endpoint,
             "keys": {
                 "p256dh": str(keys["p256dh"]),
@@ -180,7 +225,7 @@ def remove_subscription(endpoint: str) -> bool:
         if ep in subs:
             subs.pop(ep, None)
             _save_subscriptions_unlocked(subs)
-            logger.info("[WebPush] Unsubscribed endpoint.")
+            logger.info("[Push] Unsubscribed endpoint.")
             return True
     return False
 
@@ -206,8 +251,7 @@ def get_owner_default_storage() -> str:
     """Returns the most recently updated default_storage registered by an owner subscription."""
     owners = list_subscriptions(owner_only=True)
     if not owners:
-        all_subs = list_subscriptions(owner_only=False)
-        owners = all_subs
+        owners = list_subscriptions(owner_only=False)
     owners.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
     for s in owners:
         ds = (s.get("default_storage") or "").strip()
@@ -266,6 +310,71 @@ def _send_single_webpush_sync(sub_entry: dict[str, Any], payload_str: str, vapid
         return False, 0, str(exc)[:240]
 
 
+def _send_single_native_push_sync(sub_entry: dict[str, Any], payload_obj: dict[str, Any]) -> tuple[bool, int, str]:
+    """Forwards a native Android/iOS push payload to the OMD Push Relay (FCM HTTP v1 / APNs HTTP/2)."""
+    relay_url = str(sub_entry.get("relay_url") or DEFAULT_NATIVE_RELAY_URL).strip()
+    public_origin = str(sub_entry.get("public_origin") or DEFAULT_PUBLIC_ORIGIN).strip().rstrip("/")
+    platform = str(sub_entry.get("platform") or "").strip().lower()
+    token = str(sub_entry.get("token") or "").strip()
+
+    image_url = str(payload_obj.get("image") or "").strip()
+    if image_url.startswith("/") and public_origin:
+        image_url = f"{public_origin}{image_url}"
+
+    actions = payload_obj.get("actions") or []
+    category = "OMD_MODERATION" if any(a.get("action") == "approve" for a in actions if isinstance(a, dict)) else ""
+
+    relay_body = {
+        "platform": platform,
+        "token": token,
+        "title": payload_obj.get("title") or "On My Disk",
+        "body": payload_obj.get("body") or "",
+        "image": image_url,
+        "tag": payload_obj.get("tag") or "",
+        "category": category,
+        "actions": actions,
+        "data": payload_obj.get("data") or {},
+    }
+
+    req_bytes = json.dumps(relay_body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        relay_url,
+        data=req_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "OnMyChat-PushService/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {}
+            if parsed.get("ok") is False:
+                st = int(parsed.get("status") or 502)
+                return False, st, str(parsed.get("error") or raw)[:240]
+            return True, int(resp.status or 200), ""
+    except urllib.error.HTTPError as he:
+        err_raw = ""
+        try:
+            err_raw = he.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        try:
+            err_json = json.loads(err_raw)
+            err_msg = str(err_json.get("error") or err_raw)[:240]
+            if err_json.get("unregistered"):
+                return False, 410, err_msg
+        except Exception:
+            err_msg = (err_raw or str(he))[:240]
+        return False, int(he.code or 500), err_msg
+    except Exception as exc:
+        return False, 0, str(exc)[:240]
+
+
 async def send_custom_push(
     title: str,
     body: str,
@@ -286,7 +395,7 @@ async def send_custom_push(
     fallback_storage: str = "",
 ) -> dict[str, Any]:
     """
-    Sends a custom Rich Web Push notification to matching subscribed devices.
+    Sends a custom Rich Push notification to matching subscribed devices (both Web Push & Native Mobile).
     Supports {defaultStorage} resolution per device or via image_rel_path.
     """
     vapid_keys = ensure_vapid_keys()
@@ -297,8 +406,6 @@ async def send_custom_push(
         targets = [sub] if sub else []
     else:
         targets = list_subscriptions(owner_only=owner_only, user_id=user_id, omd_key=omd_key)
-        # Fallback: if owner_only=True and no subscription explicitly got flagged yet on localhost,
-        # check if there are any subscriptions at all on this private node when NODE_OWNER isn't separate
         if owner_only and not targets:
             with _lock:
                 all_subs = list(_load_subscriptions_unlocked().values())
@@ -347,10 +454,17 @@ async def send_custom_push(
         if actions:
             payload_obj["actions"] = actions
 
-        payload_str = json.dumps(payload_obj, ensure_ascii=False)
-        ok, status_code, err_msg = await asyncio.to_thread(
-            _send_single_webpush_sync, sub, payload_str, vapid_keys
-        )
+        is_native = sub.get("kind") == "native" or str(sub.get("endpoint") or "").startswith("native://")
+        if is_native:
+            ok, status_code, err_msg = await asyncio.to_thread(
+                _send_single_native_push_sync, sub, payload_obj
+            )
+        else:
+            payload_str = json.dumps(payload_obj, ensure_ascii=False)
+            ok, status_code, err_msg = await asyncio.to_thread(
+                _send_single_webpush_sync, sub, payload_str, vapid_keys
+            )
+
         if ok:
             sent += 1
         else:
@@ -362,7 +476,7 @@ async def send_custom_push(
     for ep in stale_endpoints:
         remove_subscription(ep)
 
-    logger.info(f"[WebPush] Push dispatched '{title}': sent={sent}, failed={failed}, pruned={len(stale_endpoints)}")
+    logger.info(f"[Push] Dispatched '{title}': sent={sent}, failed={failed}, pruned={len(stale_endpoints)}")
     return {
         "sent": sent,
         "failed": failed,
@@ -370,4 +484,3 @@ async def send_custom_push(
         "total": len(targets),
         "errors": errors[:3],
     }
-
