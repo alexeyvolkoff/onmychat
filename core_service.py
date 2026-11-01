@@ -7408,6 +7408,110 @@ async def publish_to_civitai(
     }
 
 
+async def delete_from_civitai(
+    post_id: int | str,
+    custom_token: str = "",
+    ctx: UserContext | None = None,
+    account_id: str = "",
+    persona_id: str = "",
+) -> dict:
+    """
+    Deletes a published CivitAI post (and any associated images) via /api/trpc/post.delete
+    using the bot/account Bearer token.
+    """
+    raw_pid = str(post_id or "").strip()
+    m = re.search(r"/posts/(\d+)", raw_pid)
+    if m:
+        pid = int(m.group(1))
+    elif raw_pid.isdigit():
+        pid = int(raw_pid)
+    else:
+        raise ValueError(f"Некорректный ID поста CivitAI: {post_id}")
+
+    token, resolved_acc_id = _resolve_civitai_publish_token(
+        ctx=ctx,
+        account_id=account_id,
+        custom_token=custom_token,
+        persona_id=persona_id,
+    )
+
+    auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; OnMyChatStudio/1.0)",
+    }
+
+    post_image_ids: list[int] = []
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # 1. Best-effort lookup of image IDs inside the post before deleting the post
+        try:
+            async with session.get(
+                f"https://civitai.com/api/v1/images?postId={pid}&nsfw=X",
+                headers=auth_headers,
+            ) as img_resp:
+                if img_resp.status == 200:
+                    img_json = await img_resp.json()
+                    for item in (img_json.get("items") or []):
+                        if isinstance(item, dict) and item.get("id"):
+                            post_image_ids.append(int(item["id"]))
+        except Exception as e:
+            logging.debug(f"[CivitAI Delete] Could not pre-fetch image IDs for post #{pid}: {e}")
+
+        # 2. Delete the post via tRPC post.delete
+        already_gone = False
+        async with session.post(
+            "https://civitai.com/api/trpc/post.delete",
+            headers=auth_headers,
+            json={"json": {"id": pid}},
+        ) as del_resp:
+            resp_text = await del_resp.text()
+            try:
+                resp_json = json.loads(resp_text)
+            except Exception:
+                resp_json = {}
+
+            if del_resp.status == 404:
+                already_gone = True
+            elif del_resp.status >= 400 or "error" in resp_json:
+                err_obj = resp_json.get("error") or {}
+                err_msg = (
+                    (err_obj.get("json") or {}).get("message")
+                    or err_obj.get("message")
+                    or resp_text[:300]
+                )
+                if "not found" in str(err_msg).lower() or "not_found" in str(err_msg).lower():
+                    already_gone = True
+                else:
+                    raise ValueError(f"Ошибка удаления поста #{pid} на CivitAI: {err_msg}")
+
+        # 3. Best-effort cleanup of any attached images if still present
+        deleted_images = 0
+        for img_id in post_image_ids:
+            try:
+                async with session.post(
+                    "https://civitai.com/api/trpc/image.delete",
+                    headers=auth_headers,
+                    json={"json": {"id": int(img_id)}},
+                ) as idel_resp:
+                    if 200 <= idel_resp.status < 300:
+                        deleted_images += 1
+            except Exception:
+                pass
+
+    logging.info(
+        f"[CivitAI Delete] Deleted post #{pid} (already_gone={already_gone}, images_cleaned={deleted_images})"
+    )
+    return {
+        "ok": True,
+        "post_id": pid,
+        "already_gone": already_gone,
+        "deleted_images": deleted_images,
+        "account_id": resolved_acc_id,
+    }
+
+
 def _format_civitai_import_badge(meta_summary: dict, is_ru: bool = True) -> str:
     model_names = {
         "anima": "Anima V1.1",
