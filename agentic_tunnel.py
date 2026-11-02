@@ -68,7 +68,7 @@ from typing import Awaitable, Callable, Dict, List, Optional
 import aiohttp
 
 import p2p_client
-from p2p_client import P2PError, P2PSettings, SignalingClient, _random_id
+from p2p_client import P2PError, P2PTimeout as P2PTimeoutError, P2PSettings, SignalingClient, _random_id
 
 log = logging.getLogger("agentic")
 
@@ -129,7 +129,8 @@ class RawPortTunnel:
             self.state = "open"
             self._last_alive = time.monotonic()
             self._tasks.append(asyncio.create_task(self._keepalive()))
-            self._tasks.append(asyncio.create_task(self._dispatch()))
+            if self.on_data is not None:
+                self._tasks.append(asyncio.create_task(self._dispatch()))
             self._tasks.append(asyncio.create_task(self._watch_pc()))
             return self
         except Exception as exc:
@@ -173,7 +174,7 @@ class RawPortTunnel:
         deadline = time.monotonic() + self._settings.handshake_timeout
         got_answer = False
         while time.monotonic() < deadline:
-            for sig in await self._signaling.poll(self.tunnel_id):
+            for sig in await self._signaling.poll(self.tunnel_id, self.target_link_id):
                 kind = sig.get("kind")
                 payload = sig.get("payload") or ""
                 if kind == "answer" and not got_answer:
@@ -181,6 +182,7 @@ class RawPortTunnel:
                     await self._pc.setRemoteDescription(
                         RTCSessionDescription(sdp=remote_sdp, type="answer"))
                     got_answer = True
+                    await self._flush_candidates()
                 elif kind == "candidate" and payload:
                     self._on_remote_candidate(await _b64decode(payload))
                 elif kind in ("tunnel-closed", "closed"):
@@ -191,30 +193,26 @@ class RawPortTunnel:
         if not got_answer:
             raise P2PTimeoutError(f"no answer from {self.target_link_id}")
 
-        # Trickle candidates may arrive after the answer; drain briefly.
-        deadline2 = time.monotonic() + 1.0
-        while time.monotonic() < deadline2:
-            got = False
-            for sig in await self._signaling.poll(self.tunnel_id):
-                kind = sig.get("kind")
-                payload = sig.get("payload") or ""
-                if kind == "candidate" and payload:
-                    self._on_remote_candidate(await _b64decode(payload))
-                    got = True
-                elif kind in ("tunnel-closed", "closed"):
-                    raise P2PError(f"gateway reported tunnel {kind}")
-            if not got:
-                break
+        await self._flush_candidates()
 
         dc_deadline = time.monotonic() + self._settings.handshake_timeout
+        next_poll = 0.0
         while self._dc.readyState != "open":
             if time.monotonic() > dc_deadline:
                 raise P2PTimeoutError("data channel did not open in time")
             if self._pc.connectionState in ("failed", "closed"):
                 raise P2PError(f"peer connection {self._pc.connectionState}")
+            now_m = time.monotonic()
+            if now_m >= next_poll:
+                next_poll = now_m + 0.25
+                for sig in await self._signaling.poll(self.tunnel_id, self.target_link_id):
+                    kind = sig.get("kind")
+                    payload = sig.get("payload") or ""
+                    if kind == "candidate" and payload:
+                        await self._add_candidate(await _b64decode(payload))
+                    elif kind in ("tunnel-closed", "closed"):
+                        raise P2PError(f"gateway reported tunnel {kind}")
             await asyncio.sleep(0.05)
-
-        await self._flush_candidates()
 
         # Wait briefly for the node's __ready__ (race: first bytes may race the
         # answerer's onMessage wiring — the browser does the same for FS tunnels).
@@ -292,11 +290,33 @@ class RawPortTunnel:
         for c in pending:
             await self._add_candidate(c)
 
-    async def _add_candidate(self, s: str) -> None:
+    async def _add_candidate(self, raw: str) -> None:
         try:
-            await self._pc.addIceCandidate({"candidate": s, "sdpMLineIndex": 0, "sdpMid": "0"})
+            from aiortc.sdp import candidate_from_sdp
+            s = (raw or "").strip()
+            if not s:
+                return
+            # Remote payload may be JSON {"candidate":"a=candidate:...","sdpMid":"0",...} or raw SDP line
+            sdp_mid = "0"
+            sdp_mline = 0
+            if s.startswith("{"):
+                obj = json.loads(s)
+                s = str(obj.get("candidate") or "").strip()
+                if obj.get("sdpMid") is not None:
+                    sdp_mid = str(obj.get("sdpMid"))
+                if obj.get("sdpMLineIndex") is not None:
+                    sdp_mline = int(obj.get("sdpMLineIndex"))
+            if s.startswith("a="):
+                s = s[2:].strip()
+            if s.startswith("candidate:"):
+                s = s[len("candidate:"):].strip()
+            if not s:
+                return
+            cand = candidate_from_sdp(s)
+            cand.sdpMid = sdp_mid
+            cand.sdpMLineIndex = sdp_mline
+            await self._pc.addIceCandidate(cand)
         except Exception as exc:
-            # Non-fatal: the answer SDP usually carries its own candidates.
             log.debug("agentic: candidate skipped for %s: %s", self.tunnel_id, exc)
 
     # -- lifecycle / keepalive --------------------------------------------- #
@@ -367,10 +387,6 @@ class RawPortTunnel:
         await self._on_closed(reason)
 
 
-class P2PTimeoutError(P2PError):
-    pass
-
-
 async def _b64encode(text: str) -> str:
     import base64
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
@@ -378,7 +394,7 @@ async def _b64encode(text: str) -> str:
 
 async def _b64decode(text: str) -> str:
     import base64
-    return base64.b64decode((text or "").encode("ascii"))
+    return base64.b64decode((text or "").encode("ascii")).decode("utf-8", errors="replace")
 
 
 # --------------------------------------------------------------------------- #
@@ -423,7 +439,6 @@ class InferenceForwarder:
     async def _handle_conn(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections += 1
         tunnel = self.manager.make_tunnel(self.remote_port)
-        tunnel.on_data = self._make_on_data(writer)
         peer = writer.get_extra_info("peername")
         try:
             await tunnel.open()
@@ -475,13 +490,19 @@ class InferenceForwarder:
     async def _pump_dc_to_tcp(self, tunnel: "RawPortTunnel", writer: asyncio.StreamWriter) -> None:
         while tunnel.is_open:
             try:
-                data = await asyncio.wait_for(tunnel._queue.get(), timeout=5.0)
+                data = await asyncio.wait_for(tunnel._queue.get(), timeout=0.25)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 return
             if writer.is_closing():
                 raise ConnectionError("client closed")
+            writer.write(data)
+            await writer.drain()
+        while not tunnel._queue.empty():
+            data = tunnel._queue.get_nowait()
+            if writer.is_closing():
+                break
             writer.write(data)
             await writer.drain()
 
@@ -502,7 +523,8 @@ class AgenticManager:
         self.bind_ollama_port = int(_sget(settings, "INFERENCE_BIND_OLLAMA", self.remote_ollama_port) or self.remote_ollama_port)
         self.bind_comfy_port = int(_sget(settings, "INFERENCE_BIND_COMFY", self.remote_comfy_port) or self.remote_comfy_port)
         self.bind_host = str(_sget(settings, "INFERENCE_BIND_HOST", "127.0.0.1") or "127.0.0.1")
-        self.ai_token = str(_sget(settings, "AI_TOKEN", "") or "").strip()
+        raw_tok = str(_sget(settings, "AI_TOKEN", "") or "").strip()
+        self.ai_token = "" if (not raw_tok or raw_tok == "your_ai_token_here" or len(raw_tok) < 24) else raw_tok
         self.last_seen_token = ""
         self.last_error = ""
 
@@ -527,8 +549,10 @@ class AgenticManager:
     async def start(self) -> None:
         if self._started:
             return
+        if self.active_node in ("", "auto"):
+            self.active_node = await self._discover_public_ai_node()
         if not self.active_node:
-            raise RuntimeError("agentic mode enabled but INFERENCE_NODE is not set")
+            log.warning("agentic: INFERENCE_NODE not set yet; waiting for X-OMD-Ai-Node request header")
         forwarders = [
             InferenceForwarder(self, "ollama", self.bind_host, self.bind_ollama_port, self.remote_ollama_port),
             InferenceForwarder(self, "comfy", self.bind_host, self.bind_comfy_port, self.remote_comfy_port),
@@ -551,8 +575,28 @@ class AgenticManager:
 
     # -- request hooks ------------------------------------------------------ #
 
+    async def _discover_public_ai_node(self) -> str:
+        gw = str(_sget(self._section, "GATEWAY_URL", "") or "https://direct.onmydisk.net").rstrip("/")
+        if "onmydisk.net" in gw and "direct.onmydisk.net" not in gw:
+            gw = "https://direct.onmydisk.net"
+        url = f"{gw}/api/ai-node"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as s:
+                async with s.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        link_id = str((data.get("aiNode") or {}).get("linkID") or "").strip()
+                        if link_id:
+                            log.info("agentic: auto-discovered public AI node %s via %s", link_id, url)
+                            return link_id
+        except Exception as exc:
+            log.warning("agentic: public AI node discovery failed (%s): %s", url, exc)
+        return ""
+
     def make_tunnel(self, remote_port: int) -> RawPortTunnel:
         """Tunnel factory (test hook: override to inject a fake tunnel)."""
+        if not self.active_node:
+            raise P2PError("no active inference node configured or discovered")
         self.settings.token = self._signaling_token()
         return RawPortTunnel(self.settings, self.signaling, self.active_node, remote_port)
 

@@ -156,7 +156,7 @@ class P2PSettings:
             # token намеренно не берётся из конфига: omd_key живёт в запросе
             # конкретного юзера, глобального токена ноды нет.
             token="",
-            sender_id=str(get("P2P_SENDER_ID", "") or ""),
+            sender_id=str(get("P2P_SENDER_ID", "") or _random_id("omc-", 16)),
             ice_servers=default_ice_servers(host),
             chunk_size=geti("P2P_CHUNK_SIZE", DEFAULT_CHUNK_SIZE),
             rpc_timeout=getf("P2P_RPC_TIMEOUT", DEFAULT_RPC_TIMEOUT),
@@ -242,9 +242,9 @@ class SignalingClient:
         except aiohttp.ClientError as exc:
             raise P2PError(f"signaling {kind} failed: {exc}") from exc
 
-    async def poll(self, tunnel_id: str) -> List[Dict[str, Any]]:
+    async def poll(self, tunnel_id: str, link_id: str = "") -> List[Dict[str, Any]]:
         """Drain queued signals for our tunnel (answer / candidate / closed)."""
-        data = await self.send(self._settings.sender_id, tunnel_id, "poll")
+        data = await self.send(link_id or self._settings.sender_id, tunnel_id, "poll")
         signals = data.get("signals")
         return list(signals) if isinstance(signals, list) else []
 
@@ -391,7 +391,7 @@ class P2PConnection:
         deadline = time.monotonic() + self._settings.handshake_timeout
         got_answer = False
         while time.monotonic() < deadline:
-            for sig in await self._signaling.poll(self.tunnel_id):
+            for sig in await self._signaling.poll(self.tunnel_id, self.target_link_id):
                 kind = sig.get("kind")
                 payload = sig.get("payload") or ""
                 if kind in ("answer", "offer"):
