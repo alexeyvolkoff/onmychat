@@ -2,7 +2,7 @@ import configparser
 import os
 
 _config = configparser.ConfigParser()
-_config.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="utf-8")
+_config.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="utf-8-sig")
 
 SETTINGS = _config["settings"]
 USER_DATA_DIR = "user_data"
