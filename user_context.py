@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+from contextvars import ContextVar
 import os
 import logging
 from config import SETTINGS
+
+CURRENT_REQUEST_PLATFORM: ContextVar[str] = ContextVar("omd_request_platform", default="")
 
 # Дефольные настройки
 DEFAULT_KB_ID = SETTINGS.get("DEFAULT_KB_ID", "omd")
@@ -48,7 +51,7 @@ DEFAULT_ASSISTANT_MODEL = SETTINGS.get("DEFAULT_ASSISTANT_MODEL", "Domi")
 
 def load_user_settings(**kwargs):
     """Возвращает базовые настройки. Все важное придет от клиента."""
-    return {
+    base = {
         "style": "realistic",
         "system_prompt": DEFAULT_USER_PROMPT,
         "assistant_name": DEFAULT_ASSISTANT_NAME,
@@ -58,6 +61,10 @@ def load_user_settings(**kwargs):
         "character_lora": DEFAULT_ASSISTANT_MODEL,
         "kb_id": DEFAULT_KB_ID
     }
+    req_plat = CURRENT_REQUEST_PLATFORM.get("")
+    if req_plat:
+        base["platform"] = req_plat
+    return base
 
 def save_user_settings(ctx: UserContext):
     """No-op. Настройки теперь живут на клиенте."""

@@ -144,11 +144,32 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8081", "http://localhost:8080", "http://localhost", "https://onmydisk.net"],
+    allow_origins=[
+        "http://localhost:8081",
+        "http://localhost:8080",
+        "http://localhost",
+        "capacitor://localhost",
+        "https://onmydisk.net",
+        "https://direct.onmydisk.net",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def capture_client_platform_middleware(request: Request, call_next):
+    plat = (request.headers.get("X-OMD-Platform") or "").strip().lower()
+    if not plat:
+        origin = (request.headers.get("Origin") or "").strip().lower()
+        if origin.startswith("capacitor://"):
+            plat = "ios"
+    token = user_context.CURRENT_REQUEST_PLATFORM.set(plat)
+    try:
+        return await call_next(request)
+    finally:
+        user_context.CURRENT_REQUEST_PLATFORM.reset(token)
 
 
 AI_TOKEN = SETTINGS.get("AI_TOKEN", "")
