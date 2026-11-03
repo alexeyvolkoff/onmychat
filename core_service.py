@@ -3494,11 +3494,43 @@ def delete_persona_from_disk(persona_id: str, ctx: UserContext | None = None) ->
     return deleted
 
 
+_COMFY_REF_IMAGE_BYTES: dict[str, bytes] = {}
+
+
+def _cache_reference_image_bytes(name: str, data: bytes) -> None:
+    if not name or not data:
+        return
+    _COMFY_REF_IMAGE_BYTES[name] = data
+    while len(_COMFY_REF_IMAGE_BYTES) > 24:
+        oldest = next(iter(_COMFY_REF_IMAGE_BYTES))
+        _COMFY_REF_IMAGE_BYTES.pop(oldest, None)
+
+
+def get_cached_reference_image_bytes(filename: str) -> bytes | None:
+    """Возвращает байты загруженного референсного изображения для удаленных раннеров."""
+    if not filename:
+        return None
+    return _COMFY_REF_IMAGE_BYTES.get(filename) or _COMFY_REF_IMAGE_BYTES.get(os.path.basename(filename))
+
+
 async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None = None) -> str | None:
     """Загружает референсное изображение лица в ComfyUI (через API или напрямую в input/)."""
     if not img_bytes:
         return None
     filename = filename or f"krea_ref_{uuid.uuid4().hex[:10]}.png"
+
+    # Нормализуем EXIF-ориентацию и RGB PNG, чтобы LoadImage в любом ComfyUI гарантированно проходил валидацию
+    try:
+        with Image.open(io.BytesIO(img_bytes)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+    except Exception as e:
+        logging.warning(f"[Krea2] Reference image PNG normalization warning: {e}")
+
+    _cache_reference_image_bytes(filename, img_bytes)
+
     # 1. ComfyUI /upload/image API (работает локально и удаленно в Colab)
     try:
         data = aiohttp.FormData()
@@ -3509,6 +3541,7 @@ async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None
                 if resp.status == 200:
                     resp_data = await resp.json()
                     uploaded_name = resp_data.get("name", filename)
+                    _cache_reference_image_bytes(uploaded_name, img_bytes)
                     logging.info(f"[Krea2] Uploaded reference image to ComfyUI input: {uploaded_name}")
                     return uploaded_name
     except Exception as e:
@@ -3527,6 +3560,12 @@ async def upload_reference_image_to_comfy(img_bytes: bytes, filename: str | None
                 return filename
             except Exception as e:
                 logging.warning(f"[Krea2] Direct write to input dir failed: {e}")
+
+    # 3. Если настроен удаленный облачный раннер (Modal), возвращаем закэшированное имя файла
+    if bool(str(SETTINGS.get("MODAL_COMFY_URL") or "").strip()):
+        logging.info(f"[Krea2] Reference image '{filename}' cached in memory for remote ComfyUI runner")
+        return filename
+
     return None
 
 
@@ -3896,11 +3935,19 @@ async def generate_krea2_image(
         else:
             logging.warning(f"[Krea2] LoRA '{lora_file}' not found in ComfyUI available LoRAs — skipping LoraLoader node.")
 
-    has_krea2_edit = _krea_model_cache.get("has_krea2_edit", False) if _krea_model_cache else False
+    is_anima_base = requested_base in ["anima", "cyberrealistic_anima", "animaturbo", "anime"]
+    has_krea2_edit = (
+        False
+        if is_anima_base
+        else (_krea_model_cache.get("has_krea2_edit", False) if _krea_model_cache else use_remote_modal)
+    )
 
     # Если есть референсное лицо и доступен krea2-identity-edit, подключаем его родную LoRA
     if comfy_ref_name and has_krea2_edit:
-        id_lora = next((al for al in available_loras if "identity_edit" in str(al).lower() or ("identity" in str(al).lower() and "krea" in str(al).lower())), None)
+        lora_pool = available_loras or (_krea_model_cache.get("loras", []) if _krea_model_cache else [])
+        id_lora = next((al for al in lora_pool if "identity_edit" in str(al).lower() or ("identity" in str(al).lower() and "krea" in str(al).lower())), None)
+        if not id_lora and use_remote_modal:
+            id_lora = "krea2_identity_edit_v1_2.safetensors"
         if id_lora and not any(id_lora == l[0] for l in resolved_lora_chain):
             resolved_lora_chain.append((id_lora, 1.0))
 
