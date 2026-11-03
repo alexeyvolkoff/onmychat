@@ -3868,7 +3868,7 @@ async def generate_krea2_image(
         sampler_name = "euler"
         scheduler = "simple"
         cfg = float(explicit_cfg) if explicit_cfg is not None and float(explicit_cfg) >= 1.0 else 2.0
-        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 16
+        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 12
         logging.info(f"[Krea2] Base model: Semi-Realism (Muse by Stable Yogi: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
     else:
         matched_unet = next((u for u in available_unets if "cyber" in str(u).lower() or "realistic" in str(u).lower()), "CyberRealistic_Krea2_V4.0_BF16.safetensors")
@@ -3876,7 +3876,7 @@ async def generate_krea2_image(
         sampler_name = "euler"
         scheduler = "simple"
         cfg = float(explicit_cfg) if explicit_cfg is not None and float(explicit_cfg) >= 1.0 else 1.5
-        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 14
+        steps = int(explicit_steps) if explicit_steps is not None and int(explicit_steps) >= 4 else 12
         logging.info(f"[Krea2] Base model: Realism (CyberRealistic: {unet_model}, sampler={sampler_name}, steps={steps}, cfg={cfg})")
 
     # Match target_loras against available_loras
@@ -6874,7 +6874,7 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     raw_steps = gen_meta.get("steps") or v1_meta.get("steps") or comfy_parsed.get("steps")
     raw_cfg = gen_meta.get("cfgScale") or gen_meta.get("cfg") or v1_meta.get("cfgScale") or comfy_parsed.get("cfg")
 
-    default_steps = 25 if detected_base == "anima" else (16 if detected_base == "semi_realism" else 14)
+    default_steps = 25 if detected_base == "anima" else 12
     default_cfg = 3.0 if detected_base == "anima" else (2.0 if detected_base == "semi_realism" else 1.5)
 
     try:
