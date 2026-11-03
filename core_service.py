@@ -4185,7 +4185,7 @@ async def generate_krea2_image(
         img_title = neutral_title
     else:
         words = [w for w in neutral_description.replace("<", "").replace(">", "").split() if not w.startswith("<")]
-        img_title = " ".join(words[:4]).strip(" ,.-#*") or "Krea Creation"
+        img_title = _clean_fallback_title(words, max_words=4) or "Krea Creation"
 
     readme_content = f"# {img_title}\n\n{neutral_description}\n"
     if clean_user_prompt:
@@ -8185,10 +8185,35 @@ async def generate_title_from_prompt(ctx: UserContext, prompt: str) -> str:
     
     data = await llm_request(payload)
     if not data or "message" not in data:
-         return ' '.join(words[:4])
+         return _clean_fallback_title(words, max_words=4)
          
     title = data["message"]["content"].strip().replace('"', '')
     return title
+
+
+_DANGLING_TITLE_TAIL_WORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "with", "and", "or",
+    "to", "for", "by", "from", "into", "as", "is", "are",
+}
+
+
+def _clean_fallback_title(words_or_text, max_words: int = 4) -> str:
+    """Build a clean short fallback title without dangling trailing articles/prepositions."""
+    if isinstance(words_or_text, str):
+        tokens = [w for w in words_or_text.replace("<", "").replace(">", "").split() if not w.startswith("<")]
+    else:
+        tokens = list(words_or_text)
+    sliced = []
+    for raw_tok in tokens[:max_words]:
+        ended_sentence = raw_tok.rstrip('"\')').endswith((".", "!", "?"))
+        clean_tok = raw_tok.strip(' "\'*#_,.!?:;()-')
+        if clean_tok:
+            sliced.append(clean_tok)
+        if ended_sentence and sliced:
+            break
+    while len(sliced) > 1 and sliced[-1].lower() in _DANGLING_TITLE_TAIL_WORDS:
+        sliced.pop()
+    return " ".join(sliced).strip(" ,.-#*")
 
 
 async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) -> tuple[str, str]:
@@ -8222,19 +8247,48 @@ async def generate_neutral_description_and_title(ctx: UserContext, prompt: str) 
             title = ""
             desc_lines = []
             for line in lines:
-                if line.lower().startswith("title:"):
-                    title = line[6:].strip().strip('"*# ')
-                elif line.lower().startswith("description:"):
-                    desc_lines.append(line[12:].strip())
-                else:
-                    desc_lines.append(line)
+                cleaned_line = re.sub(r"^[\s#*>\-\"']+", "", line).strip()
+                m_inline = re.match(
+                    r"^title\s*\**\s*:\s*(.+?)\s+description\s*\**\s*:\s*(.+)$",
+                    cleaned_line,
+                    flags=re.IGNORECASE,
+                )
+                if m_inline:
+                    title = m_inline.group(1).strip(' "*#:-')
+                    desc_lines.append(m_inline.group(2).strip(' "*'))
+                    continue
+                m_title = re.match(r"^title\s*\**\s*:\s*(.*)$", cleaned_line, flags=re.IGNORECASE)
+                if m_title:
+                    candidate = m_title.group(1).strip(' "*#:-')
+                    if candidate:
+                        title = candidate
+                    continue
+                m_desc = re.match(r"^description\s*\**\s*:\s*(.*)$", cleaned_line, flags=re.IGNORECASE)
+                if m_desc:
+                    candidate_desc = m_desc.group(1).strip(' "*')
+                    if candidate_desc:
+                        desc_lines.append(candidate_desc)
+                    continue
+                desc_lines.append(line.strip(' "'))
+
+            # Fallback if LLM emitted two bare lines (<Title>\n<Description>) without "Title:" prefix
+            if not title and len(desc_lines) >= 2:
+                first_line = desc_lines[0].strip(' "*#:-')
+                first_words = first_line.split()
+                second_words = desc_lines[1].split()
+                if 1 <= len(first_words) <= 7 and (
+                    not first_line.endswith((".", "!", "?")) or len(second_words) >= 6
+                ):
+                    title = first_line.rstrip(".!?").strip(' "*#:-')
+                    desc_lines = desc_lines[1:]
+
             desc = " ".join(desc_lines).strip()
             return title, desc or raw_content
     except Exception as e:
         logging.warning(f"Neutral description LLM call skipped/failed: {e}")
 
     clean_words = [w for w in prompt.replace("<", "").replace(">", "").split() if not w.startswith("<")]
-    title = " ".join(clean_words[:4]).strip(" ,.-#*")
+    title = _clean_fallback_title(clean_words, max_words=4)
     sentences = [s.strip() for s in prompt.split(".") if s.strip()]
     desc = sentences[0] if sentences else (" ".join(clean_words[:15]) or "Generated image")
     return title, desc

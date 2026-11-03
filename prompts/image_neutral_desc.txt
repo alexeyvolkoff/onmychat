@@ -1,8 +1,11 @@
-Rewrite the input prompt into a short, vivid, and human-like description in English.
-Make it sound like a natural gallery note or story about the image.
+Rewrite the input prompt into a short, vivid, and human-like gallery title and description in English.
+Make the description sound like a natural gallery note or story about the image.
 Keep it safe for work (SFW) and engaging, limited to 1-2 sentences.
-CRITICAL: Always write BOTH the Title and Description strictly in English (even if the input prompt contains Russian or another language). Output ONLY the Title and description lines — no quotes, no conversational filler.
+CRITICAL: Always write BOTH the Title and Description strictly in English (even if the input prompt contains Russian or another language).
+Reply using ONLY these exact two lines (include the "Title:" and "Description:" prefixes, no quotes, no markdown, no extra text):
+Title: <short English title, 2-5 words>
+Description: <1-2 sentence English gallery description>
 
 Input Prompt: {prompt}
+
 Output:
-Title: short English title (3-5 words max), then English description on the next line.
