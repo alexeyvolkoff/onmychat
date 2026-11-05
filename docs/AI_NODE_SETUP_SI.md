@@ -59,9 +59,9 @@ Vnaprej zgrajeni `.deb` paketi so na voljo za **amd64** in **arm64**:
 
 | Arhitektura | URL za prenos |
 |-------------|---------------|
-| x86_64 (amd64) | `https://forge.bineon.team/repo/Ubuntu/focal/onmydisk-connector-amd64.deb` |
-| ARM64 | `https://forge.bineon.team/repo/Ubuntu/focal/onmydisk-connector-arm64.deb` |
-| ARMHF (armv7) | `https://forge.bineon.team/repo/Ubuntu/focal/onmydisk-connector-armhf.deb` |
+| x86_64 (amd64) | `https://forge.onmydisk.net/repo/Ubuntu/focal/onmydisk-connector-amd64.deb` |
+| ARM64 | `https://forge.onmydisk.net/repo/Ubuntu/focal/onmydisk-connector-arm64.deb` |
+| ARMHF (armv7) | `https://forge.onmydisk.net/repo/Ubuntu/focal/onmydisk-connector-armhf.deb` |
 
 Lahko ga tudi zgradite iz izvorne kode (glejte [Razvijalski priročnik](DEVELOPERS_GUIDE.md)).
 

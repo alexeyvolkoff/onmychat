@@ -129,7 +129,7 @@ log_info "Setting up OMD Knowledge Base and embedding model..."
 mkdir -p /opt/onmychat/memory_index/unified_index
 if [ ! -f /opt/onmychat/memory_index/unified_index/chroma.sqlite3 ]; then
     log_info "Downloading pre-indexed OMD knowledge base..."
-    curl -fsSL "https://forge.bineon.team/repo/OnMyChat/chroma_omd.tar.gz" | tar -xz -C /opt/onmychat/memory_index/unified_index/ || log_warning "Failed to download ChromaDB knowledge base."
+    curl -fsSL "https://forge.onmydisk.net/repo/OnMyChat/chroma_omd.tar.gz" | tar -xz -C /opt/onmychat/memory_index/unified_index/ || log_warning "Failed to download ChromaDB knowledge base."
 else
     log_info "OMD knowledge base already present."
 fi
@@ -140,7 +140,7 @@ HF_MODEL_DIR="$HF_HUB_DIR/models--sentence-transformers--paraphrase-multilingual
 if [ ! -d "$HF_MODEL_DIR" ]; then
     log_info "Downloading pre-cached SentenceTransformers embedding model..."
     mkdir -p "$HF_HUB_DIR"
-    curl -fsSL "https://forge.bineon.team/repo/OnMyChat/sentence_model.tar.gz" | tar -xz -C "$HF_HUB_DIR" || log_warning "Failed to download embedding model."
+    curl -fsSL "https://forge.onmydisk.net/repo/OnMyChat/sentence_model.tar.gz" | tar -xz -C "$HF_HUB_DIR" || log_warning "Failed to download embedding model."
     chown -R "$RUN_USER:$RUN_USER" "$RUN_USER_HOME/.cache"
 else
     log_info "SentenceTransformers embedding model already cached."

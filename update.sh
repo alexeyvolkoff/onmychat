@@ -77,7 +77,7 @@ fi
 
 # --- Step 3: Update onmydisk-connector ---
 log_info "Updating onmydisk-connector..."
-CONNECTOR_URL="https://forge.bineon.team/repo/Ubuntu/focal/onmydisk-connector-arm64.deb"
+CONNECTOR_URL="https://forge.onmydisk.net/repo/Ubuntu/focal/onmydisk-connector-arm64.deb"
 CONNECTOR_DEB="/tmp/onmydisk-connector-arm64.deb"
 curl -fsSL "$CONNECTOR_URL" -o "$CONNECTOR_DEB"
 dpkg -i "$CONNECTOR_DEB" || true
