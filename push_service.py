@@ -38,38 +38,89 @@ _local_node_meta_cache: Optional[tuple[str, str]] = None
 
 
 def get_local_node_identity() -> tuple[str, str]:
-    """Returns (primary_link_id, node_name) for this OnMyDisk node."""
+    """Returns (primary_link_id, node_name) for the active P2P OnMyDisk node on this host."""
     global _local_node_meta_cache
     if _local_node_meta_cache is not None:
         return _local_node_meta_cache
 
     import configparser
+    import glob
     import re
     import socket
 
+    candidate_dirs: list[tuple[str, bool]] = []
+    seen_dirs: set[str] = set()
+
+    def _add_dir(path_str: str, from_running_proc: bool = False) -> None:
+        norm = os.path.normpath(os.path.expanduser(path_str))
+        if norm not in seen_dirs and os.path.isdir(norm):
+            seen_dirs.add(norm)
+            candidate_dirs.append((norm, from_running_proc))
+
+    # 1. Inspect running `onmydisk` executables so dev/custom installs (e.g. Node/target/usr/bin/onmydisk)
+    #    connected to direct.onmydisk.net take priority over legacy /etc/onmydisk configs.
+    for proc_exe in glob.glob("/proc/[0-9]*/exe"):
+        try:
+            exe = os.readlink(proc_exe)
+            if os.path.basename(exe).startswith("onmydisk"):
+                _add_dir(os.path.join(os.path.dirname(exe), "..", "..", "etc", "onmydisk"), True)
+                _add_dir(os.path.join(os.path.dirname(exe), "..", "etc", "onmydisk"), True)
+        except Exception:
+            pass
+
+    # 2. Standard & workspace locations
+    _add_dir("~/projects/omd/onmydisk/Node/target/etc/onmydisk", False)
+    _add_dir("~/.config/onmydisk", False)
+    _add_dir("/etc/onmydisk", False)
+    _add_dir("/root/.config/onmydisk", False)
+
+    best_score = -1
     link_id = ""
     node_name = ""
-    for cfg in (
-        "/etc/onmydisk/onmydisk.conf.user",
-        "/etc/onmydisk/onmydisk.conf",
-        os.path.expanduser("~/.config/onmydisk/onmydisk.conf"),
-        "/root/.config/onmydisk/onmydisk.conf",
-    ):
-        if os.path.exists(cfg):
+
+    for cfg_dir, is_running in candidate_dirs:
+        dir_link = ""
+        dir_host = ""
+        dir_server = ""
+        has_paired_dids = False
+
+        for fname in ("onmydisk.conf.user", "onmydisk.conf"):
+            fpath = os.path.join(cfg_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
             try:
-                cp = configparser.ConfigParser()
-                cp.read(cfg)
+                cp = configparser.ConfigParser(strict=False)
+                cp.read(fpath)
+                if "PairedDIDs" in cp and len(cp["PairedDIDs"]) > 0:
+                    has_paired_dids = True
                 if "Settings" in cp:
-                    if not link_id:
-                        cand = cp["Settings"].get("linkid", "").strip()
-                        if cand:
-                            link_id = cand
-                    if not node_name:
-                        h = cp["Settings"].get("hostname", "").strip()
-                        if h:
-                            node_name = h
+                    if not dir_link:
+                        dir_link = (cp["Settings"].get("linkid", "") or cp["Settings"].get("nodeid", "")).strip()
+                    if not dir_host:
+                        dir_host = cp["Settings"].get("hostname", "").strip()
+                    if not dir_server:
+                        dir_server = cp["Settings"].get("server", "").strip()
+                if "Network" in cp and not dir_server:
+                    dir_server = cp["Network"].get("host", "").strip()
             except Exception:
                 pass
+
+        if not dir_link:
+            continue
+
+        score = 10
+        if "direct.onmydisk" in dir_server.lower():
+            score += 100
+        if is_running:
+            score += 50
+        if has_paired_dids:
+            score += 25
+
+        if score > best_score:
+            best_score = score
+            link_id = dir_link
+            if dir_host:
+                node_name = dir_host
 
     if not link_id and os.path.exists("/tmp/onmydisk.log"):
         try:

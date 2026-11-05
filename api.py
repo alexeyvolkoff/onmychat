@@ -4659,6 +4659,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         save_locally = bool(is_node_owner or data.save_local)
 
         ref_imgs = data.reference_images or ([data.reference_image] if data.reference_image else None)
+        is_sdxl_req = isinstance(data.sliders, dict) and core_service.is_sdxl_base_model(data.sliders.get("base_model"))
 
         async def _run_krea2_core() -> dict:
             t_start = time.time()
@@ -4686,7 +4687,6 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
                 custom_description=data.custom_description,
             )
             total_time = round(time.time() - t_start, 2)
-            is_sdxl_req = isinstance(data.sliders, dict) and core_service.is_sdxl_base_model(data.sliders.get("base_model"))
             gpu_time = None
             if not is_sdxl_req:
                 try:
@@ -4747,7 +4747,12 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
             core_service.generation_progress_var.reset(token_var)
             task.add_done_callback(lambda _: prog_q.put_nowait(None))
 
-            yield (json.dumps({"type": "progress", "stage": "warming", "phase": "preparing"}) + "\n").encode("utf-8")
+            init_evt = (
+                {"type": "progress", "stage": "generating", "phase": "loading_models", "step": 0}
+                if is_sdxl_req
+                else {"type": "progress", "stage": "warming", "phase": "preparing"}
+            )
+            yield (json.dumps(init_evt) + "\n").encode("utf-8")
 
             try:
                 while True:

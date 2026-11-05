@@ -3084,6 +3084,7 @@ async def generate_image_workflow(workflow) -> bytes:
                 
                 # Timeout safety
                 loop_start = time.time()
+                sampler_started = False
 
                 comfy_timeout = int(SETTINGS.get("COMFY_TIMEOUT", 300))
                 async for msg in ws:
@@ -3105,15 +3106,19 @@ async def generate_image_workflow(workflow) -> bytes:
                                 nid = str(data_content.get("node", ""))
                                 node_cls = str(workflow.get(nid, {}).get("class_type", "")) if isinstance(workflow, dict) else ""
                                 if "Sampler" in node_cls:
+                                    sampler_started = True
                                     await emit_generation_progress("generating", step=0)
-                                else:
-                                    await emit_generation_progress("warming", phase="loading_models")
+                                elif not sampler_started:
+                                    await emit_generation_progress("generating", phase="loading_models", step=0)
+                                elif "SaveImage" in node_cls or "PreviewImage" in node_cls:
+                                    await emit_generation_progress("saving")
 
                         elif msg_type == "progress":
                             data_content = data.get("data", {})
                             val = int(data_content.get("value", 0) or 0)
                             mx = int(data_content.get("max", 0) or 0)
                             if mx >= 4:
+                                sampler_started = True
                                 await emit_generation_progress("generating", step=val, total_steps=mx)
                                 
                         elif msg_type == "executed":
@@ -3774,6 +3779,133 @@ def get_krea_archetype_configs() -> dict[str, dict]:
     return configs
 
 
+_SDXL_REACTOR_CACHE: dict | None = None
+
+
+async def _discover_sdxl_reactor_capabilities() -> dict:
+    """Проверяет доступность нод ReActor и лучших установленных моделей FaceSwap в локальном ComfyUI."""
+    global _SDXL_REACTOR_CACHE
+    if _SDXL_REACTOR_CACHE is not None:
+        return _SDXL_REACTOR_CACHE
+    caps = {
+        "available": False,
+        "has_opt": False,
+        "swap_model": "inswapper_128.onnx",
+        "face_restore_model": "none",
+    }
+    if not COMFY_API_URL:
+        return caps
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.5)) as session:
+            async with session.get(f"{COMFY_API_URL}/object_info") as resp:
+                if resp.status == 200:
+                    obj_info = await resp.json()
+                    has_base = "ReActorFaceSwap" in obj_info
+                    has_opt = ("ReActorFaceSwapOpt" in obj_info) and ("ReActorOptions" in obj_info)
+                    if has_base or has_opt:
+                        caps["available"] = True
+                        caps["has_opt"] = has_opt
+                        node_schema = obj_info.get("ReActorFaceSwapOpt" if has_opt else "ReActorFaceSwap", {})
+                        req_in = node_schema.get("input", {}).get("required", {})
+                        swap_models = (req_in.get("swap_model") or [[]])[0] or []
+                        for pref_swap in (
+                            "hyperswap_1a_256.onnx",
+                            "hyperswap_1c_256.onnx",
+                            "hyperswap_1b_256.onnx",
+                            "reswapper_256.onnx",
+                            "inswapper_128.onnx",
+                        ):
+                            if pref_swap in swap_models:
+                                caps["swap_model"] = pref_swap
+                                break
+                        else:
+                            if swap_models:
+                                caps["swap_model"] = swap_models[0]
+
+                        restore_models = (req_in.get("face_restore_model") or [[]])[0] or []
+                        for pref_rest in ("GFPGANv1.4.pth", "GFPGANv1.3.pth"):
+                            if pref_rest in restore_models:
+                                caps["face_restore_model"] = pref_rest
+                                break
+                        _SDXL_REACTOR_CACHE = caps
+    except Exception as e:
+        logging.warning(f"[SDXL Studio] ReActor capability check warning: {e}")
+    return caps
+
+
+_SDXL_INPAINT_CACHE: dict | None = None
+
+
+async def _discover_sdxl_inpaint_capabilities() -> dict:
+    """Проверяет наличие нод и моделей для SDXL Auto-Inpaint (YOLO person/face/hand + SAM + DifferentialDiffusion)."""
+    global _SDXL_INPAINT_CACHE
+    if _SDXL_INPAINT_CACHE is not None:
+        return _SDXL_INPAINT_CACHE
+    caps = {
+        "available": False,
+        "person_model": "",
+        "face_model": "",
+        "hand_model": "",
+        "sam_model": "",
+        "has_resize_plus": False,
+        "has_ordered_filter": False,
+        "has_diff_diffusion": False,
+    }
+    if not COMFY_API_URL:
+        return caps
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2.5)) as session:
+            async with session.get(f"{COMFY_API_URL}/object_info") as resp:
+                if resp.status == 200:
+                    obj_info = await resp.json()
+                    req_nodes = (
+                        "UltralyticsDetectorProvider",
+                        "SegmDetectorSEGS",
+                        "SegsToCombinedMask",
+                        "InpaintModelConditioning",
+                        "ImageCompositeMasked",
+                        "GrowMask",
+                        "SubtractMask",
+                        "ImpactGaussianBlurMask",
+                    )
+                    if all(n in obj_info for n in req_nodes):
+                        ultra_in = (
+                            obj_info.get("UltralyticsDetectorProvider", {})
+                            .get("input", {})
+                            .get("required", {})
+                        )
+                        u_models = (ultra_in.get("model_name") or [[]])[0] or []
+                        person_m = next((m for m in u_models if "person" in m and "seg" in m), "")
+                        face_m = next((m for m in u_models if "face" in m), "")
+                        hand_m = next((m for m in u_models if "hand" in m), "")
+                        if person_m:
+                            caps["available"] = True
+                            caps["person_model"] = person_m
+                            caps["face_model"] = face_m
+                            caps["hand_model"] = hand_m
+                            caps["has_resize_plus"] = "ImageResize+" in obj_info
+                            caps["has_ordered_filter"] = "ImpactSEGSOrderedFilter" in obj_info
+                            caps["has_diff_diffusion"] = "DifferentialDiffusion" in obj_info
+                            if "SAMLoader" in obj_info and "SAMDetectorSegmented" in obj_info:
+                                sam_in = (
+                                    obj_info.get("SAMLoader", {})
+                                    .get("input", {})
+                                    .get("required", {})
+                                )
+                                sam_models = (sam_in.get("model_name") or [[]])[0] or []
+                                for pref_sam in ("sam_vit_b_01ec64.pth", "sam_vit_l_0b3195.pth"):
+                                    if pref_sam in sam_models:
+                                        caps["sam_model"] = pref_sam
+                                        break
+                                else:
+                                    if sam_models:
+                                        caps["sam_model"] = sam_models[0]
+                            _SDXL_INPAINT_CACHE = caps
+    except Exception as e:
+        logging.warning(f"[SDXL Studio] Auto-Inpaint capability check warning: {e}")
+    return caps
+
+
 async def generate_sdxl_studio_image(
     ctx: UserContext,
     prompt: str,
@@ -3782,6 +3914,8 @@ async def generate_sdxl_studio_image(
     persona_id: str | None = None,
     persona_name: str | None = None,
     sliders: dict | None = None,
+    reference_image: str | None = None,
+    reference_images: list[str] | None = None,
     width: int = 896,
     height: int = 1152,
     steps: int = 6,
@@ -3791,10 +3925,24 @@ async def generate_sdxl_studio_image(
     **kwargs
 ) -> tuple[str, str, str, bytes]:
     """Рендерит кадр Creative Studio через локальный быстрый SDXL DMD2 пайплайн (flow.json)."""
-    if not prompt and not persona_prompt:
+    sliders = sliders or {}
+
+    raw_refs: list[str] = []
+    if reference_images and isinstance(reference_images, list):
+        raw_refs.extend([r for r in reference_images if r])
+    elif reference_image:
+        raw_refs.append(reference_image)
+
+    if not prompt and not persona_prompt and not raw_refs:
         raise Exception("Укажите промпт или выберите персону для генерации.")
 
-    sliders = sliders or {}
+    comfy_ref_names: list[str] = []
+    for ref_item in raw_refs[:2]:
+        ref_bytes = await resolve_reference_image_bytes(ctx, ref_item)
+        if ref_bytes:
+            c_name = await upload_reference_image_to_comfy(ref_bytes)
+            if c_name:
+                comfy_ref_names.append(c_name)
 
     # Проверяем право на uncensored-режим (Owner / Club Member / Muse Pass на не-iOS)
     is_uncensored = bool(getattr(ctx, "private_mode", False) or getattr(ctx, "trusted_owner", False))
@@ -3995,6 +4143,423 @@ async def generate_sdxl_studio_image(
         workflow_json["5"]["inputs"]["steps"] = eff_steps
         workflow_json["5"]["inputs"]["cfg"] = eff_cfg
 
+    # Подключаем работу с референсами в SDXL:
+    # 1) "faceswap" — перенос лица с референса в новую сцену (ReActor HyperSwap 256 + GFPGAN)
+    # 2) "inpaint"  — Auto-Inpaint по референсу: смена одежды ("outfit"), смена фона ("background") или силуэта ("person")
+    sdxl_ref_mode = str(sliders.get("sdxl_ref_mode") or "faceswap").strip().lower()
+    sdxl_face_target = str(sliders.get("sdxl_face_target") or "auto").strip().lower()
+    sdxl_inpaint_target = str(sliders.get("sdxl_inpaint_target") or "outfit").strip().lower()
+    faceswap_applied = False
+    inpaint_applied = False
+
+    if comfy_ref_names and sdxl_ref_mode in ("inpaint", "retouch", "outfit", "clothes"):
+        inpaint_caps = await _discover_sdxl_inpaint_capabilities()
+        if inpaint_caps.get("available"):
+            base_ref_fname = comfy_ref_names[0]
+            workflow_json["200"] = {"class_type": "LoadImage", "inputs": {"image": base_ref_fname}}
+            if inpaint_caps.get("has_resize_plus"):
+                workflow_json["201"] = {
+                    "class_type": "ImageResize+",
+                    "inputs": {
+                        "image": ["200", 0],
+                        "width": 1152,
+                        "height": 1152,
+                        "interpolation": "lanczos",
+                        "method": "keep proportion",
+                        "condition": "always",
+                        "multiple_of": 64,
+                    },
+                }
+            else:
+                workflow_json["201"] = {
+                    "class_type": "ImageScaleToTotalPixels",
+                    "inputs": {
+                        "image": ["200", 0],
+                        "upscale_method": "lanczos",
+                        "megapixels": 1.05,
+                    },
+                }
+
+            # 1) Сегментация человека на переднем плане
+            workflow_json["202"] = {
+                "class_type": "UltralyticsDetectorProvider",
+                "inputs": {"model_name": inpaint_caps["person_model"]},
+            }
+            workflow_json["203"] = {
+                "class_type": "SegmDetectorSEGS",
+                "inputs": {
+                    "segm_detector": ["202", 1],
+                    "image": ["201", 0],
+                    "threshold": 0.35,
+                    "dilation": 14 if sdxl_inpaint_target != "background" else 4,
+                    "crop_factor": 3.0,
+                    "drop_size": 16,
+                    "labels": "all",
+                },
+            }
+            person_segs_link = ["203", 0]
+            # Для одежды/силуэта берём главный передний план (чтобы не переодевать случайных людей в размытом фоне)
+            if inpaint_caps.get("has_ordered_filter") and sdxl_inpaint_target in ("outfit", "person"):
+                workflow_json["230"] = {
+                    "class_type": "ImpactSEGSOrderedFilter",
+                    "inputs": {
+                        "segs": ["203", 0],
+                        "target": "area(=w*h)",
+                        "order": True,
+                        "take_start": 0,
+                        "take_count": 1,
+                    },
+                }
+                person_segs_link = ["230", 0]
+
+            workflow_json["204"] = {
+                "class_type": "SegsToCombinedMask",
+                "inputs": {"segs": person_segs_link},
+            }
+
+            if sdxl_inpaint_target == "background":
+                workflow_json["209"] = {
+                    "class_type": "GrowMask",
+                    "inputs": {"mask": ["204", 0], "expand": 3, "tapered_corners": True},
+                }
+                workflow_json["210"] = {
+                    "class_type": "InvertMask",
+                    "inputs": {"mask": ["209", 0]},
+                }
+                workflow_json["211"] = {
+                    "class_type": "ImpactGaussianBlurMask",
+                    "inputs": {"mask": ["210", 0], "kernel_size": 15, "sigma": 6.0},
+                }
+            elif sdxl_inpaint_target == "person":
+                workflow_json["209"] = {
+                    "class_type": "GrowMask",
+                    "inputs": {"mask": ["204", 0], "expand": 16, "tapered_corners": True},
+                }
+                workflow_json["211"] = {
+                    "class_type": "ImpactGaussianBlurMask",
+                    "inputs": {"mask": ["209", 0], "kernel_size": 21, "sigma": 9.0},
+                }
+            else:
+                # Режим по умолчанию ("outfit"): меняем одежду/торс, защищая лицо, купол волос и кисти рук
+                workflow_json["209"] = {
+                    "class_type": "GrowMask",
+                    "inputs": {"mask": ["204", 0], "expand": 14, "tapered_corners": True},
+                }
+                protect_mask_link = None
+                if inpaint_caps.get("face_model"):
+                    workflow_json["205"] = {
+                        "class_type": "UltralyticsDetectorProvider",
+                        "inputs": {"model_name": inpaint_caps["face_model"]},
+                    }
+                    workflow_json["206"] = {
+                        "class_type": "BboxDetectorSEGS",
+                        "inputs": {
+                            "bbox_detector": ["205", 0],
+                            "image": ["201", 0],
+                            "threshold": 0.35,
+                            "dilation": 14,
+                            "crop_factor": 3.0,
+                            "drop_size": 10,
+                            "labels": "all",
+                        },
+                    }
+                    face_segs_link = ["206", 0]
+                    if inpaint_caps.get("has_ordered_filter"):
+                        workflow_json["231"] = {
+                            "class_type": "ImpactSEGSOrderedFilter",
+                            "inputs": {
+                                "segs": ["206", 0],
+                                "target": "area(=w*h)",
+                                "order": True,
+                                "take_start": 0,
+                                "take_count": 1,
+                            },
+                        }
+                        face_segs_link = ["231", 0]
+                    workflow_json["207"] = {
+                        "class_type": "SegsToCombinedMask",
+                        "inputs": {"segs": face_segs_link},
+                    }
+                    workflow_json["208"] = {
+                        "class_type": "GrowMask",
+                        "inputs": {"mask": ["207", 0], "expand": 18, "tapered_corners": True},
+                    }
+                    # Смещённый вверх широкий купол защищает макушку и причёску по бокам головы (безопасно при 0 лиц)
+                    workflow_json["220"] = {
+                        "class_type": "GrowMask",
+                        "inputs": {"mask": ["207", 0], "expand": 92, "tapered_corners": True},
+                    }
+                    workflow_json["221"] = {
+                        "class_type": "CropMask",
+                        "inputs": {"mask": ["220", 0], "x": 0, "y": 100, "width": 4096, "height": 4096},
+                    }
+                    workflow_json["222"] = {
+                        "class_type": "MaskComposite",
+                        "inputs": {
+                            "destination": ["208", 0],
+                            "source": ["221", 0],
+                            "x": 0,
+                            "y": 0,
+                            "operation": "or",
+                        },
+                    }
+                    protect_mask_link = ["222", 0]
+
+                if inpaint_caps.get("hand_model") and inpaint_caps.get("sam_model"):
+                    workflow_json["223"] = {
+                        "class_type": "UltralyticsDetectorProvider",
+                        "inputs": {"model_name": inpaint_caps["hand_model"]},
+                    }
+                    workflow_json["224"] = {
+                        "class_type": "BboxDetectorSEGS",
+                        "inputs": {
+                            "bbox_detector": ["223", 0],
+                            "image": ["201", 0],
+                            "threshold": 0.35,
+                            "dilation": 2,
+                            "crop_factor": 2.5,
+                            "drop_size": 10,
+                            "labels": "all",
+                        },
+                    }
+                    workflow_json["225"] = {
+                        "class_type": "SAMLoader",
+                        "inputs": {"model_name": inpaint_caps["sam_model"], "device_mode": "AUTO"},
+                    }
+                    workflow_json["226"] = {
+                        "class_type": "SAMDetectorSegmented",
+                        "inputs": {
+                            "sam_model": ["225", 0],
+                            "segs": ["224", 0],
+                            "image": ["201", 0],
+                            "detection_hint": "center-1",
+                            "dilation": 2,
+                            "threshold": 0.88,
+                            "bbox_expansion": 6,
+                            "mask_hint_threshold": 0.7,
+                            "mask_hint_use_negative": "False",
+                        },
+                    }
+                    if protect_mask_link is not None:
+                        workflow_json["227"] = {
+                            "class_type": "MaskComposite",
+                            "inputs": {
+                                "destination": protect_mask_link,
+                                "source": ["226", 0],
+                                "x": 0,
+                                "y": 0,
+                                "operation": "or",
+                            },
+                        }
+                        protect_mask_link = ["227", 0]
+                    else:
+                        protect_mask_link = ["226", 0]
+
+                if protect_mask_link is not None:
+                    workflow_json["210"] = {
+                        "class_type": "SubtractMask",
+                        "inputs": {"mask1": ["209", 0], "mask2": protect_mask_link},
+                    }
+                    raw_inpaint_mask = ["210", 0]
+                else:
+                    raw_inpaint_mask = ["209", 0]
+
+                workflow_json["211"] = {
+                    "class_type": "ImpactGaussianBlurMask",
+                    "inputs": {"mask": raw_inpaint_mask, "kernel_size": 21, "sigma": 9.0},
+                }
+
+            model_for_inpaint = ["103", 0]
+            if inpaint_caps.get("has_diff_diffusion"):
+                workflow_json["214"] = {
+                    "class_type": "DifferentialDiffusion",
+                    "inputs": {"model": ["103", 0], "strength": 1.0},
+                }
+                model_for_inpaint = ["214", 0]
+
+            workflow_json["215"] = {
+                "class_type": "InpaintModelConditioning",
+                "inputs": {
+                    "positive": ["85", 0],
+                    "negative": ["4", 0],
+                    "vae": ["127", 2],
+                    "pixels": ["201", 0],
+                    "mask": ["211", 0],
+                    "noise_mask": True,
+                },
+            }
+
+            if "6" in workflow_json:
+                del workflow_json["6"]
+            inpaint_steps = max(7, eff_steps)
+            inpaint_cfg = max(1.2, eff_cfg)
+            workflow_json["5"]["inputs"]["model"] = model_for_inpaint
+            workflow_json["5"]["inputs"]["positive"] = ["215", 0]
+            workflow_json["5"]["inputs"]["negative"] = ["215", 1]
+            workflow_json["5"]["inputs"]["latent_image"] = ["215", 2]
+            workflow_json["5"]["inputs"]["steps"] = inpaint_steps
+            workflow_json["5"]["inputs"]["cfg"] = inpaint_cfg
+            workflow_json["5"]["inputs"]["denoise"] = 0.94
+
+            # Попиксельное сведение обратно поверх исходного кадра, чтобы немаскированный фон/лицо не теряли резкость в VAE
+            post_inpaint_link = ["41", 0]
+            if "123" in workflow_json and "inputs" in workflow_json["123"]:
+                workflow_json["123"]["inputs"]["image"] = ["41", 0]
+                post_inpaint_link = ["123", 0]
+            workflow_json["216"] = {
+                "class_type": "ImageCompositeMasked",
+                "inputs": {
+                    "destination": ["201", 0],
+                    "source": post_inpaint_link,
+                    "x": 0,
+                    "y": 0,
+                    "resize_source": True,
+                    "mask": ["211", 0],
+                },
+            }
+            final_inpaint_img = ["216", 0]
+
+            # Если прикреплён 2-й референс при замене силуэта ("person"), переносим на нового персонажа лицо со 2-го референса
+            if len(comfy_ref_names) >= 2 and sdxl_inpaint_target == "person":
+                reactor_caps = await _discover_sdxl_reactor_capabilities()
+                if reactor_caps.get("available"):
+                    workflow_json["240"] = {"class_type": "LoadImage", "inputs": {"image": comfy_ref_names[1]}}
+                    if reactor_caps.get("has_opt"):
+                        workflow_json["241"] = {
+                            "class_type": "ReActorOptions",
+                            "inputs": {
+                                "input_faces_order": "large-small",
+                                "input_faces_index": "0",
+                                "detect_gender_input": "no",
+                                "source_faces_order": "large-small",
+                                "source_faces_index": "0",
+                                "detect_gender_source": "no",
+                                "console_log_level": 1,
+                            },
+                        }
+                        workflow_json["242"] = {
+                            "class_type": "ReActorFaceSwapOpt",
+                            "inputs": {
+                                "enabled": True,
+                                "input_image": final_inpaint_img,
+                                "source_image": ["240", 0],
+                                "options": ["241", 0],
+                                "swap_model": reactor_caps.get("swap_model", "inswapper_128.onnx"),
+                                "facedetection": "retinaface_resnet50",
+                                "face_restore_model": reactor_caps.get("face_restore_model", "none"),
+                                "face_restore_visibility": 0.85,
+                                "codeformer_weight": 0.5,
+                            },
+                        }
+                        final_inpaint_img = ["242", 0]
+                        faceswap_applied = True
+
+            if "131" in workflow_json and "inputs" in workflow_json["131"]:
+                workflow_json["131"]["inputs"]["images"] = final_inpaint_img
+            inpaint_applied = True
+            logging.info(
+                f"[SDXL Studio] Injected Auto-Inpaint (target={sdxl_inpaint_target}, "
+                f"steps={inpaint_steps}, cfg={inpaint_cfg}, second_ref_face={faceswap_applied})"
+            )
+        else:
+            logging.warning("[SDXL Studio] Auto-Inpaint requested, but segmentation nodes are unavailable; falling back to FaceSwap")
+            sdxl_ref_mode = "faceswap"
+
+    if comfy_ref_names and not inpaint_applied and sdxl_ref_mode in ("faceswap", "face", ""):
+        reactor_caps = await _discover_sdxl_reactor_capabilities()
+        if reactor_caps.get("available"):
+            swap_model = reactor_caps.get("swap_model", "inswapper_128.onnx")
+            restore_model = reactor_caps.get("face_restore_model", "none")
+            try:
+                restore_vis = max(0.1, min(1.0, float(sliders.get("face_restore_visibility", 0.85))))
+            except Exception:
+                restore_vis = 0.85
+
+            prev_img_link = ["41", 0]
+            if len(comfy_ref_names) >= 2:
+                swap_specs = [
+                    (comfy_ref_names[0], "left-right", "0"),
+                    (comfy_ref_names[1], "left-right", "1"),
+                ]
+            else:
+                target_map = {
+                    "left": ("left-right", "0"),
+                    "right": ("right-left", "0"),
+                    "second": ("large-small", "1"),
+                    "both": ("large-small", "0,1"),
+                    "auto": ("large-small", "0"),
+                }
+                t_order, t_idx = target_map.get(sdxl_face_target, ("large-small", "0"))
+                swap_specs = [(comfy_ref_names[0], t_order, t_idx)]
+
+            for idx_ref, (ref_fname, faces_order_str, faces_idx_str) in enumerate(swap_specs):
+                load_nid = str(201 + idx_ref * 3)
+                opt_nid = str(202 + idx_ref * 3)
+                swap_nid = str(203 + idx_ref * 3)
+                workflow_json[load_nid] = {
+                    "class_type": "LoadImage",
+                    "inputs": {"image": ref_fname},
+                }
+                if reactor_caps.get("has_opt"):
+                    workflow_json[opt_nid] = {
+                        "class_type": "ReActorOptions",
+                        "inputs": {
+                            "input_faces_order": faces_order_str,
+                            "input_faces_index": faces_idx_str,
+                            "detect_gender_input": "no",
+                            "source_faces_order": "large-small",
+                            "source_faces_index": "0",
+                            "detect_gender_source": "no",
+                            "console_log_level": 1,
+                        },
+                    }
+                    workflow_json[swap_nid] = {
+                        "class_type": "ReActorFaceSwapOpt",
+                        "inputs": {
+                            "enabled": True,
+                            "input_image": prev_img_link,
+                            "source_image": [load_nid, 0],
+                            "options": [opt_nid, 0],
+                            "swap_model": swap_model,
+                            "facedetection": "retinaface_resnet50",
+                            "face_restore_model": restore_model,
+                            "face_restore_visibility": restore_vis,
+                            "codeformer_weight": 0.5,
+                        },
+                    }
+                else:
+                    workflow_json[swap_nid] = {
+                        "class_type": "ReActorFaceSwap",
+                        "inputs": {
+                            "enabled": True,
+                            "input_image": prev_img_link,
+                            "source_image": [load_nid, 0],
+                            "swap_model": swap_model,
+                            "facedetection": "retinaface_resnet50",
+                            "face_restore_model": restore_model,
+                            "face_restore_visibility": restore_vis,
+                            "codeformer_weight": 0.5,
+                            "detect_gender_input": "no",
+                            "detect_gender_source": "no",
+                            "input_faces_index": faces_idx_str,
+                            "source_faces_index": "0",
+                            "console_log_level": 1,
+                        },
+                    }
+                prev_img_link = [swap_nid, 0]
+
+            if "123" in workflow_json and "inputs" in workflow_json["123"]:
+                workflow_json["123"]["inputs"]["image"] = prev_img_link
+            elif "131" in workflow_json and "inputs" in workflow_json["131"]:
+                workflow_json["131"]["inputs"]["images"] = prev_img_link
+            faceswap_applied = True
+            logging.info(
+                f"[SDXL Studio] Injected ReActor FaceSwap ({swap_model} + {restore_model}, "
+                f"refs={len(swap_specs)}, target={sdxl_face_target})"
+            )
+        else:
+            logging.warning("[SDXL Studio] Reference image provided, but ReActor nodes not available in ComfyUI")
+
     clean_user_prompt = (prompt or persona_prompt or "").strip()
     custom_title = str(kwargs.get("custom_title") or "").strip()
     custom_description = str(kwargs.get("custom_description") or "").strip()
@@ -4005,7 +4570,8 @@ async def generate_sdxl_studio_image(
 
     logging.info(
         f"[SDXL Studio] Generating on local ComfyUI with {ckpt_model} "
-        f"(steps={eff_steps}, cfg={eff_cfg}, size={w_clamped}x{h_clamped}, loras={list(active_lora_strengths.keys())})"
+        f"(steps={eff_steps}, cfg={eff_cfg}, size={w_clamped}x{h_clamped}, "
+        f"loras={list(active_lora_strengths.keys())}, inpaint={inpaint_applied}, faceswap={faceswap_applied})"
     )
     try:
         img_data, orig_filename = await generate_image_workflow(workflow_json)
@@ -4100,7 +4666,8 @@ async def generate_krea2_image(
     **kwargs
 ) -> tuple[str, str, str, bytes]:
     """Генерация изображения через универсальный пайплайн Creative Studio (Krea 2 / Anima или локальный SDXL)."""
-    if not prompt and not persona_prompt:
+    has_any_ref = bool(reference_image or (isinstance(reference_images, list) and any(reference_images)))
+    if not prompt and not persona_prompt and not has_any_ref:
         raise Exception("Укажите промпт или выберите персону для генерации.")
 
     if isinstance(sliders, dict) and is_sdxl_base_model(sliders.get("base_model")):
@@ -4112,6 +4679,8 @@ async def generate_krea2_image(
             persona_id=persona_id,
             persona_name=persona_name,
             sliders=sliders,
+            reference_image=reference_image,
+            reference_images=reference_images,
             width=width,
             height=height,
             steps=steps,
@@ -6838,6 +7407,29 @@ def _get_director_model() -> str:
     return (FUN_MODEL or DEFAULT_MODEL or "gemma4:latest").strip()
 
 
+_DIRECTOR_LANG_NAMES = {
+    "en": "English",
+    "ru": "Russian",
+    "sl": "Slovenian",
+    "de": "German",
+    "es": "Spanish",
+    "fr": "French",
+    "it": "Italian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "hr": "Croatian",
+    "sr": "Serbian",
+    "sk": "Slovak",
+    "zh_cn": "Simplified Chinese",
+    "zh_tw": "Traditional Chinese",
+    "he": "Hebrew",
+    "fa": "Persian",
+}
+
+
 def _detect_is_russian(text: str, ctx: UserContext | None = None) -> bool:
     if text and re.search(r"[А-Яа-яЁё]", text):
         return True
@@ -6846,6 +7438,26 @@ def _detect_is_russian(text: str, ctx: UserContext | None = None) -> bool:
         if lang.startswith("ru"):
             return True
     return False
+
+
+def _resolve_director_language(text: str, ctx: UserContext | None = None) -> tuple[str, bool]:
+    """Returns (english_language_name_for_llm, is_ru) respecting user's active UI locale and text script."""
+    ui_code = ""
+    if ctx and getattr(ctx, "settings", None):
+        raw_code = str(ctx.settings.get("language") or ctx.settings.get("locale") or "").lower().strip().replace("-", "_")
+        if raw_code in _DIRECTOR_LANG_NAMES:
+            ui_code = raw_code
+        else:
+            prim = raw_code.split("_")[0]
+            if prim in _DIRECTOR_LANG_NAMES:
+                ui_code = prim
+    if text and re.search(r"[А-Яа-яЁё]", text):
+        if ui_code in ("uk", "sr"):
+            return _DIRECTOR_LANG_NAMES[ui_code], False
+        return "Russian", True
+    if ui_code:
+        return _DIRECTOR_LANG_NAMES[ui_code], (ui_code == "ru")
+    return "English", False
 
 
 _CIVITAI_URL_RE = re.compile(
@@ -8111,8 +8723,13 @@ async def krea_director_rewrite_prompt(
     """
     instruction = (instruction or "").strip()
     current_prompt = (current_prompt or "").strip()
+    reply_lang, is_ru = _resolve_director_language(instruction or current_prompt, ctx)
     if not instruction and not current_prompt:
-        raise ValueError("Введите пожелание для Режиссёра, ссылку на CivitAI или вставьте промпт в композер.")
+        raise ValueError(
+            "Введите пожелание для Режиссёра, ссылку на CivitAI или вставьте промпт в композер."
+            if is_ru
+            else "Enter a direction for the AI Director, paste a CivitAI link, or type a prompt in the composer."
+        )
 
     # Auto-detect CivitAI image/post URL in Director instruction (or bare URL in current_prompt)
     civitai_imported = None
@@ -8123,8 +8740,7 @@ async def krea_director_rewrite_prompt(
         if leftover_cp and not instruction:
             instruction = leftover_cp
 
-    is_ru = _detect_is_russian(instruction or current_prompt, ctx)
-    reply_lang = "Russian" if is_ru else "English"
+    reply_lang, is_ru = _resolve_director_language(instruction or current_prompt, ctx)
     model = _get_director_model()
 
     applied_settings = None
@@ -8320,8 +8936,7 @@ async def krea_director_storyboard(
     combined_sample = f"{story_title} {setting} {idea}"
     if existing_scenes:
         combined_sample += " " + " ".join(str(s.get("narrative", "")) for s in existing_scenes[:2])
-    is_ru = _detect_is_russian(combined_sample, ctx)
-    story_lang = "Russian" if is_ru else "English"
+    story_lang, is_ru = _resolve_director_language(combined_sample, ctx)
     model = _get_director_model()
 
     base_lower = str(base_model or "").lower()
@@ -8406,7 +9021,7 @@ async def krea_director_storyboard(
         parsed = _extract_json_object(raw) or {}
         updated_scene = {
             "scene_number": idx + 1,
-            "title": str(parsed.get("title") or target_sc.get("title") or f"Сцена {idx + 1}").strip(),
+            "title": str(parsed.get("title") or target_sc.get("title") or f"{'Сцена' if is_ru else 'Scene'} {idx + 1}").strip(),
             "narrative": str(parsed.get("narrative") or target_sc.get("narrative") or "").strip(),
             "visual_prompt": str(parsed.get("visual_prompt") or target_sc.get("visual_prompt") or "").strip(),
             "aspect": str(parsed.get("aspect") or target_sc.get("aspect") or "896x1152").strip(),
