@@ -3642,6 +3642,24 @@ def _load_base_krea_presets() -> dict:
     return _KREA_PRESETS_CACHE or {"art_styles": [], "archetypes": []}
 
 
+SDXL_BASE_MODELS = (
+    "sdxl",
+    "sdxl_realistic",
+    "sdxl_perfect",
+    "sdxl_fantasy",
+    "sdxl_tooned",
+    "realistic",
+    "perfect",
+    "fantasy",
+    "tooned",
+)
+
+
+def is_sdxl_base_model(base_model: str | None) -> bool:
+    """Проверяет, относится ли выбранная базовая модель к семейству локальных SDXL DMD2 чекпоинтов."""
+    return str(base_model or "").strip().lower() in SDXL_BASE_MODELS
+
+
 def get_krea_presets(include_fun: bool = False) -> dict:
     """Единый реестр стилей и LoRA для универсальной Creative Studio (Krea 2 / Anima + локальный SDXL)."""
     base = _load_base_krea_presets()
@@ -3650,62 +3668,13 @@ def get_krea_presets(include_fun: bool = False) -> dict:
     existing_style_ids = {str(s.get("id")) for s in art_styles if isinstance(s, dict)}
     existing_arch_ids = {str(a.get("id")) for a in archetypes if isinstance(a, dict)}
 
-    # 1. Базовые чекпоинты SDXL из STYLE_MODELS
-    sdxl_ckpt_presets = [
-        {
-            "id": "sdxl_realistic",
-            "name": "CyberRealistic XL",
-            "description": "Фокус на живой фотографии, естественном свете и текстуре кожи",
-            "icon": "📸",
-            "filename": "",
-            "url": "",
-            "trigger": "<realistic>",
-            "strength": 1.0,
-            "models": ["sdxl"],
-        },
-        {
-            "id": "sdxl_perfect",
-            "name": "CyberPony XL",
-            "description": "Выразительная пластика, яркие образы и динамичные ракурсы",
-            "icon": "💎",
-            "filename": "",
-            "url": "",
-            "trigger": "<perfect>",
-            "strength": 1.0,
-            "models": ["sdxl"],
-        },
-        {
-            "id": "sdxl_fantasy",
-            "name": "Illustrious XL",
-            "description": "Чёткий аниме-арт, фэнтези и художественная 2D-иллюстрация",
-            "icon": "🔮",
-            "filename": "",
-            "url": "",
-            "trigger": "<fantasy>",
-            "strength": 1.0,
-            "models": ["sdxl"],
-        },
-        {
-            "id": "sdxl_tooned",
-            "name": "Pony Semi-Real",
-            "description": "Стилизованный 2.5D полуреализм с мягким объёмом",
-            "icon": "🎨",
-            "filename": "",
-            "url": "",
-            "trigger": "<tooned>",
-            "strength": 1.0,
-            "models": ["sdxl"],
-        },
-    ]
-    for sp in sdxl_ckpt_presets:
-        if sp["id"] not in existing_style_ids:
-            art_styles.append(sp)
-            existing_style_ids.add(sp["id"])
-
-    # 2. Динамические LoRA стилей и персонажей из flow.json (node "103")
+    # Динамические LoRA стилей и персонажей из flow.json (node "103").
+    # Базовые чекпоинты SDXL (Realistic / Perfect / Fantasy / Tooned) вынесены в карточку базовых моделей,
+    # поэтому в art_styles остаются только совместимые с SDXL стили!
     flow_data = _load_sdxl_flow_template()
     node_103 = (flow_data.get("103") or {}).get("inputs") if isinstance(flow_data, dict) else None
     if isinstance(node_103, dict):
+        sdxl_styles_pending = []
         sdxl_chars_pending = []
         for lkey, val in node_103.items():
             if not isinstance(val, dict) or not val.get("name") or not val.get("lora"):
@@ -3723,7 +3692,7 @@ def get_krea_presets(include_fun: bool = False) -> dict:
                 sid = f"sdxl_lora_{slug}"
                 if sid not in existing_style_ids:
                     icon, desc = _SDXL_STYLE_LORA_META.get(slug, ("✨", f"SDXL Style LoRA ({raw_name})"))
-                    art_styles.append({
+                    sdxl_styles_pending.append({
                         "id": sid,
                         "name": raw_name,
                         "description": desc,
@@ -3733,6 +3702,7 @@ def get_krea_presets(include_fun: bool = False) -> dict:
                         "trigger": f"<{raw_name}>",
                         "strength": strength,
                         "models": ["sdxl"],
+                        "_prio": 0 if lmode != "fun" else 1,
                     })
                     existing_style_ids.add(sid)
             elif ltype == "character":
@@ -3752,6 +3722,13 @@ def get_krea_presets(include_fun: bool = False) -> dict:
                         "_prio": 0 if slug == "judith" else (1 if slug == "domi" else 2),
                     })
                     existing_arch_ids.add(aid)
+
+        sdxl_styles_pending.sort(key=lambda x: x.get("_prio", 1))
+        insert_pos = 1 if (art_styles and art_styles[0].get("id") == "none") else 0
+        for st_item in sdxl_styles_pending:
+            st_item.pop("_prio", None)
+            art_styles.insert(insert_pos, st_item)
+            insert_pos += 1
 
         sdxl_chars_pending.sort(key=lambda x: x.get("_prio", 2))
         for ch in sdxl_chars_pending:
@@ -3891,7 +3868,8 @@ async def generate_sdxl_studio_image(
         "sdxl_tooned": "tooned",
         "tooned": "tooned",
     }
-    chosen_ckpt_key = None
+    raw_base_m = str(sliders.get("base_model") or "").strip().lower()
+    chosen_ckpt_key = ckpt_style_map.get(raw_base_m)
     style_cfgs = get_krea_style_configs()
     for s_id in selected_styles:
         if s_id.lower() in ckpt_style_map and chosen_ckpt_key is None:
@@ -4008,8 +3986,10 @@ async def generate_sdxl_studio_image(
         workflow_json["6"]["inputs"]["height"] = h_clamped
 
     eff_seed = int(seed) if (seed is not None and int(seed) > 0) else random.randint(1, 1125899906842624)
-    eff_steps = max(4, min(16, int(steps or 6)))
-    eff_cfg = max(1.0, min(2.5, float(cfg or 1.0)))
+    raw_steps_val = int(steps or 6)
+    eff_steps = 6 if raw_steps_val > 12 else max(4, raw_steps_val)
+    raw_cfg_val = float(cfg or 1.0)
+    eff_cfg = 1.0 if raw_cfg_val > 2.2 else max(1.0, raw_cfg_val)
     if "5" in workflow_json and "inputs" in workflow_json["5"]:
         workflow_json["5"]["inputs"]["seed"] = eff_seed
         workflow_json["5"]["inputs"]["steps"] = eff_steps
@@ -4123,7 +4103,7 @@ async def generate_krea2_image(
     if not prompt and not persona_prompt:
         raise Exception("Укажите промпт или выберите персону для генерации.")
 
-    if isinstance(sliders, dict) and str(sliders.get("base_model") or "").strip().lower() == "sdxl":
+    if isinstance(sliders, dict) and is_sdxl_base_model(sliders.get("base_model")):
         return await generate_sdxl_studio_image(
             ctx=ctx,
             prompt=prompt,
@@ -7396,12 +7376,12 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
         else:
             detected_base = "anima" if ("1girl" in clean_prompt.lower() or "1woman" in clean_prompt.lower() and "masterpiece" in clean_prompt.lower()) else "realism"
 
-    target_cat = "sdxl" if detected_base == "sdxl" else ("anima" if detected_base == "anima" else "krea2")
+    target_cat = "sdxl" if is_sdxl_base_model(detected_base) else ("anima" if detected_base == "anima" else "krea2")
     style_by_id = {p["id"]: p for p in style_index}
     arch_by_id = {p["id"]: p for p in arch_index}
 
-    # Auto-pick matching SDXL checkpoint preset when importing onto SDXL
-    if detected_base == "sdxl":
+    # Auto-pick matching SDXL base model (Realistic / Perfect / Fantasy / Tooned) when importing onto SDXL
+    if is_sdxl_base_model(detected_base):
         sdxl_ckpt_pick = "sdxl_realistic"
         if any(k in joined_hints for k in ("illustrious", "noob", "anime", "wai")):
             sdxl_ckpt_pick = "sdxl_fantasy"
@@ -7409,8 +7389,7 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
             sdxl_ckpt_pick = "sdxl_tooned"
         elif "pony" in joined_hints:
             sdxl_ckpt_pick = "sdxl_perfect"
-        if sdxl_ckpt_pick not in matched_styles:
-            matched_styles.insert(0, sdxl_ckpt_pick)
+        detected_base = sdxl_ckpt_pick
 
     matched_styles = [
         sid for sid in matched_styles
@@ -7448,7 +7427,7 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     raw_steps = gen_meta.get("steps") or v1_meta.get("steps") or comfy_parsed.get("steps")
     raw_cfg = gen_meta.get("cfgScale") or gen_meta.get("cfg") or v1_meta.get("cfgScale") or comfy_parsed.get("cfg")
 
-    if detected_base == "sdxl":
+    if is_sdxl_base_model(detected_base):
         # Local SDXL runs with DMD2 4-step LCM accelerator (optimal at 6 steps, CFG 1.0)
         final_steps = 6
         final_cfg = 1.0
@@ -8094,6 +8073,11 @@ def _format_civitai_import_badge(meta_summary: dict, is_ru: bool = True) -> str:
         "anima": "Anima V1.1",
         "semi_realism": "Muse Semi-Real",
         "realism": "Krea 2 Realism",
+        "sdxl": "SDXL Realistic",
+        "sdxl_realistic": "SDXL Realistic",
+        "sdxl_perfect": "SDXL Perfect",
+        "sdxl_fantasy": "SDXL Fantasy",
+        "sdxl_tooned": "SDXL Tooned",
     }
     m_label = model_names.get(meta_summary.get("base_model") or "", "Krea 2")
     loras = (meta_summary.get("matched_styles") or []) + (meta_summary.get("matched_archetypes") or [])
@@ -8181,7 +8165,7 @@ async def krea_director_rewrite_prompt(
 
     base_lower = str(base_model or "").lower()
     is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
-    is_sdxl = base_lower == "sdxl"
+    is_sdxl = is_sdxl_base_model(base_lower)
     if is_anima:
         model_guidance = (
             "TARGET DIFFUSION ENGINE: Anima Aesthetic V1.1 (Anime / 2D Illustration).\n"
@@ -8342,7 +8326,7 @@ async def krea_director_storyboard(
 
     base_lower = str(base_model or "").lower()
     is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
-    is_sdxl = base_lower == "sdxl"
+    is_sdxl = is_sdxl_base_model(base_lower)
     if is_anima:
         engine_note = "Write each `visual_prompt` in English for Anima V1.1 (structured anime/illustration tags + clear pose, outfit, expression, camera framing, and background)."
     elif is_sdxl:

@@ -34,6 +34,61 @@ DEFAULT_PUBLIC_ORIGIN = os.environ.get("OMD_PUBLIC_ORIGIN", "https://direct.onmy
 
 _lock = threading.Lock()
 _vapid_cache: Optional[dict[str, str]] = None
+_local_node_meta_cache: Optional[tuple[str, str]] = None
+
+
+def get_local_node_identity() -> tuple[str, str]:
+    """Returns (primary_link_id, node_name) for this OnMyDisk node."""
+    global _local_node_meta_cache
+    if _local_node_meta_cache is not None:
+        return _local_node_meta_cache
+
+    import configparser
+    import re
+    import socket
+
+    link_id = ""
+    node_name = ""
+    for cfg in (
+        "/etc/onmydisk/onmydisk.conf.user",
+        "/etc/onmydisk/onmydisk.conf",
+        os.path.expanduser("~/.config/onmydisk/onmydisk.conf"),
+        "/root/.config/onmydisk/onmydisk.conf",
+    ):
+        if os.path.exists(cfg):
+            try:
+                cp = configparser.ConfigParser()
+                cp.read(cfg)
+                if "Settings" in cp:
+                    if not link_id:
+                        cand = cp["Settings"].get("linkid", "").strip()
+                        if cand:
+                            link_id = cand
+                    if not node_name:
+                        h = cp["Settings"].get("hostname", "").strip()
+                        if h:
+                            node_name = h
+            except Exception:
+                pass
+
+    if not link_id and os.path.exists("/tmp/onmydisk.log"):
+        try:
+            with open("/tmp/onmydisk.log", "r", errors="ignore") as f:
+                content = f.read()
+            m = re.search(r"Refreshing share root:.*with ID:\s*([A-Za-z0-9_-]{16,})", content, re.IGNORECASE)
+            if m:
+                link_id = m.group(1).strip()
+        except Exception:
+            pass
+
+    if not node_name:
+        try:
+            node_name = socket.gethostname().strip()
+        except Exception:
+            node_name = ""
+
+    _local_node_meta_cache = (link_id, node_name)
+    return _local_node_meta_cache
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -429,7 +484,12 @@ async def send_custom_push(
             resolved_image = _resolve_placeholder_storage(resolved_image, dev_storage)
 
         resolved_url = _resolve_placeholder_storage(url or "/", dev_storage)
+        local_link_id, local_node_name = get_local_node_identity()
         extra_data = dict(data or {})
+        if local_link_id and not extra_data.get("node_link_id"):
+            extra_data["node_link_id"] = local_link_id
+        if local_node_name and not extra_data.get("node_name"):
+            extra_data["node_name"] = local_node_name
         if dev_storage and not extra_data.get("default_storage"):
             extra_data["default_storage"] = dev_storage
         if resolved_image and not extra_data.get("image"):

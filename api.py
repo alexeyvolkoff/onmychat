@@ -4686,7 +4686,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
                 custom_description=data.custom_description,
             )
             total_time = round(time.time() - t_start, 2)
-            is_sdxl_req = isinstance(data.sliders, dict) and str(data.sliders.get("base_model") or "").strip().lower() == "sdxl"
+            is_sdxl_req = isinstance(data.sliders, dict) and core_service.is_sdxl_base_model(data.sliders.get("base_model"))
             gpu_time = None
             if not is_sdxl_req:
                 try:
@@ -4921,7 +4921,7 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
                 ctx=ctx,
                 prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
                 persona_prompt=passport,
-                sliders={"base_model": "sdxl", "styles": ["sdxl_realistic"], "archetypes": [arch_val] if arch_val else [], "detail": 0.5},
+                sliders={"base_model": "sdxl_realistic", "archetypes": [arch_val] if arch_val else [], "detail": 0.5},
                 width=896,
                 height=1152,
                 steps=6,
@@ -5215,7 +5215,7 @@ async def krea_warmup_endpoint(request: Request, data: Optional[KreaStatusInput]
     if not status.get("allowed"):
         raise HTTPException(status_code=403, detail=status.get("error", "Not authorized"))
     req_base = (data.base_model if data else "") or ""
-    if str(req_base).strip().lower() == "sdxl" or not status.get("krea_allowed"):
+    if core_service.is_sdxl_base_model(req_base) or not status.get("krea_allowed"):
         return {"status": "local_sdxl", "gpu_warm": False}
     try:
         from extensions.hooks import maybe_start_gpu_warmup_for_generation
