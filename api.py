@@ -4686,12 +4686,14 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
                 custom_description=data.custom_description,
             )
             total_time = round(time.time() - t_start, 2)
+            is_sdxl_req = isinstance(data.sliders, dict) and str(data.sliders.get("base_model") or "").strip().lower() == "sdxl"
             gpu_time = None
-            try:
-                from extensions.modal_comfy_client import get_last_gpu_time
-                gpu_time = get_last_gpu_time()
-            except Exception:
-                pass
+            if not is_sdxl_req:
+                try:
+                    from extensions.modal_comfy_client import get_last_gpu_time
+                    gpu_time = get_last_gpu_time()
+                except Exception:
+                    pass
 
             await core_service.emit_generation_progress("saving")
 
@@ -4708,7 +4710,7 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
                     schedule_generated_image_push(data.omd_key, data.device_push, filename, img_data, title, description, ctx=ctx, prompt=raw_prompt)
 
             safe_subfolder = core_service.sanitize_story_slug(data.subfolder) if data.subfolder else ""
-            return {
+            out_payload = {
                 "image": filename,
                 "path": f"{safe_subfolder}/{filename}" if safe_subfolder else filename,
                 "subfolder": safe_subfolder,
@@ -4721,6 +4723,15 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
                 "gpu_time": gpu_time,
                 "total_time": total_time,
             }
+            try:
+                post_status = await core_service.check_krea_status(ctx)
+                if isinstance(post_status, dict):
+                    for qk in ("tier", "krea_allowed", "credits", "krea_daily_remaining", "krea_daily_limit", "krea_notice"):
+                        if qk in post_status:
+                            out_payload[qk] = post_status[qk]
+            except Exception:
+                pass
+            return out_payload
 
         if not data.stream:
             return await _run_krea2_core()
@@ -4885,10 +4896,13 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
     timestamp = int(time.time())
     persona_id = f"persona_{arch_key}_{timestamp}"
 
-    # Рендерим портрет через Krea 2
+    # Рендерим портрет через Krea 2 (или локальный SDXL для SDXL-архетипов / гостей / локальных узлов)
     b64_str = ""
     try:
-        if await core_service.is_krea_available():
+        st_persona = await core_service.check_krea_status(ctx)
+        is_sdxl_arch = arch_key in krea_archetypes and "sdxl" in (krea_archetypes[arch_key].get("models") or [])
+        can_use_krea = bool(st_persona.get("krea_allowed")) and await core_service.is_krea_available(ctx) and not is_sdxl_arch
+        if can_use_krea:
             res = await core_service.generate_krea2_image(
                 ctx=ctx,
                 prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
@@ -4902,8 +4916,22 @@ async def generate_persona_endpoint(request: Request, data: PersonaGenerateInput
             )
             img_data = res[3]
             b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
+        elif await core_service.is_comfy_available():
+            res = await core_service.generate_krea2_image(
+                ctx=ctx,
+                prompt="close-up headshot portrait, looking directly at camera, soft studio rim light, natural skin detail",
+                persona_prompt=passport,
+                sliders={"base_model": "sdxl", "styles": ["sdxl_realistic"], "archetypes": [arch_val] if arch_val else [], "detail": 0.5},
+                width=896,
+                height=1152,
+                steps=6,
+                cfg=1.0,
+                upload_storage=False
+            )
+            img_data = res[3]
+            b64_str = f"data:image/png;base64,{base64.b64encode(img_data).decode('utf-8')}" if img_data else ""
         else:
-            logging.info("[personas/generate] Krea 2 is not available, returning text passport")
+            logging.info("[personas/generate] ComfyUI / Krea 2 is not available, returning text passport")
     except Exception as e:
         logging.error(f"Error generating persona portrait: {e}")
         b64_str = ""
@@ -5083,35 +5111,35 @@ async def get_persona_avatar_endpoint(persona_id: str, omd_key: str | None = Dep
     raise HTTPException(status_code=404, detail="Avatar not found")
 
 
-@app.get("/krea/presets")
-async def get_krea_presets_endpoint():
-    """Отдает единый реестр стилей и LoRA для Krea Studio из krea_presets.json."""
-    return core_service.get_krea_presets()
-
-
 class KreaStatusInput(BaseModel):
     omd_key: Optional[str] = ""
+    base_model: Optional[str] = ""
     settings: Optional[dict] = None
     mcp_keys: Optional[dict] = None
+
+
+@app.api_route("/krea/presets", methods=["GET", "POST"])
+async def get_krea_presets_endpoint(request: Request, data: Optional[KreaStatusInput] = None):
+    """Отдает единый реестр стилей и LoRA для универсальной Creative Studio (Krea 2 / Anima + SDXL)."""
+    ctx = _build_krea_ctx(request, data)
+    include_fun = False
+    try:
+        st = await core_service.check_krea_status(ctx)
+        include_fun = bool(st.get("uncensored"))
+    except Exception:
+        include_fun = bool(getattr(ctx, "private_mode", False) or getattr(ctx, "trusted_owner", False))
+    return core_service.get_krea_presets(include_fun=include_fun)
 
 
 @app.api_route("/krea/status", methods=["GET", "POST"])
 async def check_krea_status_endpoint(request: Request, data: Optional[KreaStatusInput] = None):
     """
-    Checks if Krea Studio can be activated for the caller.
+    Checks Creative Studio tier & engine entitlements for the caller.
     Delegates to core_service / private extension hook.
     """
-    effective_key = (data.omd_key if data else "") or request.headers.get("Token", "") or request.query_params.get("omd_key", "")
-    ctx = get_ctx(effective_key)
-    ctx.private_mode = trusted_private_access(request, ctx)
-    ctx.trusted_owner = trusted_owner_access(request)
-    if data and data.settings:
-        ctx.settings.update(data.settings)
-        ctx.storage = ctx.settings.get("defaultStorage", "")
-    if data:
-        ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
+    ctx = _build_krea_ctx(request, data)
     res = await core_service.check_krea_status(ctx)
-    if isinstance(res, dict) and res.get("allowed"):
+    if isinstance(res, dict) and res.get("allowed") and res.get("tier") != "guest":
         try:
             res = dict(res)
             res["civitai_accounts"] = await core_service.list_civitai_publish_accounts(ctx)
@@ -5181,14 +5209,17 @@ def _build_krea_ctx(request: Request, data=None):
 
 @app.post("/krea/warmup")
 async def krea_warmup_endpoint(request: Request, data: Optional[KreaStatusInput] = None):
-    """Triggers lazy background GPU warmup right when a generation or scene shoot begins."""
+    """Triggers lazy background Cloud GPU warmup right when a Krea/Anima generation begins."""
     ctx = _build_krea_ctx(request, data)
     status = await core_service.check_krea_status(ctx)
     if not status.get("allowed"):
         raise HTTPException(status_code=403, detail=status.get("error", "Not authorized"))
+    req_base = (data.base_model if data else "") or ""
+    if str(req_base).strip().lower() == "sdxl" or not status.get("krea_allowed"):
+        return {"status": "local_sdxl", "gpu_warm": False}
     try:
         from extensions.hooks import maybe_start_gpu_warmup_for_generation
-        await maybe_start_gpu_warmup_for_generation(ctx)
+        await maybe_start_gpu_warmup_for_generation(ctx, base_model=req_base)
     except Exception:
         pass
     return {"status": "warming", "gpu_warm": status.get("gpu_warm", False)}
@@ -5209,7 +5240,7 @@ async def krea_civitai_extract_endpoint(request: Request, data: CivitaiExtractIn
     status = await core_service.check_krea_status(ctx)
     if not status.get("allowed"):
         raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
-    if data.warmup_gpu:
+    if data.warmup_gpu and status.get("krea_allowed"):
         try:
             from extensions.hooks import maybe_start_gpu_warmup_for_generation
             asyncio.create_task(maybe_start_gpu_warmup_for_generation(ctx))
@@ -5247,8 +5278,8 @@ async def krea_civitai_accounts_endpoint(request: Request, data: Optional[KreaSt
     """Returns available CivitAI publishing accounts (IDs + usernames, never exposing tokens)."""
     ctx = _build_krea_ctx(request, data)
     status = await core_service.check_krea_status(ctx)
-    if not status.get("allowed"):
-        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    if not status.get("allowed") or status.get("tier") == "guest":
+        raise HTTPException(status_code=403, detail=status.get("krea_notice") or status.get("error", "Creative Studio Pass required"))
     accounts = await core_service.list_civitai_publish_accounts(ctx)
     return {"accounts": accounts}
 
@@ -5258,8 +5289,8 @@ async def krea_civitai_publish_endpoint(request: Request, data: CivitaiPublishIn
     """Uploads 1..20 images directly to CivitAI and creates/publishes a post under the selected API key's account."""
     ctx = _build_krea_ctx(request, data)
     status = await core_service.check_krea_status(ctx)
-    if not status.get("allowed"):
-        raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
+    if not status.get("allowed") or status.get("tier") == "guest":
+        raise HTTPException(status_code=403, detail=status.get("krea_notice") or status.get("error", "Creative Studio Pass required"))
     try:
         return await core_service.publish_to_civitai(
             ctx=ctx,
@@ -5282,15 +5313,21 @@ async def krea_civitai_publish_endpoint(request: Request, data: CivitaiPublishIn
 
 @app.post("/krea/director/prompt")
 async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptInput):
-    """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima prompts in natural language, with CivitAI URL auto-import)."""
+    """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima/SDXL prompts in natural language, with CivitAI URL auto-import)."""
     ctx = _build_krea_ctx(request, data)
     status = await core_service.check_krea_status(ctx)
     if not status.get("allowed"):
         raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
-    if data.warmup_gpu:
+    if not status.get("uncensored"):
+        check_text = f"{data.instruction or ''} {data.current_prompt or ''}".strip()
+        if check_text:
+            safety = await core_service.check_prompt_safety(ctx, check_text)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
+    if data.warmup_gpu and status.get("krea_allowed"):
         try:
             from extensions.hooks import maybe_start_gpu_warmup_for_generation
-            asyncio.create_task(maybe_start_gpu_warmup_for_generation(ctx))
+            asyncio.create_task(maybe_start_gpu_warmup_for_generation(ctx, base_model=data.base_model or ""))
         except Exception:
             pass
     try:
@@ -5320,10 +5357,16 @@ async def krea_director_storyboard_endpoint(request: Request, data: DirectorStor
     status = await core_service.check_krea_status(ctx)
     if not status.get("allowed"):
         raise HTTPException(status_code=403, detail=status.get("error", "Creative Studio access required"))
-    if data.warmup_gpu:
+    if not status.get("uncensored"):
+        check_text = f"{data.story_title or ''} {data.setting or ''} {data.idea or ''}".strip()
+        if check_text:
+            safety = await core_service.check_prompt_safety(ctx, check_text)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
+    if data.warmup_gpu and status.get("krea_allowed"):
         try:
             from extensions.hooks import maybe_start_gpu_warmup_for_generation
-            await maybe_start_gpu_warmup_for_generation(ctx)
+            await maybe_start_gpu_warmup_for_generation(ctx, base_model=data.base_model or "")
         except Exception:
             pass
     try:

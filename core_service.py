@@ -3042,10 +3042,19 @@ async def is_krea_available(ctx=None) -> bool:
 
 
 async def check_krea_status(ctx=None) -> dict:
-    """Checks if Krea Studio can be activated on this node."""
-    if await is_krea_available(ctx):
-        return {"allowed": True}
-    return {"allowed": False, "error": "Krea Studio is not available on this node."}
+    """Checks if Unified Creative Studio (Krea 2 / Anima or local SDXL) can be activated on this node."""
+    krea_ok = await is_krea_available(ctx)
+    sdxl_ok = await is_comfy_available()
+    if krea_ok or sdxl_ok:
+        return {
+            "allowed": True,
+            "tier": "owner",
+            "sdxl_allowed": sdxl_ok,
+            "krea_allowed": krea_ok,
+            "uncensored": True,
+            "krea_notice": "",
+        }
+    return {"allowed": False, "error": "Creative Studio requires ComfyUI on this node."}
 
 
 async def generate_image_workflow(workflow) -> bytes:
@@ -3573,10 +3582,46 @@ KREA_PRESETS_FILE = os.path.join(os.path.dirname(__file__), "krea_presets.json")
 _KREA_PRESETS_CACHE = None
 _KREA_PRESETS_MTIME = 0
 
-def get_krea_presets() -> dict:
-    """Загружает единый конфигурационный файл стилей и LoRA для Krea 2."""
-    global _KREA_PRESETS_CACHE, _KREA_PRESETS_MTIME
+_SDXL_FLOW_CACHE = None
+_SDXL_FLOW_MTIME = 0
 
+
+def _load_sdxl_flow_template() -> dict:
+    global _SDXL_FLOW_CACHE, _SDXL_FLOW_MTIME
+    try:
+        if os.path.isfile(WORKFLOW_PATH):
+            mtime = os.path.getmtime(WORKFLOW_PATH)
+            if _SDXL_FLOW_CACHE is not None and mtime <= _SDXL_FLOW_MTIME:
+                return _SDXL_FLOW_CACHE
+            with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
+                _SDXL_FLOW_CACHE = json.load(f)
+                _SDXL_FLOW_MTIME = mtime
+                return _SDXL_FLOW_CACHE
+    except Exception as e:
+        logging.warning(f"[SDXLPresets] Error reading {WORKFLOW_PATH}: {e}")
+    return _SDXL_FLOW_CACHE or {}
+
+
+_SDXL_ARCHETYPE_META = {
+    "judith": ("✨", "Natural beauty & expressive muse (Judith / June LoRA)"),
+    "domi": ("💎", "Charismatic brunette with piercing hazel gaze"),
+    "lana": ("🌸", "Radiant Slavic beauty with expressive features"),
+    "oriana": ("🔥", "Glamorous star with bold magnetic presence"),
+    "vera": ("🌹", "Sultry dark-haired allure"),
+    "bianca": ("👑", "Elegant poised blonde beauty"),
+    "beatrice": ("🎭", "Classic European charm & refined features"),
+    "minerva": ("🌙", "Mystical striking gaze & sculpted features"),
+}
+
+_SDXL_STYLE_LORA_META = {
+    "real_humans": ("📷", "Authentic natural skin texture & candid human proportions"),
+    "busty": ("🍒", "Curvy glamorous figure enhancement"),
+    "seductive": ("💋", "Expressive alluring poses & captivating gaze"),
+}
+
+
+def _load_base_krea_presets() -> dict:
+    global _KREA_PRESETS_CACHE, _KREA_PRESETS_MTIME
     cand_paths = [
         KREA_PRESETS_FILE,
         "/content/onmychat/krea_presets.json",
@@ -3597,9 +3642,128 @@ def get_krea_presets() -> dict:
     return _KREA_PRESETS_CACHE or {"art_styles": [], "archetypes": []}
 
 
+def get_krea_presets(include_fun: bool = False) -> dict:
+    """Единый реестр стилей и LoRA для универсальной Creative Studio (Krea 2 / Anima + локальный SDXL)."""
+    base = _load_base_krea_presets()
+    art_styles = list(base.get("art_styles") or [])
+    archetypes = list(base.get("archetypes") or [])
+    existing_style_ids = {str(s.get("id")) for s in art_styles if isinstance(s, dict)}
+    existing_arch_ids = {str(a.get("id")) for a in archetypes if isinstance(a, dict)}
+
+    # 1. Базовые чекпоинты SDXL из STYLE_MODELS
+    sdxl_ckpt_presets = [
+        {
+            "id": "sdxl_realistic",
+            "name": "CyberRealistic XL",
+            "description": "Фокус на живой фотографии, естественном свете и текстуре кожи",
+            "icon": "📸",
+            "filename": "",
+            "url": "",
+            "trigger": "<realistic>",
+            "strength": 1.0,
+            "models": ["sdxl"],
+        },
+        {
+            "id": "sdxl_perfect",
+            "name": "CyberPony XL",
+            "description": "Выразительная пластика, яркие образы и динамичные ракурсы",
+            "icon": "💎",
+            "filename": "",
+            "url": "",
+            "trigger": "<perfect>",
+            "strength": 1.0,
+            "models": ["sdxl"],
+        },
+        {
+            "id": "sdxl_fantasy",
+            "name": "Illustrious XL",
+            "description": "Чёткий аниме-арт, фэнтези и художественная 2D-иллюстрация",
+            "icon": "🔮",
+            "filename": "",
+            "url": "",
+            "trigger": "<fantasy>",
+            "strength": 1.0,
+            "models": ["sdxl"],
+        },
+        {
+            "id": "sdxl_tooned",
+            "name": "Pony Semi-Real",
+            "description": "Стилизованный 2.5D полуреализм с мягким объёмом",
+            "icon": "🎨",
+            "filename": "",
+            "url": "",
+            "trigger": "<tooned>",
+            "strength": 1.0,
+            "models": ["sdxl"],
+        },
+    ]
+    for sp in sdxl_ckpt_presets:
+        if sp["id"] not in existing_style_ids:
+            art_styles.append(sp)
+            existing_style_ids.add(sp["id"])
+
+    # 2. Динамические LoRA стилей и персонажей из flow.json (node "103")
+    flow_data = _load_sdxl_flow_template()
+    node_103 = (flow_data.get("103") or {}).get("inputs") if isinstance(flow_data, dict) else None
+    if isinstance(node_103, dict):
+        sdxl_chars_pending = []
+        for lkey, val in node_103.items():
+            if not isinstance(val, dict) or not val.get("name") or not val.get("lora"):
+                continue
+            raw_name = str(val["name"]).strip()
+            slug = re.sub(r"[^a-z0-9]+", "_", raw_name.lower()).strip("_")
+            ltype = str(val.get("type") or "").lower()
+            lmode = str(val.get("mode") or "work").lower()
+            fname = str(val["lora"]).strip()
+            strength = float(val.get("strength", 1.0))
+
+            if ltype == "style":
+                if lmode == "fun" and not include_fun:
+                    continue
+                sid = f"sdxl_lora_{slug}"
+                if sid not in existing_style_ids:
+                    icon, desc = _SDXL_STYLE_LORA_META.get(slug, ("✨", f"SDXL Style LoRA ({raw_name})"))
+                    art_styles.append({
+                        "id": sid,
+                        "name": raw_name,
+                        "description": desc,
+                        "icon": icon,
+                        "filename": fname,
+                        "url": "",
+                        "trigger": f"<{raw_name}>",
+                        "strength": strength,
+                        "models": ["sdxl"],
+                    })
+                    existing_style_ids.add(sid)
+            elif ltype == "character":
+                aid = f"sdxl_{slug}"
+                if aid not in existing_arch_ids:
+                    icon, desc = _SDXL_ARCHETYPE_META.get(slug, ("👤", f"SDXL Character LoRA ({raw_name})"))
+                    sdxl_chars_pending.append({
+                        "id": aid,
+                        "name": raw_name,
+                        "description": desc,
+                        "icon": icon,
+                        "filename": fname,
+                        "url": "",
+                        "trigger": f"<{raw_name}>",
+                        "strength": strength,
+                        "models": ["sdxl"],
+                        "_prio": 0 if slug == "judith" else (1 if slug == "domi" else 2),
+                    })
+                    existing_arch_ids.add(aid)
+
+        sdxl_chars_pending.sort(key=lambda x: x.get("_prio", 2))
+        for ch in sdxl_chars_pending:
+            ch.pop("_prio", None)
+            archetypes.append(ch)
+
+    return {"art_styles": art_styles, "archetypes": archetypes}
+
+
 def get_krea_style_configs() -> dict[str, dict]:
-    """Возвращает словарь конфигураций стилей, сгенерированный из krea_presets.json."""
-    presets = get_krea_presets()
+    """Возвращает словарь конфигураций стилей, сгенерированный из krea_presets.json + SDXL."""
+    presets = get_krea_presets(include_fun=True)
     configs = {}
     for item in presets.get("art_styles", []):
         s_id = item.get("id")
@@ -3616,8 +3780,8 @@ def get_krea_style_configs() -> dict[str, dict]:
 
 
 def get_krea_archetype_configs() -> dict[str, dict]:
-    """Возвращает словарь конфигураций архетипов персонажей из krea_presets.json."""
-    presets = get_krea_presets()
+    """Возвращает словарь конфигураций архетипов персонажей из krea_presets.json + SDXL."""
+    presets = get_krea_presets(include_fun=True)
     configs = {}
     for item in presets.get("archetypes", []):
         a_id = item.get("id")
@@ -3631,6 +3795,308 @@ def get_krea_archetype_configs() -> dict[str, dict]:
             "description": item.get("description", "")
         }
     return configs
+
+
+async def generate_sdxl_studio_image(
+    ctx: UserContext,
+    prompt: str,
+    persona_prompt: str = "",
+    persona_lora: str | None = None,
+    persona_id: str | None = None,
+    persona_name: str | None = None,
+    sliders: dict | None = None,
+    width: int = 896,
+    height: int = 1152,
+    steps: int = 6,
+    cfg: float = 1.0,
+    seed: int | None = None,
+    save_local: bool = False,
+    **kwargs
+) -> tuple[str, str, str, bytes]:
+    """Рендерит кадр Creative Studio через локальный быстрый SDXL DMD2 пайплайн (flow.json)."""
+    if not prompt and not persona_prompt:
+        raise Exception("Укажите промпт или выберите персону для генерации.")
+
+    sliders = sliders or {}
+
+    # Проверяем право на uncensored-режим (Owner / Club Member / Muse Pass на не-iOS)
+    is_uncensored = bool(getattr(ctx, "private_mode", False) or getattr(ctx, "trusted_owner", False))
+    try:
+        st = await check_krea_status(ctx)
+        if isinstance(st, dict) and "uncensored" in st:
+            is_uncensored = bool(st.get("uncensored"))
+    except Exception:
+        pass
+
+    negative_prompt = NEGATIVE_PROMPTS["base"]
+    if is_uncensored:
+        negative_prompt = NEGATIVE_PROMPTS["fun"] + ", " + negative_prompt
+
+    with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
+        workflow_json = json.load(f)
+
+    # Собираем положительный промпт (сюжет + паспорт персоны + микро-слайдеры)
+    full_parts = []
+    if prompt and prompt.strip():
+        full_parts.append(prompt.strip())
+    if persona_prompt and persona_prompt.strip():
+        cleaned_persona = persona_prompt.strip()
+        if prompt and prompt.strip():
+            cleaned_persona = re.sub(
+                r"^(a\s+)?(portrait|close-up|headshot|bust\s+portrait)\s+of\s+",
+                "",
+                cleaned_persona,
+                flags=re.IGNORECASE,
+            )
+        full_parts.append(cleaned_persona)
+
+    detail_val = float(sliders.get("detail", 0.5))
+    if detail_val >= 0.7:
+        full_parts.append("ultra-detailed, natural skin pores, fine textures, sharp focus, 8k uhd")
+    elif detail_val <= 0.3:
+        full_parts.append("soft focus, subtle cinematic glow, smooth film look")
+
+    age_val = float(sliders.get("age", 0.0))
+    if age_val > 0.3:
+        full_parts.append("mature graceful woman")
+    elif age_val < -0.3:
+        full_parts.append("young adult vibrant look")
+
+    # Обрабатываем выбранные стили (чекпоинт SDXL + prompt-only триггеры + SDXL LoRA)
+    raw_styles = sliders.get("styles")
+    if isinstance(raw_styles, list):
+        selected_styles = [str(s).strip() for s in raw_styles if s and s != "none"]
+    elif sliders.get("style") and sliders.get("style") != "none":
+        selected_styles = [str(sliders.get("style")).strip()]
+    else:
+        selected_styles = []
+    style_weights = sliders.get("style_weights") if isinstance(sliders.get("style_weights"), dict) else {}
+
+    raw_archs = sliders.get("archetypes")
+    if isinstance(raw_archs, list):
+        selected_archs = [str(a).strip() for a in raw_archs if a and a != "none"]
+    elif sliders.get("archetype") and sliders.get("archetype") != "none":
+        selected_archs = [str(sliders.get("archetype")).strip()]
+    else:
+        selected_archs = []
+    arch_weights = sliders.get("archetype_weights") if isinstance(sliders.get("archetype_weights"), dict) else {}
+
+    ckpt_style_map = {
+        "sdxl_realistic": "realistic",
+        "realistic": "realistic",
+        "sdxl_perfect": "perfect",
+        "perfect": "perfect",
+        "sdxl_fantasy": "fantasy",
+        "fantasy": "fantasy",
+        "sdxl_tooned": "tooned",
+        "tooned": "tooned",
+    }
+    chosen_ckpt_key = None
+    style_cfgs = get_krea_style_configs()
+    for s_id in selected_styles:
+        if s_id.lower() in ckpt_style_map and chosen_ckpt_key is None:
+            chosen_ckpt_key = ckpt_style_map[s_id.lower()]
+            continue
+        scfg = style_cfgs.get(s_id)
+        if scfg and not scfg.get("lora") and scfg.get("trigger") and not scfg["trigger"].startswith("<"):
+            full_parts.append(scfg["trigger"])
+
+    combined_raw_text = ", ".join(full_parts)
+    inline_tags = re.findall(r"<([^>]+)>", combined_raw_text)
+    if chosen_ckpt_key is None:
+        for t in inline_tags:
+            tl = t.lower().strip()
+            if tl in STYLE_MODELS:
+                chosen_ckpt_key = tl
+                break
+    if chosen_ckpt_key is None:
+        chosen_ckpt_key = (ctx.settings.get("style") if ctx and isinstance(getattr(ctx, "settings", None), dict) else None) or "realistic"
+
+    ckpt_model = STYLE_MODELS.get(chosen_ckpt_key, STYLE_MODELS["realistic"])
+    workflow_json["127"]["inputs"]["ckpt_name"] = ckpt_model
+
+    # Карта LoRA в ноде "103" (Power Lora Loader)
+    lora_map: dict[str, str] = {}
+    lora_nodes: dict[str, dict] = {}
+    if "103" in workflow_json and "inputs" in workflow_json["103"]:
+        for key, value in workflow_json["103"]["inputs"].items():
+            if isinstance(value, dict) and "name" in value:
+                lora_nodes[key] = value
+                raw_name = str(value["name"]).lower().strip()
+                slug = re.sub(r"[^a-z0-9]+", "_", raw_name).strip("_")
+                for alias in (
+                    raw_name,
+                    slug,
+                    raw_name.replace(" ", "-"),
+                    raw_name.replace(" ", ""),
+                    f"sdxl_{slug}",
+                    f"sdxl_lora_{slug}",
+                ):
+                    lora_map[alias] = key
+                if value.get("lora"):
+                    lfn = str(value["lora"]).lower().strip()
+                    lora_map[lfn] = key
+                    lora_map[lfn.split(".")[0]] = key
+        if "domi" in lora_map:
+            lora_map.setdefault("june", lora_map["domi"])
+
+    active_lora_strengths: dict[str, float] = {}
+
+    def _activate_sdxl_lora(token_str: str, custom_weight=None):
+        cand = str(token_str or "").lower().strip("<> ")
+        if not cand:
+            return
+        lkey = (
+            lora_map.get(cand)
+            or lora_map.get(re.sub(r"[^a-z0-9]+", "_", cand).strip("_"))
+            or lora_map.get(cand.replace(" ", ""))
+        )
+        if not lkey or lkey not in lora_nodes:
+            return
+        node_entry = lora_nodes[lkey]
+        if str(node_entry.get("mode") or "work").lower() == "fun" and not is_uncensored:
+            return
+        default_str = float(node_entry.get("strength", 1.0))
+        if custom_weight is not None:
+            try:
+                w = round(max(0.0, min(1.8, float(custom_weight))), 2)
+            except Exception:
+                w = default_str
+        else:
+            w = default_str
+        if w > 0:
+            active_lora_strengths[lkey] = w
+
+    for s_id in selected_styles:
+        _activate_sdxl_lora(s_id, style_weights.get(s_id))
+    for a_id in selected_archs:
+        _activate_sdxl_lora(a_id, arch_weights.get(a_id))
+    if persona_lora:
+        _activate_sdxl_lora(persona_lora)
+    elif persona_name:
+        _activate_sdxl_lora(persona_name)
+    for t in inline_tags:
+        if ":" in t and t.lower().startswith("lora:"):
+            parts_t = t.split(":")
+            if len(parts_t) >= 2:
+                _activate_sdxl_lora(parts_t[1], parts_t[2] if len(parts_t) >= 3 else None)
+        else:
+            _activate_sdxl_lora(t)
+
+    for key, val in lora_nodes.items():
+        if key in active_lora_strengths:
+            val["on"] = True
+            val["strength"] = active_lora_strengths[key]
+            logging.info(f"[SDXL Studio] Activated LoRA {key} ({val.get('name')}) strength={val['strength']}")
+        else:
+            val["on"] = False
+
+    # Убираем служебные <теги> из положительного промпта перед CLIPTextEncode
+    clean_positive = re.sub(r"<[^>]+>", "", combined_raw_text)
+    clean_positive = re.sub(r"\s*,\s*,+", ", ", clean_positive).strip(" ,")
+    workflow_json["4"]["inputs"]["text"] = negative_prompt
+    workflow_json["85"]["inputs"]["text"] = (
+        f"{clean_positive}, {IMPROVEMENT_PROMPT}" if clean_positive else IMPROVEMENT_PROMPT
+    )
+    workflow_json["85"]["inputs"]["clip"] = ["103", 1]
+
+    # Разрешение и параметры сэмплера (DMD2 ускоритель работает оптимально на 4..12 шагах и cfg 1.0..2.0)
+    w_clamped = max(512, min(1536, (int(width or 896) // 8) * 8))
+    h_clamped = max(512, min(1536, (int(height or 1152) // 8) * 8))
+    if "6" in workflow_json and "inputs" in workflow_json["6"]:
+        workflow_json["6"]["inputs"]["width"] = w_clamped
+        workflow_json["6"]["inputs"]["height"] = h_clamped
+
+    eff_seed = int(seed) if (seed is not None and int(seed) > 0) else random.randint(1, 1125899906842624)
+    eff_steps = max(4, min(16, int(steps or 6)))
+    eff_cfg = max(1.0, min(2.5, float(cfg or 1.0)))
+    if "5" in workflow_json and "inputs" in workflow_json["5"]:
+        workflow_json["5"]["inputs"]["seed"] = eff_seed
+        workflow_json["5"]["inputs"]["steps"] = eff_steps
+        workflow_json["5"]["inputs"]["cfg"] = eff_cfg
+
+    clean_user_prompt = (prompt or persona_prompt or "").strip()
+    custom_title = str(kwargs.get("custom_title") or "").strip()
+    custom_description = str(kwargs.get("custom_description") or "").strip()
+
+    desc_task = None
+    if not (custom_title or custom_description) and clean_user_prompt:
+        desc_task = asyncio.create_task(generate_neutral_description_and_title(ctx, clean_user_prompt))
+
+    logging.info(
+        f"[SDXL Studio] Generating on local ComfyUI with {ckpt_model} "
+        f"(steps={eff_steps}, cfg={eff_cfg}, size={w_clamped}x{h_clamped}, loras={list(active_lora_strengths.keys())})"
+    )
+    try:
+        img_data, orig_filename = await generate_image_workflow(workflow_json)
+    except Exception:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
+        raise
+    if not img_data:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
+        raise Exception("SDXL image generation failed")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_prefix = str(kwargs.get("filename_prefix") or "").strip()
+    safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "", raw_prefix)[:32]
+    match = re.search(r"_(\d{5})_\.png$", orig_filename or "")
+    base_fn = f"SDXL_{match.group(1)}_{timestamp}.png" if match else f"SDXL_{timestamp}.png"
+    filename = f"{safe_prefix}_{base_fn}" if safe_prefix else base_fn
+
+    raw_subfolder = str(kwargs.get("subfolder") or "").strip()
+    safe_subfolder = sanitize_story_slug(raw_subfolder) if raw_subfolder else ""
+
+    neutral_title, neutral_description = "", ""
+    if custom_title or custom_description:
+        neutral_title = custom_title
+        neutral_description = custom_description
+    elif desc_task is not None:
+        try:
+            neutral_title, neutral_description = await asyncio.wait_for(desc_task, timeout=6.0)
+        except Exception as e:
+            logging.warning(f"[SDXL Studio] generate_neutral_description_and_title timed out or failed: {e}")
+
+    if not neutral_description:
+        sentences = [s.strip() for s in clean_user_prompt.split(".") if s.strip()]
+        neutral_description = sentences[0] if sentences else (clean_user_prompt[:120] or "Generated image")
+
+    if neutral_title:
+        img_title = neutral_title
+    else:
+        words = [w for w in neutral_description.replace("<", "").replace(">", "").split() if not w.startswith("<")]
+        img_title = _clean_fallback_title(words, max_words=4) or "SDXL Creation"
+
+    readme_content = f"# {img_title}\n\n{neutral_description}\n"
+    if clean_user_prompt:
+        readme_content += f"\n<!-- prompt: {clean_user_prompt} -->\n"
+
+    if save_local:
+        try:
+            rel_gen = f"generated/{safe_subfolder}" if safe_subfolder else "generated"
+            target_dir = resolve_local_target_dir(ctx, rel_gen)
+            os.makedirs(target_dir, exist_ok=True)
+            target_img_path = os.path.join(target_dir, filename)
+            with open(target_img_path, "wb") as f:
+                f.write(img_data)
+            base_name = os.path.splitext(filename)[0]
+            with open(os.path.join(target_dir, f"{base_name}.Readme.md"), "w", encoding="utf-8") as f:
+                f.write(readme_content)
+            logging.info(f"[SDXL Studio] Saved generated image locally on AI node: {target_img_path}")
+
+            home_dir = os.path.expanduser("~")
+            omc_dir = os.path.join(home_dir, "OnMyChat", *rel_gen.split("/"))
+            if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
+                os.makedirs(omc_dir, exist_ok=True)
+                with open(os.path.join(omc_dir, filename), "wb") as f:
+                    f.write(img_data)
+                with open(os.path.join(omc_dir, f"{base_name}.Readme.md"), "w", encoding="utf-8") as f:
+                    f.write(readme_content)
+        except Exception as e:
+            logging.warning(f"[SDXL Studio] Local file save failed: {e}")
+
+    return filename, img_title, neutral_description, img_data
 
 
 async def generate_krea2_image(
@@ -3653,9 +4119,27 @@ async def generate_krea2_image(
     save_local: bool = False,
     **kwargs
 ) -> tuple[str, str, str, bytes]:
-    """Генерация изображения через нативный пайплайн Krea 2 с поддержкой 1 или 2 Reference Images."""
+    """Генерация изображения через универсальный пайплайн Creative Studio (Krea 2 / Anima или локальный SDXL)."""
     if not prompt and not persona_prompt:
         raise Exception("Укажите промпт или выберите персону для генерации.")
+
+    if isinstance(sliders, dict) and str(sliders.get("base_model") or "").strip().lower() == "sdxl":
+        return await generate_sdxl_studio_image(
+            ctx=ctx,
+            prompt=prompt,
+            persona_prompt=persona_prompt,
+            persona_lora=persona_lora,
+            persona_id=persona_id,
+            persona_name=persona_name,
+            sliders=sliders,
+            width=width,
+            height=height,
+            steps=steps,
+            cfg=cfg,
+            seed=seed,
+            save_local=save_local,
+            **kwargs,
+        )
 
     # Разрешаем список референсных изображений (до 2 штук)
     raw_refs = []
@@ -6772,8 +7256,8 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
         if m_entry:
             checkpoint_hints.append(str(m_entry))
 
-    # Index Creative Studio presets from krea_presets.json
-    presets = get_krea_presets()
+    # Index Creative Studio presets from krea_presets.json + SDXL flow.json
+    presets = get_krea_presets(include_fun=True)
     def _build_preset_index(items: list[dict]) -> list[dict]:
         indexed = []
         for it in (items or []):
@@ -6800,17 +7284,32 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     style_index = _build_preset_index(presets.get("art_styles") or [])
     arch_index = _build_preset_index(presets.get("archetypes") or [])
 
-    # Determine base_model ("anima" | "semi_realism" | "realism")
+    # Check if caller has Cloud GPU (Krea/Anima) entitlement; if Guest/SDXL-only, map onto SDXL
+    caller_krea_allowed = True
+    try:
+        st_check = await check_krea_status(ctx)
+        if isinstance(st_check, dict) and "krea_allowed" in st_check:
+            caller_krea_allowed = bool(st_check.get("krea_allowed"))
+    except Exception:
+        pass
+
+    # Determine base_model ("sdxl" | "anima" | "semi_realism" | "realism")
     joined_hints = " ".join(checkpoint_hints).lower()
     lora_base_hints = " ".join(d["base"] for d in discovered_loras).lower()
     detected_base = None
-    if ("3126581" in checkpoint_vids or "3287420" in checkpoint_vids
-            or any(k in joined_hints for k in ("anima", "illustrious", "pony", "noob", "niji", "wai"))
+    if not caller_krea_allowed:
+        detected_base = "sdxl"
+    elif ("3126581" in checkpoint_vids or "3287420" in checkpoint_vids
+            or any(k in joined_hints for k in ("anima", "niji", "wai"))
             or "anima" in lora_base_hints):
         detected_base = "anima"
     elif "3258954" in checkpoint_vids or any(k in joined_hints for k in ("muse", "yogi", "semi_realism", "semireal")):
         detected_base = "semi_realism"
-    elif "3357068" in checkpoint_vids or any(k in joined_hints for k in ("krea", "cyberrealistic", "flux", "qwen")):
+    elif "3357068" in checkpoint_vids or any(k in joined_hints for k in ("krea", "flux", "qwen")):
+        detected_base = "realism"
+    elif any(k in joined_hints for k in ("sdxl", "xl 1.0", "pony", "illustrious")) or any(k in lora_base_hints for k in ("sdxl", "pony", "illustrious")):
+        detected_base = "sdxl"
+    elif "cyberrealistic" in joined_hints:
         detected_base = "realism"
 
     # Match discovered LoRAs to Studio styles & archetypes
@@ -6825,17 +7324,18 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     unmatched_lora_names: list[str] = []
     matched_norms_or_vids: set[str] = set()
 
-    def _find_preset_match(dl: dict, index_list: list[dict]) -> dict | None:
+    def _find_preset_matches(dl: dict, index_list: list[dict]) -> list[dict]:
+        found = []
         for p in index_list:
             if not p["has_lora"]:
                 continue
             if dl["vid"] and p["vid"] and dl["vid"] == p["vid"]:
-                return p
-            if dl["norm"] and p["norm_file"] and dl["norm"] == p["norm_file"]:
-                return p
-            if dl["norm"] and len(dl["norm"]) >= 4 and (dl["norm"] == p["norm_name"] or dl["norm"] == p["norm_id"]):
-                return p
-        return None
+                found.append(p)
+            elif dl["norm"] and p["norm_file"] and dl["norm"] == p["norm_file"]:
+                found.append(p)
+            elif dl["norm"] and len(dl["norm"]) >= 4 and (dl["norm"] == p["norm_name"] or dl["norm"] == p["norm_id"]):
+                found.append(p)
+        return found
 
     def _resolve_preset_weight(p: dict, dl: dict) -> float:
         if dl["weight"] is not None:
@@ -6849,52 +7349,79 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
         return round(float(p["default_strength"]), 2)
 
     for dl in discovered_loras:
-        st_match = _find_preset_match(dl, style_index)
-        if st_match:
-            pid = st_match["id"]
-            w = _resolve_preset_weight(st_match, dl)
-            if pid not in matched_styles:
-                matched_styles.append(pid)
-            style_weights[pid] = w
+        st_matches = _find_preset_matches(dl, style_index)
+        if st_matches:
+            for st_match in st_matches:
+                pid = st_match["id"]
+                w = _resolve_preset_weight(st_match, dl)
+                if pid not in matched_styles:
+                    matched_styles.append(pid)
+                style_weights[pid] = w
+                if st_match["norm_file"]:
+                    matched_norms_or_vids.add(f"n:{st_match['norm_file']}")
+                if detected_base is None:
+                    if "anima" in st_match["models"]:
+                        detected_base = "anima"
+                    elif "sdxl" in st_match["models"]:
+                        detected_base = "sdxl"
             if dl["vid"]:
                 matched_norms_or_vids.add(f"v:{dl['vid']}")
             if dl["norm"]:
                 matched_norms_or_vids.add(f"n:{dl['norm']}")
-            if st_match["norm_file"]:
-                matched_norms_or_vids.add(f"n:{st_match['norm_file']}")
-            if detected_base is None and "anima" in st_match["models"]:
-                detected_base = "anima"
             continue
 
-        ar_match = _find_preset_match(dl, arch_index)
-        if ar_match:
-            pid = ar_match["id"]
-            w = _resolve_preset_weight(ar_match, dl)
-            if pid not in matched_archetypes:
-                matched_archetypes.append(pid)
-            archetype_weights[pid] = w
+        ar_matches = _find_preset_matches(dl, arch_index)
+        if ar_matches:
+            for ar_match in ar_matches:
+                pid = ar_match["id"]
+                w = _resolve_preset_weight(ar_match, dl)
+                if pid not in matched_archetypes:
+                    matched_archetypes.append(pid)
+                archetype_weights[pid] = w
+                if ar_match["norm_file"]:
+                    matched_norms_or_vids.add(f"n:{ar_match['norm_file']}")
+                if detected_base is None:
+                    if "anima" in ar_match["models"]:
+                        detected_base = "anima"
+                    elif "sdxl" in ar_match["models"]:
+                        detected_base = "sdxl"
             if dl["vid"]:
                 matched_norms_or_vids.add(f"v:{dl['vid']}")
             if dl["norm"]:
                 matched_norms_or_vids.add(f"n:{dl['norm']}")
-            if ar_match["norm_file"]:
-                matched_norms_or_vids.add(f"n:{ar_match['norm_file']}")
-            if detected_base is None and "anima" in ar_match["models"]:
-                detected_base = "anima"
 
     if detected_base is None:
-        detected_base = "anima" if ("1girl" in clean_prompt.lower() or "1woman" in clean_prompt.lower() and "masterpiece" in clean_prompt.lower()) else "realism"
+        if not caller_krea_allowed:
+            detected_base = "sdxl"
+        else:
+            detected_base = "anima" if ("1girl" in clean_prompt.lower() or "1woman" in clean_prompt.lower() and "masterpiece" in clean_prompt.lower()) else "realism"
 
-    target_cat = "anima" if detected_base == "anima" else "krea2"
+    target_cat = "sdxl" if detected_base == "sdxl" else ("anima" if detected_base == "anima" else "krea2")
     style_by_id = {p["id"]: p for p in style_index}
     arch_by_id = {p["id"]: p for p in arch_index}
 
+    # Auto-pick matching SDXL checkpoint preset when importing onto SDXL
+    if detected_base == "sdxl":
+        sdxl_ckpt_pick = "sdxl_realistic"
+        if any(k in joined_hints for k in ("illustrious", "noob", "anime", "wai")):
+            sdxl_ckpt_pick = "sdxl_fantasy"
+        elif "semi" in joined_hints:
+            sdxl_ckpt_pick = "sdxl_tooned"
+        elif "pony" in joined_hints:
+            sdxl_ckpt_pick = "sdxl_perfect"
+        if sdxl_ckpt_pick not in matched_styles:
+            matched_styles.insert(0, sdxl_ckpt_pick)
+
     matched_styles = [
         sid for sid in matched_styles
-        if "all" in style_by_id[sid]["models"] or target_cat in style_by_id[sid]["models"]
+        if sid not in style_by_id or "all" in style_by_id[sid]["models"] or target_cat in style_by_id[sid]["models"]
     ]
     style_weights = {sid: style_weights[sid] for sid in matched_styles if sid in style_weights}
-    matched_style_labels = [f"{style_by_id[sid]['name']} ({style_weights.get(sid, style_by_id[sid]['default_strength'])})" for sid in matched_styles]
+    matched_style_labels = [
+        f"{style_by_id[sid]['name']} ({style_weights.get(sid, style_by_id[sid]['default_strength'])})"
+        if sid in style_by_id else sid
+        for sid in matched_styles
+    ]
 
     matched_archetypes = [
         aid for aid in matched_archetypes
@@ -6904,7 +7431,7 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     matched_archetype_labels = [f"{arch_by_id[aid]['name']} ({archetype_weights.get(aid, arch_by_id[aid]['default_strength'])})" for aid in matched_archetypes]
 
     # Collect unmatched non-utility LoRAs (for transparent reporting)
-    utility_keywords = ("highres", "hires", "upscale", "detail", "lightning", "hyper", "lcm", "turbo", "slider")
+    utility_keywords = ("highres", "hires", "upscale", "detail", "lightning", "hyper", "lcm", "turbo", "slider", "dmd2")
     seen_unmatched = set()
     for dl in discovered_loras:
         if (dl["vid"] and f"v:{dl['vid']}" in matched_norms_or_vids) or (dl["norm"] and f"n:{dl['norm']}" in matched_norms_or_vids):
@@ -6921,18 +7448,21 @@ async def extract_civitai_image_preset(ctx: UserContext | None, text: str) -> tu
     raw_steps = gen_meta.get("steps") or v1_meta.get("steps") or comfy_parsed.get("steps")
     raw_cfg = gen_meta.get("cfgScale") or gen_meta.get("cfg") or v1_meta.get("cfgScale") or comfy_parsed.get("cfg")
 
-    default_steps = 25 if detected_base == "anima" else 12
-    default_cfg = 3.0 if detected_base == "anima" else (2.0 if detected_base == "semi_realism" else 1.5)
-
-    try:
-        final_steps = max(4, min(40, int(raw_steps))) if raw_steps is not None else default_steps
-    except Exception:
-        final_steps = default_steps
-
-    try:
-        final_cfg = round(max(1.0, min(7.0, float(raw_cfg))), 1) if raw_cfg is not None else default_cfg
-    except Exception:
-        final_cfg = default_cfg
+    if detected_base == "sdxl":
+        # Local SDXL runs with DMD2 4-step LCM accelerator (optimal at 6 steps, CFG 1.0)
+        final_steps = 6
+        final_cfg = 1.0
+    else:
+        default_steps = 25 if detected_base == "anima" else 12
+        default_cfg = 3.0 if detected_base == "anima" else (2.0 if detected_base == "semi_realism" else 1.5)
+        try:
+            final_steps = max(4, min(40, int(raw_steps))) if raw_steps is not None else default_steps
+        except Exception:
+            final_steps = default_steps
+        try:
+            final_cfg = round(max(1.0, min(7.0, float(raw_cfg))), 1) if raw_cfg is not None else default_cfg
+        except Exception:
+            final_cfg = default_cfg
 
     w = gen_meta.get("width") or (v1_item or {}).get("width") or comfy_parsed.get("width")
     h = gen_meta.get("height") or (v1_item or {}).get("height") or comfy_parsed.get("height")
@@ -7649,12 +8179,20 @@ async def krea_director_rewrite_prompt(
     # Preserve explicit <lora:...> or <tag> tokens from current_prompt unless user asks to remove them
     preserved_tags = re.findall(r"<[^>]+>", current_prompt) if current_prompt else []
 
-    is_anima = str(base_model or "").lower() in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
+    base_lower = str(base_model or "").lower()
+    is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
+    is_sdxl = base_lower == "sdxl"
     if is_anima:
         model_guidance = (
             "TARGET DIFFUSION ENGINE: Anima Aesthetic V1.1 (Anime / 2D Illustration).\n"
             "- Write the prompt in English combining structured anime/illustration descriptors (e.g. 'masterpiece, best quality, 1girl, dynamic angle, expressive eyes, ...') with clear visual scene, pose, outfit, and lighting details.\n"
             "- Keep all visual details vivid, specific, and faithful to the user's request."
+        )
+    elif is_sdxl:
+        model_guidance = (
+            "TARGET DIFFUSION ENGINE: SDXL 1.0 + DMD2 LCM (CyberRealistic XL / CyberPony / Illustrious XL).\n"
+            "- Write a punchy, well-structured English SDXL prompt combining clear visual phrases and descriptive comma-separated clauses: camera shot & angle, subject pose & expression, detailed outfit/fabric, setting/environment, and lighting/atmosphere.\n"
+            "- Keep prompts concise and visually concrete (around 45-90 words) so SDXL CLIP-L/G stays razor-focused."
         )
     else:
         model_guidance = (
@@ -7749,10 +8287,10 @@ async def krea_director_rewrite_prompt(
         new_prompt = cleaned_raw or current_prompt
         reply = "Промпт обновлён и готов к съёмке!" if is_ru else "Prompt updated and ready to shoot!"
 
-    # Re-attach preserved <lora:...> tags if model accidentally dropped them and user didn't ask to clear LoRAs
+    # Re-attach preserved <lora:...> or <Tag> tokens if model accidentally dropped them and user didn't ask to clear LoRAs
     if preserved_tags and not any(k in instruction.lower() for k in ("убери лор", "удали лор", "без лор", "remove lora", "no lora")):
         for tag in preserved_tags:
-            if tag.lower().startswith("<lora:") and tag not in new_prompt:
+            if tag not in new_prompt and not tag.lower().startswith("<think"):
                 new_prompt = f"{new_prompt} {tag}".strip()
 
     if not reply:
@@ -7802,12 +8340,15 @@ async def krea_director_storyboard(
     story_lang = "Russian" if is_ru else "English"
     model = _get_director_model()
 
-    is_anima = str(base_model or "").lower() in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
-    engine_note = (
-        "Write each `visual_prompt` in English for Anima V1.1 (structured anime/illustration tags + clear pose, outfit, expression, camera framing, and background)."
-        if is_anima else
-        "Write each `visual_prompt` in rich, natural cinematic English prose for Krea 2 DiT (camera shot type, exact pose & body action, wardrobe continuity, facial expression, setting details, and lighting)."
-    )
+    base_lower = str(base_model or "").lower()
+    is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
+    is_sdxl = base_lower == "sdxl"
+    if is_anima:
+        engine_note = "Write each `visual_prompt` in English for Anima V1.1 (structured anime/illustration tags + clear pose, outfit, expression, camera framing, and background)."
+    elif is_sdxl:
+        engine_note = "Write each `visual_prompt` in punchy, concrete English for SDXL 1.0 (camera shot, subject pose & expression, wardrobe continuity, setting details, and lighting in ~50-85 words)."
+    else:
+        engine_note = "Write each `visual_prompt` in rich, natural cinematic English prose for Krea 2 DiT (camera shot type, exact pose & body action, wardrobe continuity, facial expression, setting details, and lighting)."
 
     pre_fun = ""
     try:
