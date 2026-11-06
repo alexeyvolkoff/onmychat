@@ -3097,14 +3097,14 @@ async def generate_image_workflow(workflow) -> bytes:
                         msg_type = data.get("type")
                         
                         if msg_type == "executing":
-                            data_content = data["data"]
+                            data_content = data.get("data") or {}
                             # Log heartbeat or node executing
-                            if data_content["node"] is None and data_content["prompt_id"] == prompt_id:
+                            if data_content.get("node") is None and data_content.get("prompt_id") == prompt_id:
                                 logging.info(f"Execution finished for prompt {prompt_id}")
                                 break
                             elif data_content.get("prompt_id") == prompt_id:
                                 nid = str(data_content.get("node", ""))
-                                node_cls = str(workflow.get(nid, {}).get("class_type", "")) if isinstance(workflow, dict) else ""
+                                node_cls = str((workflow.get(nid) or {}).get("class_type", "")) if isinstance(workflow, dict) else ""
                                 if "Sampler" in node_cls:
                                     sampler_started = True
                                     await emit_generation_progress("generating", step=0)
@@ -3114,7 +3114,7 @@ async def generate_image_workflow(workflow) -> bytes:
                                     await emit_generation_progress("saving")
 
                         elif msg_type == "progress":
-                            data_content = data.get("data", {})
+                            data_content = data.get("data") or {}
                             val = int(data_content.get("value", 0) or 0)
                             mx = int(data_content.get("max", 0) or 0)
                             if mx >= 4:
@@ -3122,14 +3122,14 @@ async def generate_image_workflow(workflow) -> bytes:
                                 await emit_generation_progress("generating", step=val, total_steps=mx)
                                 
                         elif msg_type == "executed":
-                            data_content = data["data"]
-                            if data_content["prompt_id"] == prompt_id:
-                                outputs = data_content.get("output", {})
+                            data_content = data.get("data") or {}
+                            if data_content.get("prompt_id") == prompt_id:
+                                outputs = data_content.get("output") or {}
                                 #logging.info(f"Outputs received: {outputs.keys()}")
                                 
                                 # outputs is directly the dictionary of outputs for the executed node
-                                if "images" in outputs:
-                                    images = outputs["images"]
+                                if isinstance(outputs, dict) and "images" in outputs:
+                                    images = outputs.get("images") or []
                                     #logging.info(f"Images found: {images}")
                                     for image in images:
                                         filename = image.get("filename")
@@ -3157,7 +3157,29 @@ async def generate_image_workflow(workflow) -> bytes:
                                                                 pass
                                             else:
                                                 logging.error(f"Failed to fetch image: {img_resp.status}")
-                        
+
+                        elif msg_type == "execution_error":
+                            err_data = data.get("data", {})
+                            if err_data.get("prompt_id") == prompt_id:
+                                exc_type = str(err_data.get("exception_type") or "ExecutionError")
+                                exc_msg = str(err_data.get("exception_message") or "").strip()
+                                node_id = err_data.get("node_id")
+                                node_type = err_data.get("node_type")
+                                logging.error(
+                                    f"[ComfyUI] execution_error on node {node_id} ({node_type}): "
+                                    f"{exc_type}: {exc_msg}"
+                                )
+                                if "OutOfMemory" in exc_type or "out of memory" in exc_msg.lower():
+                                    try:
+                                        async with session.post(
+                                            f"{COMFY_API_URL}/free",
+                                            json={"unload_models": True, "free_memory": True},
+                                        ) as _:
+                                            logging.info("[ComfyUI] Triggered /free after CUDA OOM")
+                                    except Exception:
+                                        pass
+                                break
+
                         # Log other messages just in case
                         # else:
                         #     logging.debug(f"WS Message: {msg_type}")
@@ -3793,6 +3815,9 @@ async def _discover_sdxl_reactor_capabilities() -> dict:
         "has_opt": False,
         "swap_model": "inswapper_128.onnx",
         "face_restore_model": "none",
+        "ipadapter_available": False,
+        "clip_vision_model": "",
+        "ipadapter_face_model": "",
     }
     if not COMFY_API_URL:
         return caps
@@ -3828,6 +3853,50 @@ async def _discover_sdxl_reactor_capabilities() -> dict:
                             if pref_rest in restore_models:
                                 caps["face_restore_model"] = pref_rest
                                 break
+
+                    ipa_nodes = (
+                        "PrepImageForClipVision",
+                        "CLIPVisionLoader",
+                        "IPAdapterModelLoader",
+                        "IPAdapterAdvanced",
+                    )
+                    if all(n in obj_info for n in ipa_nodes):
+                        cv_models = (
+                            obj_info.get("CLIPVisionLoader", {})
+                            .get("input", {})
+                            .get("required", {})
+                            .get("clip_name", [[]])[0]
+                            or []
+                        )
+                        ipa_models = (
+                            obj_info.get("IPAdapterModelLoader", {})
+                            .get("input", {})
+                            .get("required", {})
+                            .get("ipadapter_file", [[]])[0]
+                            or []
+                        )
+                        chosen_cv = ""
+                        for pref_cv in (
+                            "clip_vision_h.safetensors",
+                            "CLIP-ViT-H-14-laion2B-s32B-b79K/pytorch_model.bin",
+                        ):
+                            if pref_cv in cv_models:
+                                chosen_cv = pref_cv
+                                break
+                        chosen_ipa = ""
+                        for pref_ipa in (
+                            "ip-adapter-plus-face_sdxl_vit-h.bin",
+                            "ip-adapter-plus_sdxl_vit-h.bin",
+                        ):
+                            if pref_ipa in ipa_models:
+                                chosen_ipa = pref_ipa
+                                break
+                        if chosen_cv and chosen_ipa:
+                            caps["ipadapter_available"] = True
+                            caps["clip_vision_model"] = chosen_cv
+                            caps["ipadapter_face_model"] = chosen_ipa
+
+                    if caps["available"] or caps["ipadapter_available"]:
                         _SDXL_REACTOR_CACHE = caps
     except Exception as e:
         logging.warning(f"[SDXL Studio] ReActor capability check warning: {e}")
@@ -3907,6 +3976,49 @@ async def _discover_sdxl_inpaint_capabilities() -> dict:
     return caps
 
 
+def _crop_head_portrait_for_ipadapter(img_bytes: bytes) -> bytes:
+    """
+    Если референс — ростовое или дальнее фото, вырезает квадратный портрет головы с причёской (2.8× размера лица),
+    чтобы IP-Adapter Plus Face получал чёткие волосы, тон кожи и черты лица в окне CLIP-ViT-H.
+    Для крупных портретов возвращает исходные байты без потерь.
+    """
+    if not img_bytes:
+        return img_bytes
+    try:
+        from PIL import ImageOps
+        import face_engine
+        with Image.open(io.BytesIO(img_bytes)) as pil_im:
+            try:
+                pil_im = ImageOps.exif_transpose(pil_im)
+            except Exception:
+                pass
+            pil_rgb = pil_im.convert("RGB")
+            w, h = pil_rgb.size
+            faces = face_engine._get_app().get(np.array(pil_rgb))
+            if not faces:
+                return img_bytes
+            best = max(faces, key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])))
+            x1, y1, x2, y2 = [float(v) for v in best.bbox]
+            fw, fh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+            box_side = int(max(fw, fh) * 2.8)
+            if box_side >= int(min(w, h) * 0.85):
+                return img_bytes
+            cx = int((x1 + x2) * 0.5)
+            cy = int((y1 + y2) * 0.5 - fh * 0.12)
+            half = box_side // 2
+            cx1 = max(0, min(w - box_side, cx - half))
+            cy1 = max(0, min(h - box_side, cy - half))
+            cx2 = min(w, cx1 + box_side)
+            cy2 = min(h, cy1 + box_side)
+            cropped = pil_rgb.crop((cx1, cy1, cx2, cy2))
+            buf = io.BytesIO()
+            cropped.save(buf, format="PNG")
+            return buf.getvalue()
+    except Exception as e:
+        logging.debug(f"[SDXL Studio] Head portrait crop skipped: {e}")
+        return img_bytes
+
+
 async def generate_sdxl_studio_image(
     ctx: UserContext,
     prompt: str,
@@ -3938,12 +4050,14 @@ async def generate_sdxl_studio_image(
         raise Exception("Укажите промпт или выберите персону для генерации.")
 
     comfy_ref_names: list[str] = []
+    comfy_ref_bytes: list[bytes] = []
     for ref_item in raw_refs[:2]:
         ref_bytes = await resolve_reference_image_bytes(ctx, ref_item)
         if ref_bytes:
             c_name = await upload_reference_image_to_comfy(ref_bytes)
             if c_name:
                 comfy_ref_names.append(c_name)
+                comfy_ref_bytes.append(ref_bytes)
 
     # Проверяем право на uncensored-режим (Owner / Club Member / Muse Pass на не-iOS)
     is_uncensored = bool(getattr(ctx, "private_mode", False) or getattr(ctx, "trusted_owner", False))
@@ -4325,7 +4439,7 @@ async def generate_sdxl_studio_image(
                     }
                     workflow_json["225"] = {
                         "class_type": "SAMLoader",
-                        "inputs": {"model_name": inpaint_caps["sam_model"], "device_mode": "AUTO"},
+                        "inputs": {"model_name": inpaint_caps["sam_model"], "device_mode": "CPU"},
                     }
                     workflow_json["226"] = {
                         "class_type": "SAMDetectorSegmented",
@@ -4394,13 +4508,17 @@ async def generate_sdxl_studio_image(
                 del workflow_json["6"]
             inpaint_steps = max(7, eff_steps)
             inpaint_cfg = max(1.2, eff_cfg)
+            try:
+                inpaint_denoise = round(max(0.45, min(0.98, float(sliders.get("inpaint_denoise", 0.94)))), 2)
+            except Exception:
+                inpaint_denoise = 0.94
             workflow_json["5"]["inputs"]["model"] = model_for_inpaint
             workflow_json["5"]["inputs"]["positive"] = ["215", 0]
             workflow_json["5"]["inputs"]["negative"] = ["215", 1]
             workflow_json["5"]["inputs"]["latent_image"] = ["215", 2]
             workflow_json["5"]["inputs"]["steps"] = inpaint_steps
             workflow_json["5"]["inputs"]["cfg"] = inpaint_cfg
-            workflow_json["5"]["inputs"]["denoise"] = 0.94
+            workflow_json["5"]["inputs"]["denoise"] = inpaint_denoise
 
             # Попиксельное сведение обратно поверх исходного кадра, чтобы немаскированный фон/лицо не теряли резкость в VAE
             post_inpaint_link = ["41", 0]
@@ -4420,10 +4538,70 @@ async def generate_sdxl_studio_image(
             }
             final_inpaint_img = ["216", 0]
 
-            # Если прикреплён 2-й референс при замене силуэта ("person"), переносим на нового персонажа лицо со 2-го референса
+            # Если прикреплён 2-й референс при замене силуэта ("person"), переносим волосы/типаж через IP-Adapter + лицо через ReActor
             if len(comfy_ref_names) >= 2 and sdxl_inpaint_target == "person":
                 reactor_caps = await _discover_sdxl_reactor_capabilities()
+                try:
+                    raw_inpaint_ipa_w = float(sliders.get("ipadapter_weight", 0.62))
+                except Exception:
+                    raw_inpaint_ipa_w = 0.62
+                if reactor_caps.get("ipadapter_available") and len(comfy_ref_bytes) >= 2 and raw_inpaint_ipa_w > 0.02:
+                    inpaint_ipa_w = round(max(0.05, min(0.95, raw_inpaint_ipa_w)), 2)
+                    ipa_bytes_2 = await asyncio.to_thread(_crop_head_portrait_for_ipadapter, comfy_ref_bytes[1])
+                    ipa_name_2 = (
+                        await upload_reference_image_to_comfy(ipa_bytes_2)
+                        if ipa_bytes_2 is not comfy_ref_bytes[1]
+                        else comfy_ref_names[1]
+                    ) or comfy_ref_names[1]
+                    workflow_json["250"] = {"class_type": "LoadImage", "inputs": {"image": ipa_name_2}}
+                    workflow_json["251"] = {
+                        "class_type": "PrepImageForClipVision",
+                        "inputs": {
+                            "image": ["250", 0],
+                            "interpolation": "LANCZOS",
+                            "crop_position": "top",
+                            "sharpening": 0.05,
+                        },
+                    }
+                    workflow_json["252"] = {
+                        "class_type": "CLIPVisionLoader",
+                        "inputs": {"clip_name": reactor_caps["clip_vision_model"]},
+                    }
+                    workflow_json["253"] = {
+                        "class_type": "IPAdapterModelLoader",
+                        "inputs": {"ipadapter_file": reactor_caps["ipadapter_face_model"]},
+                    }
+                    workflow_json["254"] = {
+                        "class_type": "IPAdapterAdvanced",
+                        "inputs": {
+                            "model": ["103", 0],
+                            "ipadapter": ["253", 0],
+                            "clip_vision": ["252", 0],
+                            "image": ["251", 0],
+                            "weight": inpaint_ipa_w,
+                            "weight_type": "ease out",
+                            "combine_embeds": "concat",
+                            "start_at": 0.0,
+                            "end_at": 0.85,
+                            "embeds_scaling": "K+V",
+                        },
+                    }
+                    if "214" in workflow_json and "inputs" in workflow_json["214"]:
+                        workflow_json["214"]["inputs"]["model"] = ["254", 0]
+                    else:
+                        workflow_json["5"]["inputs"]["model"] = ["254", 0]
+                    workflow_json["5"]["inputs"]["cfg"] = max(1.35, inpaint_cfg)
                 if reactor_caps.get("available"):
+                    inpaint_swap_m = reactor_caps.get("swap_model", "inswapper_128.onnx")
+                    default_inp_vis = 0.30 if ("hyperswap" in inpaint_swap_m or "256" in inpaint_swap_m) else 0.75
+                    try:
+                        raw_inp_vis = float(sliders.get("face_restore_visibility", default_inp_vis))
+                    except Exception:
+                        raw_inp_vis = default_inp_vis
+                    inpaint_rest_model = (
+                        "none" if raw_inp_vis <= 0.02 else reactor_caps.get("face_restore_model", "none")
+                    )
+                    inpaint_rest_vis = round(max(0.05, min(0.90, raw_inp_vis)), 2) if raw_inp_vis > 0.02 else 0.1
                     workflow_json["240"] = {"class_type": "LoadImage", "inputs": {"image": comfy_ref_names[1]}}
                     if reactor_caps.get("has_opt"):
                         workflow_json["241"] = {
@@ -4445,10 +4623,10 @@ async def generate_sdxl_studio_image(
                                 "input_image": final_inpaint_img,
                                 "source_image": ["240", 0],
                                 "options": ["241", 0],
-                                "swap_model": reactor_caps.get("swap_model", "inswapper_128.onnx"),
+                                "swap_model": inpaint_swap_m,
                                 "facedetection": "retinaface_resnet50",
-                                "face_restore_model": reactor_caps.get("face_restore_model", "none"),
-                                "face_restore_visibility": 0.85,
+                                "face_restore_model": inpaint_rest_model,
+                                "face_restore_visibility": inpaint_rest_vis,
                                 "codeformer_weight": 0.5,
                             },
                         }
@@ -4460,7 +4638,7 @@ async def generate_sdxl_studio_image(
             inpaint_applied = True
             logging.info(
                 f"[SDXL Studio] Injected Auto-Inpaint (target={sdxl_inpaint_target}, "
-                f"steps={inpaint_steps}, cfg={inpaint_cfg}, second_ref_face={faceswap_applied})"
+                f"steps={inpaint_steps}, cfg={inpaint_cfg}, denoise={inpaint_denoise}, second_ref_face={faceswap_applied})"
             )
         else:
             logging.warning("[SDXL Studio] Auto-Inpaint requested, but segmentation nodes are unavailable; falling back to FaceSwap")
@@ -4468,13 +4646,85 @@ async def generate_sdxl_studio_image(
 
     if comfy_ref_names and not inpaint_applied and sdxl_ref_mode in ("faceswap", "face", ""):
         reactor_caps = await _discover_sdxl_reactor_capabilities()
+        has_char_lora = any(
+            str(lora_nodes.get(k, {}).get("type") or "").lower() == "character"
+            for k in active_lora_strengths
+        )
+        try:
+            raw_ipa_weight = float(sliders.get("ipadapter_weight", 0.65))
+        except Exception:
+            raw_ipa_weight = 0.65
+        ipadapter_applied = False
+        if (
+            reactor_caps.get("ipadapter_available")
+            and len(comfy_ref_names) == 1
+            and sdxl_face_target in ("auto", "both")
+            and not has_char_lora
+            and comfy_ref_bytes
+            and raw_ipa_weight > 0.02
+        ):
+            ipa_crop_bytes = await asyncio.to_thread(_crop_head_portrait_for_ipadapter, comfy_ref_bytes[0])
+            ipa_ref_fname = (
+                await upload_reference_image_to_comfy(ipa_crop_bytes)
+                if ipa_crop_bytes is not comfy_ref_bytes[0]
+                else comfy_ref_names[0]
+            ) or comfy_ref_names[0]
+            ipa_weight = round(max(0.05, min(0.95, raw_ipa_weight)), 2)
+            workflow_json["250"] = {"class_type": "LoadImage", "inputs": {"image": ipa_ref_fname}}
+            workflow_json["251"] = {
+                "class_type": "PrepImageForClipVision",
+                "inputs": {
+                    "image": ["250", 0],
+                    "interpolation": "LANCZOS",
+                    "crop_position": "top",
+                    "sharpening": 0.05,
+                },
+            }
+            workflow_json["252"] = {
+                "class_type": "CLIPVisionLoader",
+                "inputs": {"clip_name": reactor_caps["clip_vision_model"]},
+            }
+            workflow_json["253"] = {
+                "class_type": "IPAdapterModelLoader",
+                "inputs": {"ipadapter_file": reactor_caps["ipadapter_face_model"]},
+            }
+            workflow_json["254"] = {
+                "class_type": "IPAdapterAdvanced",
+                "inputs": {
+                    "model": workflow_json["5"]["inputs"]["model"],
+                    "ipadapter": ["253", 0],
+                    "clip_vision": ["252", 0],
+                    "image": ["251", 0],
+                    "weight": ipa_weight,
+                    "weight_type": "ease out",
+                    "combine_embeds": "concat",
+                    "start_at": 0.0,
+                    "end_at": 0.85,
+                    "embeds_scaling": "K+V",
+                },
+            }
+            workflow_json["5"]["inputs"]["model"] = ["254", 0]
+            eff_steps = max(7, eff_steps)
+            eff_cfg = max(1.35, eff_cfg)
+            workflow_json["5"]["inputs"]["steps"] = eff_steps
+            workflow_json["5"]["inputs"]["cfg"] = eff_cfg
+            ipadapter_applied = True
+            logging.info(
+                f"[SDXL Studio] Injected IP-Adapter Plus Face ({reactor_caps['ipadapter_face_model']}, "
+                f"weight={ipa_weight}, steps={eff_steps}, cfg={eff_cfg})"
+            )
+
         if reactor_caps.get("available"):
             swap_model = reactor_caps.get("swap_model", "inswapper_128.onnx")
-            restore_model = reactor_caps.get("face_restore_model", "none")
+            default_restore_vis = 0.30 if ("hyperswap" in swap_model or "256" in swap_model) else 0.75
             try:
-                restore_vis = max(0.1, min(1.0, float(sliders.get("face_restore_visibility", 0.85))))
+                raw_restore_vis = float(sliders.get("face_restore_visibility", default_restore_vis))
             except Exception:
-                restore_vis = 0.85
+                raw_restore_vis = default_restore_vis
+            restore_model = (
+                "none" if raw_restore_vis <= 0.02 else reactor_caps.get("face_restore_model", "none")
+            )
+            restore_vis = round(max(0.05, min(0.90, raw_restore_vis)), 2) if raw_restore_vis > 0.02 else 0.1
 
             prev_img_link = ["41", 0]
             if len(comfy_ref_names) >= 2:
@@ -4565,24 +4815,13 @@ async def generate_sdxl_studio_image(
     custom_title = str(kwargs.get("custom_title") or "").strip()
     custom_description = str(kwargs.get("custom_description") or "").strip()
 
-    desc_task = None
-    if not (custom_title or custom_description) and clean_user_prompt:
-        desc_task = asyncio.create_task(generate_neutral_description_and_title(ctx, clean_user_prompt))
-
     logging.info(
         f"[SDXL Studio] Generating on local ComfyUI with {ckpt_model} "
         f"(steps={eff_steps}, cfg={eff_cfg}, size={w_clamped}x{h_clamped}, "
         f"loras={list(active_lora_strengths.keys())}, inpaint={inpaint_applied}, faceswap={faceswap_applied})"
     )
-    try:
-        img_data, orig_filename = await generate_image_workflow(workflow_json)
-    except Exception:
-        if desc_task and not desc_task.done():
-            desc_task.cancel()
-        raise
+    img_data, orig_filename = await generate_image_workflow(workflow_json)
     if not img_data:
-        if desc_task and not desc_task.done():
-            desc_task.cancel()
         raise Exception("SDXL image generation failed")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4599,9 +4838,12 @@ async def generate_sdxl_studio_image(
     if custom_title or custom_description:
         neutral_title = custom_title
         neutral_description = custom_description
-    elif desc_task is not None:
+    elif clean_user_prompt:
         try:
-            neutral_title, neutral_description = await asyncio.wait_for(desc_task, timeout=6.0)
+            neutral_title, neutral_description = await asyncio.wait_for(
+                generate_neutral_description_and_title(ctx, clean_user_prompt),
+                timeout=6.0,
+            )
         except Exception as e:
             logging.warning(f"[SDXL Studio] generate_neutral_description_and_title timed out or failed: {e}")
 

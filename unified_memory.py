@@ -69,12 +69,15 @@ def get_model() -> SentenceTransformer:
     global _model
     if _model is None:
         import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        if (
-            SETTINGS.get("FORCE_CPU_EMBEDDINGS", "false").lower() == "true"
-            or os.environ.get("OMD_FORCE_CPU") == "true"
-        ):
-            device = "cpu"
+        # Default lightweight MiniLM embeddings to CPU (like face_engine) so uvicorn
+        # does not permanently lock ~680 MiB of CUDA context VRAM away from ComfyUI/Ollama.
+        use_gpu = (
+            SETTINGS.get("FORCE_GPU_EMBEDDINGS", "false").lower() == "true"
+            and SETTINGS.get("FORCE_CPU_EMBEDDINGS", "false").lower() != "true"
+            and os.environ.get("OMD_FORCE_CPU") != "true"
+            and torch.cuda.is_available()
+        )
+        device = "cuda" if use_gpu else "cpu"
         logger.info(f"[unified] Loading SentenceTransformer {EMBEDDING_MODEL} on {device}...")
         _model = SentenceTransformer(EMBEDDING_MODEL, device=device)
     return _model
