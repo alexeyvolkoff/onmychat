@@ -151,16 +151,15 @@ cp config.example.ini config.ini
 
 ```ini
 [settings]
-GATEWAY_URL = https://onmydisk.net
-AI_TOKEN = <придумайте-ваш-ai-token>
+GATEWAY_URL = https://direct.onmydisk.net
 
 OLLAMA_URL = http://localhost:11434
-DEFAULT_MODEL = gemma4:12b
+DEFAULT_MODEL = gemma4:latest
 
 APP_ROOT_DIR = /opt/onmychat
 ```
 
-После этого откройте веб-интерфейс Connector (`http://<ip-или-имя-устройства>`), перейдите в **Settings → Integrations**, включите **On My Chat**, укажите **Base URL**: `http://localhost:8000` и введите тот же **AI Token** что и в конфиге выше. Connector начнёт проксировать AI-запросы от шлюза OnMyDisk к вашему локальному OnMyChat.
+Никакие токены в `config.ini` не требуются — локальный **OnMyDisk Connector** автоматически направляет P2P-запросы на `http://localhost:8000` и распознаёт владельца ноды по привязанному криптографическому DID.
 
 ### Запуск
 
@@ -352,7 +351,6 @@ sudo systemctl restart ollama
 | RAG не находит документы | ChromaDB не заполнена | Выполните `/learn <путь>` в чате. Проверьте наличие `memory_index/`. |
 | Медленный инференс | Нет GPU / мало RAM | Используйте модель поменьше (например, `gemma4:4b`) или включите CUDA. |
 | Ошибка генерации изображений | ComfyUI не запущен | Проверьте `COMFY_API_URL` в `config.ini`. Запустите ComfyUI вручную. |
-| `AI_TOKEN` не совпадает | Ошибка в конфиге | Скопируйте токен из Connector UI → Settings → Integrations → AI Token. |
 
 ---
 

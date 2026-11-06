@@ -151,16 +151,15 @@ Uredite `config.ini`:
 
 ```ini
 [settings]
-GATEWAY_URL = https://onmydisk.net
-AI_TOKEN = <izmislite-si-svoj-ai-token>
+GATEWAY_URL = https://direct.onmydisk.net
 
 OLLAMA_URL = http://localhost:11434
-DEFAULT_MODEL = gemma4:12b
+DEFAULT_MODEL = gemma4:latest
 
 APP_ROOT_DIR = /opt/onmychat
 ```
 
-Nato odprite spletni vmesnik Connector (`http://<ip-ali-ime-naprave>`), pojdite na **Settings → Integrations**, omogočite **On My Chat**, navedite **Base URL**: `http://localhost:8000` in vnesite enak **AI Token** kot v zgornji konfiguraciji. Connector bo začel posredovati AI zahteve od prehoda OnMyDisk do vašega lokalnega OnMyChat.
+V `config.ini` niso potrebni nobeni žetoni — lokalni **OnMyDisk Connector** samodejno usmerja P2P zahteve na `http://localhost:8000` in prepozna lastnika vozlišča prek seznanjenega kriptografskega DID.
 
 ### Zagon
 
@@ -422,7 +421,6 @@ sudo systemctl restart ollama
 | RAG ne najde dokumentov | ChromaDB ni napolnjena | Zaženite `/learn <pot>` v klepetu. Preverite `memory_index/`. |
 | Počasno sklepanje | Ni GPU / premalo RAM | Uporabite manjši model (npr. `gemma4:4b`) ali omogočite CUDA. |
 | Napaka pri generiranju slik | ComfyUI ne teče | Preverite `COMFY_API_URL` v `config.ini`. Zaženite ComfyUI ročno. |
-| `AI_TOKEN` se ne ujema | Napaka v konfiguraciji | Kopirajte žeton iz Connector UI → Settings → Integrations → AI Token. |
 
 ---
 
