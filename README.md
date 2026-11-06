@@ -7,7 +7,7 @@
 [![Docs](https://img.shields.io/badge/Docs-onmydisk.org-0ea5e9.svg)](https://onmydisk.org)
 [![Discord](https://img.shields.io/badge/Discord-Community-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/qAQpfmrBPW)
 
-**On My Chat** is an open-source, self-hosted personal AI node built around **Ollama** and [**On My Disk Direct**](https://github.com/alexeyvolkoff/onmydisk). It runs on your own Linux PC, home server, NAS, or ARM SBC and gives you private RAG over your local folders, mobile/PWA remote access over peer-to-peer WebRTC without port forwarding, and a built-in Creative Studio with an Ollama-powered prompt assistant.
+**On My Chat** is an open-source, self-hosted personal AI node built around **Ollama** and [**On My Disk Direct**](https://github.com/alexeyvolkoff/onmydisk). It runs on **Linux**, **Windows**, **macOS**, home servers, NAS boxes, and ARM SBCs — giving you private RAG over your local folders, mobile/PWA remote access over peer-to-peer WebRTC without port forwarding, and a built-in Creative Studio with an Ollama-powered prompt assistant.
 
 ---
 
@@ -39,10 +39,10 @@
                                                   │  (No port forwarding / No cloud storage)
                                                   ▼
                                     ┌───────────────────────────┐
-                                    │   OnMyDisk 3.0 Connector  │
+                                    │    On My Disk 3.0 Node    │
                                     │   (Local P2P File Node)   │
                                     └─────────────┬─────────────┘
-                                                  │ 127.0.0.1:8000
+                                                  │ 127.0.0.1:4000
                                                   ▼
                                     ┌───────────────────────────┐
                                     │     On My Chat Service    │
@@ -54,8 +54,8 @@
                                     └───────────────────────────┘
 ```
 
-1. **`onmydisk-connector`** shares selected local folders over P2P WebRTC and routes authenticated AI requests to `onmychat` on `localhost:8000` along with the caller's verified `DID` and pairing role (`owner` / `guest`).
-2. **`onmychat`** orchestrates chat streaming, background RAG indexing, semantic search, MCP tools, and ComfyUI workflows against your local **Ollama** instance (`http://localhost:11434`).
+1. **On My Disk 3.0 Node** (`onmydisk`) shares selected local folders over P2P WebRTC and routes authenticated AI requests to `onmychat` on `localhost` along with the caller's verified `DID` and pairing role (`owner` / `guest`).
+2. **`onmychat`** orchestrates chat streaming, background RAG indexing, semantic search, MCP tools, and ComfyUI workflows against your local **Ollama** instance (`http://localhost:11434`) or a P2P-tunneled GPU node.
 
 ---
 
@@ -63,14 +63,22 @@
 
 ### 1. Prerequisites
 
-- **OS:** Ubuntu 22.04 / 24.04 LTS or Debian 12 (`x86_64` or `arm64`)
-- **Python:** 3.10+
-- **Ollama:** Installed locally (or installed automatically by `install.sh`)
-- **OnMyDisk Connector:** Local P2P daemon ([Installation Guide](https://onmydisk.org/getstarted/)) for remote Web/PWA access and folder mounting
+- **OS (All Major Platforms Supported):**
+  - **Linux:** Ubuntu, Debian, Armbian, NAS & SBCs (`x86_64` and `arm64`)
+  - **Windows:** Windows 10 / 11 (`x64` — per-user install, no Administrator rights needed)
+  - **macOS:** Apple Silicon M1–M4 (`arm64` — per-user install, no `sudo` needed)
+  - **Clients & Edge:** Any modern browser / PWA, native Android & iOS apps, plus storage/tunnel nodes on OpenWrt routers
+- **Python:** 3.10+ *(configured automatically by the one-command installers)*
+- **Ollama:** Installed locally for GPU/Metal/CPU inference (`--gpu` / `-Gpu`), or optional in **Agentic P2P** mode (`--agentic` / `-Agentic`) where inference runs over P2P on a remote GPU
+- **On My Disk 3.0 Node:** Local P2P WebRTC daemon — installed together with **On My Chat** in one step via the [**⚡ TL;DR Quick Install Guide**](https://onmydisk.org/advanced/#-tldr--quick-install-recommended-agentic-ai-setup)
 
-### 2. Automated Installation (Recommended)
+### 2. One-Command Cross-Platform Install (Recommended)
 
-`install.sh` sets up `/opt/onmychat`, creates the Python virtual environment, pre-caches the multilingual SentenceTransformers embedding model, installs **Ollama** (or **RKLLAMA** on Rockchip SBCs), and enables the `onmychat` systemd service:
+Follow the [**⚡ TL;DR — Quick Install**](https://onmydisk.org/advanced/#-tldr--quick-install-recommended-agentic-ai-setup) in the official documentation to deploy both the **On My Disk 3.0 Node** and **On My Chat** in a single command on **Linux**, **Windows (`PowerShell`)**, or **macOS (`Terminal`)** — either in lightweight **Agentic P2P** mode (`--agentic` / `-Agentic`) or full local **Ollama GPU** mode (`--gpu` / `-Gpu`).
+
+### 3. Standalone Linux / Rockchip SBC Installer (`install.sh`)
+
+If you already run `onmydisk` on Linux and want to install **On My Chat** directly from this repository into `/opt/onmychat` (with **Ollama** or Rockchip **RKLLAMA** NPU systemd units):
 
 ```bash
 git clone https://github.com/alexeyvolkoff/onmychat.git
@@ -90,14 +98,14 @@ To update an existing `/opt/onmychat` installation later:
 cd /opt/onmychat && sudo ./update.sh
 ```
 
-### 3. Manual Installation (Development)
+### 4. Manual Installation (Cross-Platform Development)
 
 ```bash
 git clone https://github.com/alexeyvolkoff/onmychat.git
 cd onmychat
 
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate   # Windows PowerShell: .\venv\Scripts\Activate.ps1
 
 # Optional on CPU-only / ARM machines to skip CUDA wheels:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
@@ -105,7 +113,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp config.example.ini config.ini
 
-uvicorn api:app --host 127.0.0.1 --port 8000
+uvicorn api:app --host 127.0.0.1 --port 4000
 ```
 
 ---
@@ -152,9 +160,9 @@ If you run `onmychat` on a low-power always-on NAS or mini-PC without a discrete
 
 ## Pairing & Remote Access
 
-1. Install and start `onmydisk-connector` on the same machine ([Get Started](https://onmydisk.org/getstarted/)).
+1. Install **On My Disk 3.0 Node** + **On My Chat** via the [**⚡ TL;DR Quick Install**](https://onmydisk.org/advanced/#-tldr--quick-install-recommended-agentic-ai-setup) (Linux, Windows, or macOS).
 2. Open [**onmychat.com**](https://onmychat.com/?launch=1) (chat-first PWA) or [**direct.onmydisk.net**](https://direct.onmydisk.net) (workspace + file manager) and create or load your **DID** identity (save your `.json` keyfile for 1-click sign-in on other devices).
-3. Pair your machine using its **LinkID** or QR code (**Add Device**). Because you paired the node with your cryptographic DID, `onmychat` automatically recognizes you as the **Node Owner** with full private RAG and Creative Studio access — zero manual token copying required.
+3. Pair your machine using its **LinkID**, QR code, or local Claim page (`http://localhost:8081` on Windows/macOS, `http://localhost/` on Linux). Because you paired the node with your cryptographic DID, `onmychat` automatically recognizes you as the **Node Owner** with full private RAG and Creative Studio access — zero manual token copying required.
 
 Learn more about decentralized identity and keyfiles in the [DID Documentation](https://onmydisk.org/did/).
 
@@ -162,6 +170,8 @@ Learn more about decentralized identity and keyfiles in the [DID Documentation](
 
 ## Documentation
 
+- [⚡ TL;DR — Cross-Platform Quick Install (Linux, Windows, macOS)](https://onmydisk.org/advanced/#-tldr--quick-install-recommended-agentic-ai-setup)
+- [Personal AI Node Guide](https://onmydisk.org/ainode/)
 - [On My Disk & On My Chat Documentation](https://onmydisk.org)
 - [Decentralized Identity (DID) Guide](https://onmydisk.org/did/)
 - [Personal AI Node Setup Guide (EN)](docs/AI_NODE_SETUP_EN.md) · [RU](docs/AI_NODE_SETUP_RU.md) · [UA](docs/AI_NODE_SETUP_UA.md) · [SI](docs/AI_NODE_SETUP_SI.md)
