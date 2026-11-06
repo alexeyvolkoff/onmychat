@@ -12,11 +12,12 @@ OnMyChat is a private, local, self-hosted AI orchestrator designed to run as an 
 
 ## Key Features
 
-- **Private RAG** — Indexes your local files using ChromaDB and sentence-transformers. No data leaves your home network.
+- **Private RAG** — Indexes your local files and folders using ChromaDB and sentence-transformers. No data leaves your home network.
+- **Mobile & PWA Remote Access** — Connect to your home Ollama node from any phone or browser ([onmychat.com](https://onmychat.com)) via P2P WebRTC and cryptographic DID identity without port forwarding or VPNs.
+- **Creative Studio & Prompt Assistant** — Built-in Ollama-powered AI Art Director and prompt assistant paired with local ComfyUI image/video workflows.
 - **Semantic Search** — Finds documents based on meaning and content, rather than simple name matching.
-- **Local Inference** — Connects to local LLM engines (Ollama or RKLLAMA for Rockchip NPUs).
+- **Local Inference** — Connects to local LLM engines (Ollama as the primary provider, plus RKLLAMA for Rockchip NPUs).
 - **Tool Protocol (MCP)** — Native Model Context Protocol support to run local integrations.
-- **Image Generation** — Seamless integration with ComfyUI running locally on your GPU.
 - **Multi-tenant & Group Sharing** — Share your personal AI node safely with friends and family via OnMyDisk group sharing.
 
 ---
