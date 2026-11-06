@@ -6405,6 +6405,104 @@ except Exception as _ext_mount_err:
     logging.error(f"[api] Optional extensions mount error: {_ext_mount_err}")
 
 
+def _load_configured_node_apps() -> list[dict]:
+    """Load optional user-defined local web apps from [apps] in config.ini."""
+    out: list[dict] = []
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+    if not os.path.isfile(cfg_path):
+        return out
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(cfg_path, encoding="utf-8")
+        if not parser.has_section("apps"):
+            return out
+        for raw_slug, raw_val in parser.items("apps"):
+            slug = re.sub(r"[^a-z0-9_-]", "", raw_slug.strip().lower())
+            val = (raw_val or "").strip()
+            if not slug or not val:
+                continue
+            if val.lower() in ("0", "false", "off", "disabled", "none"):
+                out.append({"slug": slug, "disabled": True})
+                continue
+            if val.startswith("{"):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict) and int(parsed.get("port", 0)) > 0:
+                        ep = str(parsed.get("entryPath") or parsed.get("path") or "/").strip() or "/"
+                        if not ep.startswith("/"):
+                            ep = "/" + ep
+                        out.append({
+                            "slug": slug,
+                            "name": str(parsed.get("name") or slug.capitalize()),
+                            "port": int(parsed["port"]),
+                            "entryPath": ep,
+                            "icon": str(parsed.get("icon") or slug),
+                            "description": str(parsed.get("description") or ""),
+                        })
+                except Exception:
+                    pass
+                continue
+            parts = [p.strip() for p in val.split("|")]
+            if len(parts) == 1 and parts[0].isdigit():
+                out.append({
+                    "slug": slug,
+                    "name": slug.capitalize(),
+                    "port": int(parts[0]),
+                    "entryPath": "/",
+                    "icon": slug,
+                    "description": "",
+                })
+            elif len(parts) >= 2 and parts[1].isdigit():
+                ep = parts[2] if len(parts) >= 3 and parts[2] else "/"
+                if not ep.startswith("/"):
+                    ep = "/" + ep
+                out.append({
+                    "slug": slug,
+                    "name": parts[0] or slug.capitalize(),
+                    "port": int(parts[1]),
+                    "entryPath": ep,
+                    "icon": parts[3] if len(parts) >= 4 and parts[3] else slug,
+                    "description": parts[4] if len(parts) >= 5 else "",
+                })
+    except Exception as e:
+        logging.debug(f"[_load_configured_node_apps] {e}")
+    return out
+
+
+@app.get("/api/node/apps")
+async def list_node_apps(request: Request):
+    """Zero-config App Proxy discovery for the paired Node Owner only."""
+    if not trusted_owner_access(request):
+        return {"apps": []}
+
+    discovered: dict[str, dict] = {}
+    self_port = int(os.environ.get("PORT", 4000))
+
+    # 1. Auto-detect Autopilot extension mounted on this node
+    has_autopilot = any(getattr(r, "path", "") == "/autopilot" for r in app.routes)
+    if has_autopilot:
+        discovered["autopilot"] = {
+            "slug": "autopilot",
+            "name": "Autopilot",
+            "port": self_port,
+            "entryPath": "/autopilot",
+            "icon": "autopilot",
+            "description": "Autonomous Persona & Social Studio",
+        }
+
+    # 2. Apply optional [apps] overrides / custom apps from config.ini
+    for item in _load_configured_node_apps():
+        slug = item.get("slug")
+        if not slug:
+            continue
+        if item.get("disabled"):
+            discovered.pop(slug, None)
+        else:
+            discovered[slug] = item
+
+    return {"apps": list(discovered.values())}
+
+
 if __name__ == "__main__":
     import uvicorn
     import sys
