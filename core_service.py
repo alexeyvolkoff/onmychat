@@ -3309,11 +3309,9 @@ async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str |
         return None
     try:
         ref_str = str(reference_image).strip()
-        if ref_str.startswith("data:image"):
-            if "," in ref_str:
-                _, b64_data = ref_str.split(",", 1)
-                return base64.b64decode(b64_data)
-            return None
+        if ref_str.startswith("data:") and "," in ref_str:
+            _, b64_data = ref_str.split(",", 1)
+            return base64.b64decode(b64_data.strip())
         if ref_str.startswith("http://") or ref_str.startswith("https://"):
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
                 async with session.get(ref_str) as resp:
@@ -3338,12 +3336,15 @@ async def resolve_reference_image_bytes(ctx: UserContext, reference_image: str |
                 with open(av_path, "rb") as f:
                     return f.read()
             return None
-        if ref_str.startswith("/chat/image/") or ref_str.startswith("chat/image/"):
-            img_name = os.path.basename(ref_str)
+        if ref_str.startswith("/chat/image/") or ref_str.startswith("chat/image/") or ref_str.startswith("/p2p/"):
+            clean_ref = ref_str.split("?", 1)[0]
+            img_name = urllib.parse.unquote(os.path.basename(clean_ref))
             for d in [
                 os.path.join(APP_ROOT_DIR, "generated"),
                 os.path.join(os.path.expanduser("~"), "Data", "generated"),
                 os.path.join(os.path.expanduser("~"), "Data", "onmychat", "generated"),
+                os.path.join(os.path.expanduser("~"), "OnMyChat", "generated"),
+                os.path.join(os.path.expanduser("~"), "Private", "OnMyChat", "generated"),
                 "/content/ComfyUI/output/generated",
             ]:
                 cand = os.path.join(d, img_name)
@@ -5269,6 +5270,422 @@ async def generate_krea2_image(
                     logging.debug(f"[Krea2] Could not remove old file {old_cand}: {e}")
 
     return filename, img_title, neutral_description, img_data
+
+
+# === MINIMAX-H3 OMNI-MODAL VIDEO + STEREO AUDIO (ComfyUI) ===
+
+def align_minimax_h3_frames(duration_sec: float = 5.0) -> int:
+    """Snaps requested seconds (at 24 fps) to MiniMax-H3's native 17k+5 frame grid."""
+    n = max(5, round(float(duration_sec or 5.0) * 24.0))
+    while n % 17 != 5:
+        n += 1
+    return n
+
+
+def adapt_minimax_h3_canvas(width: int = 1344, height: int = 768, quality: str = "hd") -> tuple[int, int]:
+    """
+    Computes MiniMax-H3 canvas dimensions (multiples of 32).
+    - 'fast' / '480p': ~480px short edge (~0.42MP, fast preview)
+    - 'hd' / '768p': 768px short edge capped at 768x1344 (~1.03MP, official H3 canvas)
+    """
+    import math
+    w_in = max(64, int(width or 1344))
+    h_in = max(64, int(height or 768))
+    ratio = w_in / float(h_in)
+
+    q = str(quality or "hd").strip().lower()
+    if q in ("fast", "std", "standard", "480p", "sd"):
+        short_edge = 480.0
+        max_pixels = 480 * 864
+    else:
+        short_edge = 768.0
+        max_pixels = 768 * 1344
+
+    if ratio >= 1.0:
+        nom_w, nom_h = short_edge * ratio, short_edge
+    else:
+        nom_w, nom_h = short_edge, short_edge / ratio
+
+    if nom_w * nom_h > max_pixels:
+        scale = math.sqrt(max_pixels / (nom_w * nom_h))
+        nom_w, nom_h = nom_w * scale, nom_h * scale
+
+    out_w = max(32, round(nom_w / 32.0) * 32)
+    out_h = max(32, round(nom_h / 32.0) * 32)
+    return int(out_w), int(out_h)
+
+
+async def generate_video_workflow(workflow: dict) -> tuple[bytes | None, str | None, bytes | None]:
+    """
+    Executes a ComfyUI video workflow (MiniMax-H3 SaveVideo) against local ComfyUI.
+    Returns (video_bytes, filename, cover_jpeg_bytes).
+    Overridden by private Cloud GPU extension hook when Modal Video GPU is enabled.
+    """
+    video_bytes, filename = await generate_image_workflow(workflow)
+    return video_bytes, filename, None
+
+
+def _fit_keyframe_to_canvas(img_bytes: bytes, target_w: int, target_h: int) -> bytes:
+    """
+    Center-fits a keyframe image to match (target_w / target_h) aspect ratio so
+    ComfyUI's MiniMaxH3ImageToVideo (which uses crop='disabled') never stretches
+    or squishes faces/proportions when canvas aspect differs from source image.
+    """
+    if not img_bytes or target_w <= 0 or target_h <= 0:
+        return img_bytes
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(img_bytes)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            src_ratio = im.width / float(max(1, im.height))
+            dst_ratio = target_w / float(max(1, target_h))
+            if abs(src_ratio - dst_ratio) / max(dst_ratio, 1e-6) <= 0.012:
+                return img_bytes
+            fitted = ImageOps.fit(
+                im,
+                (target_w, target_h),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.35),
+            )
+            buf = io.BytesIO()
+            fitted.save(buf, format="PNG")
+            return buf.getvalue()
+    except Exception as e:
+        logging.warning(f"[MiniMax-H3] Keyframe aspect fit warning: {e}")
+        return img_bytes
+
+
+async def generate_krea_video(
+    ctx: UserContext,
+    prompt: str,
+    persona_prompt: str = "",
+    persona_name: str | None = None,
+    reference_image: str | None = None,
+    reference_images: list[str] | None = None,
+    width: int = 1344,
+    height: int = 768,
+    duration: float = 5.0,
+    quality: str = "hd",
+    steps: int = 8,
+    seed: int | None = None,
+    save_local: bool = False,
+    **kwargs,
+) -> tuple[str, str, str, bytes, bytes | None]:
+    """
+    Generates a MiniMax-H3 omni-modal MP4 video with synchronized stereo audio via ComfyUI:
+    - 0 reference images: Text-to-Video + Audio (t2va)
+    - 1 reference image: First-Frame Image-to-Video + Audio (fl2va, <Picture 1>)
+    - 2 reference images: First + Last Keyframe Transition + Audio (fl2va, <Picture 1> -> <Picture 2>)
+    Returns (mp4_filename, title, description, mp4_bytes, cover_jpeg_bytes).
+    """
+    has_any_ref = bool(reference_image or (isinstance(reference_images, list) and any(reference_images)))
+    clean_prompt = (prompt or "").strip()
+    if not clean_prompt and not persona_prompt and not has_any_ref:
+        raise Exception("Укажите сценарий движения/звука или выберите кадр для оживления.")
+
+    raw_refs: list[str] = []
+    if reference_images and isinstance(reference_images, list):
+        raw_refs.extend([r for r in reference_images if r])
+    elif reference_image:
+        raw_refs.append(reference_image)
+
+    out_w, out_h = adapt_minimax_h3_canvas(width, height, quality=quality)
+
+    comfy_ref_names: list[str] = []
+    first_ref_raw_bytes: bytes | None = None
+    for idx_r, ref_item in enumerate(raw_refs[:2]):
+        ref_bytes = await resolve_reference_image_bytes(ctx, ref_item)
+        if ref_bytes:
+            fitted_bytes = _fit_keyframe_to_canvas(ref_bytes, out_w, out_h)
+            if idx_r == 0:
+                first_ref_raw_bytes = fitted_bytes
+            c_name = await upload_reference_image_to_comfy(fitted_bytes)
+            if c_name:
+                comfy_ref_names.append(c_name)
+
+    dur_clamped = max(3.0, min(10.0, float(duration or 5.0)))
+    frame_length = align_minimax_h3_frames(dur_clamped)
+
+    req_steps = int(steps or 8)
+    if req_steps <= 4:
+        eff_steps = 4
+        turbo_lora = "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+    else:
+        eff_steps = 8
+        turbo_lora = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+
+    if seed is None or int(seed) < 0:
+        import random
+        seed = random.randint(1, 2**48 - 1)
+    else:
+        seed = int(seed)
+
+    prompt_blocks: list[str] = []
+    if comfy_ref_names:
+        if not clean_prompt:
+            if len(comfy_ref_names) >= 2:
+                prompt_blocks.append(
+                    "Smooth, natural cinematic live-action motion transitioning seamlessly from <Picture 1> to <Picture 2>, preserving exact character identity, facial features, wardrobe, and lighting."
+                )
+            else:
+                prompt_blocks.append(
+                    "The scene opens on <Picture 1>, preserving exact character identity, facial features, wardrobe, and lighting. Subtle, natural live-action movement, gentle breathing, natural eye and hair motion as the camera performs a slow cinematic push-in."
+                )
+        else:
+            if "<picture 1>" not in clean_prompt.lower():
+                prompt_blocks.append(f"Starting from <Picture 1>, {clean_prompt}")
+            else:
+                prompt_blocks.append(clean_prompt)
+    else:
+        if clean_prompt:
+            prompt_blocks.append(clean_prompt)
+        if persona_prompt and persona_prompt.strip():
+            cleaned_persona = re.sub(
+                r"^(a\s+)?(portrait|close-up|headshot|bust\s+portrait)\s+of\s+",
+                "",
+                persona_prompt.strip(),
+                flags=re.IGNORECASE,
+            )
+            prompt_blocks.append(cleaned_persona)
+
+    final_video_prompt = "\n\n".join(prompt_blocks).strip()
+    if "audio:" not in final_video_prompt.lower() and "soundscape" not in final_video_prompt.lower():
+        final_video_prompt += (
+            "\n\nAudio: Realistic natural ambient room tone and environmental foley synchronized with every movement, subtle fabric rustle and soft breathing. No music, no text, no watermarks."
+        )
+
+    i2v_inputs: dict = {
+        "clip": ["3", 0],
+        "vae": ["4", 0],
+        "prompt": final_video_prompt,
+        "width": out_w,
+        "height": out_h,
+        "length": frame_length,
+    }
+
+    extra_nodes: dict = {}
+    if len(comfy_ref_names) >= 1:
+        extra_nodes["6"] = {
+            "class_type": "LoadImage",
+            "inputs": {"image": comfy_ref_names[0]},
+        }
+        i2v_inputs["first_frame"] = ["6", 0]
+    if len(comfy_ref_names) >= 2:
+        extra_nodes["7"] = {
+            "class_type": "LoadImage",
+            "inputs": {"image": comfy_ref_names[1]},
+        }
+        i2v_inputs["last_frame"] = ["7", 0]
+
+    video_workflow: dict = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "weight_dtype": "default",
+            },
+        },
+        "2": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["1", 0],
+                "lora_name": turbo_lora,
+                "strength_model": 1.0,
+            },
+        },
+        "3": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+                "type": "minimax",
+                "device": "default",
+            },
+        },
+        "4": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors",
+            },
+        },
+        "5": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
+            },
+        },
+        "8": {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": i2v_inputs,
+        },
+        "9": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": seed,
+            },
+        },
+        "10": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "res_multistep",
+            },
+        },
+        "11": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": ["2", 0],
+                "scheduler": "simple",
+                "steps": eff_steps,
+                "denoise": 1.0,
+            },
+        },
+        "12": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["2", 0],
+                "conditioning": ["8", 0],
+            },
+        },
+        "13": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["9", 0],
+                "guider": ["12", 0],
+                "sampler": ["10", 0],
+                "sigmas": ["11", 0],
+                "latent_image": ["8", 1],
+            },
+        },
+        "14": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["13", 0],
+                "vae": ["4", 0],
+            },
+        },
+        "15": {
+            "class_type": "VAEDecodeAudio",
+            "inputs": {
+                "samples": ["13", 0],
+                "vae": ["5", 0],
+            },
+        },
+        "16": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["14", 0],
+                "audio": ["15", 0],
+                "fps": 24.0,
+            },
+        },
+        "17": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["16", 0],
+                "filename_prefix": "video/MiniMax_H3",
+                "format": "auto",
+            },
+        },
+    }
+    video_workflow.update(extra_nodes)
+
+    clean_user_prompt = (clean_prompt or persona_prompt or "Animated scene").strip()
+    custom_title = str(kwargs.get("custom_title") or "").strip()
+    custom_description = str(kwargs.get("custom_description") or "").strip()
+
+    desc_task = None
+    if not (custom_title or custom_description) and clean_user_prompt:
+        desc_task = asyncio.create_task(generate_neutral_description_and_title(ctx, clean_user_prompt))
+
+    logging.info(
+        f"[MiniMax-H3] Generating video ({out_w}x{out_h}, frames={frame_length} (~{round(frame_length/24.0, 1)}s), "
+        f"steps={eff_steps}, refs={len(comfy_ref_names)})"
+    )
+    try:
+        video_data, raw_fn, cover_bytes = await generate_video_workflow(video_workflow)
+    except Exception:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
+        raise
+
+    if not video_data:
+        if desc_task and not desc_task.done():
+            desc_task.cancel()
+        raise Exception("MiniMax-H3 video generation failed")
+
+    if not cover_bytes and first_ref_raw_bytes:
+        try:
+            from PIL import Image
+            import io as _io
+            im = Image.open(_io.BytesIO(first_ref_raw_bytes)).convert("RGB")
+            buf = _io.BytesIO()
+            im.save(buf, format="JPEG", quality=86)
+            cover_bytes = buf.getvalue()
+        except Exception:
+            pass
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_prefix = str(kwargs.get("filename_prefix") or "").strip()
+    safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "", raw_prefix)[:32]
+    base_fn = f"H3_{timestamp}.mp4"
+    filename = f"{safe_prefix}_{base_fn}" if safe_prefix else base_fn
+
+    raw_subfolder = str(kwargs.get("subfolder") or "").strip()
+    safe_subfolder = sanitize_story_slug(raw_subfolder) if raw_subfolder else ""
+
+    neutral_title, neutral_description = "", ""
+    if custom_title or custom_description:
+        neutral_title = custom_title
+        neutral_description = custom_description
+    elif desc_task is not None:
+        try:
+            neutral_title, neutral_description = await asyncio.wait_for(desc_task, timeout=6.0)
+        except Exception as e:
+            logging.warning(f"[MiniMax-H3] generate_neutral_description_and_title warning: {e}")
+
+    if not neutral_description:
+        sentences = [s.strip() for s in clean_user_prompt.split(".") if s.strip()]
+        neutral_description = sentences[0] if sentences else (clean_user_prompt[:120] or "MiniMax-H3 Video")
+
+    if neutral_title:
+        vid_title = neutral_title
+    else:
+        words = [w for w in neutral_description.replace("<", "").replace(">", "").split() if not w.startswith("<")]
+        vid_title = _clean_fallback_title(words, max_words=4) or "H3 Motion Clip"
+
+    readme_content = f"# {vid_title}\n\n{neutral_description}\n"
+    if final_video_prompt:
+        readme_content += f"\n<!-- prompt: {final_video_prompt} -->\n"
+
+    if save_local:
+        try:
+            rel_gen = f"generated/{safe_subfolder}" if safe_subfolder else "generated"
+            target_dir = resolve_local_target_dir(ctx, rel_gen)
+            os.makedirs(target_dir, exist_ok=True)
+            base_name = os.path.splitext(filename)[0]
+            with open(os.path.join(target_dir, filename), "wb") as f:
+                f.write(video_data)
+            with open(os.path.join(target_dir, f"{base_name}.Readme.md"), "w", encoding="utf-8") as f:
+                f.write(readme_content)
+            if cover_bytes:
+                with open(os.path.join(target_dir, f"{base_name}.cover.jpg"), "wb") as f:
+                    f.write(cover_bytes)
+            logging.info(f"[MiniMax-H3] Saved generated video locally: {target_dir}/{filename}")
+
+            home_dir = os.path.expanduser("~")
+            omc_dir = os.path.join(home_dir, "OnMyChat", *rel_gen.split("/"))
+            if os.path.isdir(os.path.join(home_dir, "OnMyChat")) and os.path.abspath(target_dir) != os.path.abspath(omc_dir):
+                os.makedirs(omc_dir, exist_ok=True)
+                with open(os.path.join(omc_dir, filename), "wb") as f:
+                    f.write(video_data)
+                with open(os.path.join(omc_dir, f"{base_name}.Readme.md"), "w", encoding="utf-8") as f:
+                    f.write(readme_content)
+                if cover_bytes:
+                    with open(os.path.join(omc_dir, f"{base_name}.cover.jpg"), "wb") as f:
+                        f.write(cover_bytes)
+        except Exception as e:
+            logging.warning(f"[MiniMax-H3] Local video file save failed: {e}")
+
+    return filename, vid_title, neutral_description, video_data, cover_bytes
 
 
 
@@ -7587,7 +8004,7 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
         ctype = str(node.get("class_type") or "").lower()
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
 
-        if "ksampler" in ctype or "samplercustom" in ctype:
+        if "ksampler" in ctype or "samplercustom" in ctype or "basicscheduler" in ctype or "randomnoise" in ctype or "ksamplerselect" in ctype:
             if inputs.get("steps") is not None and res["steps"] is None:
                 try:
                     res["steps"] = int(inputs["steps"])
@@ -7614,7 +8031,7 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
             if isinstance(neg_ref, list) and neg_ref:
                 negative_node_ids.add(str(neg_ref[0]))
 
-        if "emptylatent" in ctype or "emptysd3latent" in ctype or "latentimage" in ctype:
+        if "emptylatent" in ctype or "emptysd3latent" in ctype or "latentimage" in ctype or "minimaxh3" in ctype:
             if inputs.get("width") and inputs.get("height") and not res["width"]:
                 try:
                     res["width"] = int(inputs["width"])
@@ -7653,7 +8070,7 @@ def _extract_comfy_graph_data(comfy_obj: dict | str | None) -> dict:
             continue
         ctype = str(node.get("class_type") or "").lower()
         inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
-        if "textencode" in ctype or "prompt" in ctype:
+        if "textencode" in ctype or "prompt" in ctype or "minimaxh3" in ctype:
             txt = inputs.get("text") or inputs.get("prompt") or inputs.get("positive")
             if isinstance(txt, str) and len(txt.strip()) > 3:
                 if str(nid) in negative_node_ids:
@@ -8124,6 +8541,13 @@ _BUILTIN_CHECKPOINT_VIDS: dict[str, tuple[int, str]] = {
     _norm_lora_key("museByStableYogi_v35Int8Extended.safetensors"): (3258954, "Muse Krea 2 v3.5"),
     _norm_lora_key("cyberrealisticAnima_v70Turbo_bf16.safetensors"): (3287420, "CyberRealistic Anima V7.0"),
     _norm_lora_key("anima_aestheticV11.safetensors"): (3126581, "Anima Aesthetic V1.1"),
+    _norm_lora_key("minimax_h3_fl2va_pruned_int8_convrot.safetensors"): (3216500, "MiniMax H3"),
+    _norm_lora_key("minimax_h3_t2va_pruned_int8_convrot.safetensors"): (3216500, "MiniMax H3"),
+}
+
+_BUILTIN_UTILITY_LORA_VIDS: dict[str, tuple[int, str]] = {
+    _norm_lora_key("minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"): (3202732, "MiniMax H3 Turbo 4-step"),
+    _norm_lora_key("minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"): (3454204, "MiniMax H3 Turbo 8-step"),
 }
 
 
@@ -8304,27 +8728,107 @@ def _resolve_civitai_publish_image_file(ctx: UserContext | None, item_spec: dict
     raise ValueError(f"Не удалось найти файл изображения '{raw_name}' на диске.")
 
 
+def _probe_video_for_civitai(video_bytes: bytes, filename: str = "") -> tuple[int, int, float, bool, str, dict]:
+    """Probes an MP4/WebM/MOV byte buffer via ffprobe, returning (width, height, duration, has_audio, mime_type, format_tags)."""
+    import subprocess
+    import tempfile
+
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext == ".webm" or video_bytes[:4] == b"\x1a\x45\xdf\xa3":
+        mime_type = "video/webm"
+        suffix = ".webm"
+    elif ext == ".mov":
+        mime_type = "video/quicktime"
+        suffix = ".mov"
+    else:
+        mime_type = "video/mp4"
+        suffix = ".mp4"
+
+    width, height, duration, has_audio = 768, 992, 5.0, False
+    format_tags: dict = {}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            vp = os.path.join(td, f"probe{suffix}")
+            with open(vp, "wb") as vf:
+                vf.write(video_bytes)
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_type,width,height:format=duration:format_tags",
+                "-of", "json",
+                vp,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if proc.returncode == 0 and proc.stdout.strip():
+                pdata = json.loads(proc.stdout)
+                for st in (pdata.get("streams") or []):
+                    ctype = str(st.get("codec_type") or "").lower()
+                    if ctype == "video":
+                        if st.get("width") and st.get("height"):
+                            width = int(st["width"])
+                            height = int(st["height"])
+                    elif ctype == "audio":
+                        has_audio = True
+                fmt_obj = pdata.get("format") or {}
+                if fmt_obj.get("duration"):
+                    try:
+                        duration = round(float(fmt_obj["duration"]), 2)
+                    except Exception:
+                        pass
+                if isinstance(fmt_obj.get("tags"), dict):
+                    format_tags = fmt_obj["tags"]
+    except Exception as e:
+        logging.warning(f"[CivitAI Video Probe] ffprobe fallback warning: {e}")
+
+    return width, height, duration, has_audio, mime_type, format_tags
+
+
+def _is_video_asset(data_bytes: bytes, filename: str = "") -> bool:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in (".mp4", ".webm", ".mov", ".m4v"):
+        return True
+    if len(data_bytes) >= 12 and data_bytes[4:8] == b"ftyp":
+        return True
+    if len(data_bytes) >= 4 and data_bytes[:4] == b"\x1a\x45\xdf\xa3":
+        return True
+    return False
+
+
 def _build_civitai_image_meta(
     img_bytes: bytes,
     readme_text: str = "",
     explicit_prompt: str = "",
     include_meta: bool = True,
-) -> tuple[int, int, str, dict | None, int | None, list[str]]:
+    filename: str = "",
+) -> tuple[int, int, str, str, dict | None, dict | None, int | None, list[str]]:
     """
-    Inspects PNG/JPEG bytes & ComfyUI workflow chunk, returning:
-    (width, height, mime_type, civitai_meta_dict, primary_checkpoint_vid, linked_resource_labels).
+    Inspects PNG/JPEG/WebP OR MP4/WebM/MOV bytes & embedded ComfyUI workflow, returning:
+    (width, height, mime_type, media_type, video_metadata, civitai_meta_dict, primary_checkpoint_vid, linked_resource_labels).
     """
     from PIL import Image
     import io
 
-    with Image.open(io.BytesIO(img_bytes)) as im:
-        width, height = im.size
-        fmt = (im.format or "PNG").upper()
-        mime_type = "image/jpeg" if fmt in ("JPEG", "JPG") else ("image/webp" if fmt == "WEBP" else "image/png")
-        png_info = dict(im.info or {})
+    is_video = _is_video_asset(img_bytes, filename)
+    media_type = "video" if is_video else "image"
+    video_metadata: dict | None = None
+
+    if is_video:
+        width, height, duration, has_audio, mime_type, png_info = _probe_video_for_civitai(img_bytes, filename)
+        video_metadata = {
+            "size": len(img_bytes),
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "audio": has_audio,
+        }
+    else:
+        with Image.open(io.BytesIO(img_bytes)) as im:
+            width, height = im.size
+            fmt = (im.format or "PNG").upper()
+            mime_type = "image/jpeg" if fmt in ("JPEG", "JPG") else ("image/webp" if fmt == "WEBP" else "image/png")
+            png_info = dict(im.info or {})
 
     if not include_meta:
-        return width, height, mime_type, None, None, []
+        return width, height, mime_type, media_type, video_metadata, None, None, []
 
     raw_comfy_prompt = png_info.get("prompt")
     comfy_graph_dict = None
@@ -8362,8 +8866,15 @@ def _build_civitai_image_meta(
                 civitai_resources.append({"type": "checkpoint", "modelVersionId": vid})
                 linked_labels.append(label)
 
+    # Fallback model link for H3_* videos if container tags were stripped
+    if is_video and not primary_checkpoint_vid and os.path.basename(filename or "").upper().startswith("H3_"):
+        primary_checkpoint_vid = 3216500
+        seen_vids.add(3216500)
+        civitai_resources.append({"type": "checkpoint", "modelVersionId": 3216500})
+        linked_labels.append("MiniMax H3")
+
     presets = get_krea_presets()
-    lora_vid_map: dict[str, tuple[int, str]] = {}
+    lora_vid_map: dict[str, tuple[int, str]] = dict(_BUILTIN_UTILITY_LORA_VIDS)
     for cat_key in ("art_styles", "archetypes"):
         for it in (presets.get(cat_key) or []):
             fname = str(it.get("filename") or "").strip()
@@ -8404,7 +8915,7 @@ def _build_civitai_image_meta(
         if len(serialized_comfy) < 500_000:
             meta["comfy"] = {"prompt": comfy_graph_dict}
 
-    return width, height, mime_type, (meta if meta else None), primary_checkpoint_vid, linked_labels
+    return width, height, mime_type, media_type, video_metadata, (meta if meta else None), primary_checkpoint_vid, linked_labels
 
 
 async def publish_to_civitai(
@@ -8420,13 +8931,13 @@ async def publish_to_civitai(
     persona_id: str = "",
 ) -> dict:
     """
-    Uploads 1..20 images directly to CivitAI via /api/v1/image-upload + S3 PUT
+    Uploads 1..20 images or videos directly to CivitAI via /api/v1/image-upload + S3 PUT
     and creates/publishes a post via /api/trpc/post.createWithImages under the chosen API key's account.
     """
     if not images:
-        raise ValueError("Нет изображений для публикации.")
+        raise ValueError("Нет медиафайлов для публикации.")
     if len(images) > 20:
-        raise ValueError("В один пост CivitAI можно добавить максимум 20 изображений.")
+        raise ValueError("В один пост CivitAI можно добавить максимум 20 файлов.")
 
     token, resolved_acc_id = _resolve_civitai_publish_token(
         ctx=ctx,
@@ -8449,16 +8960,17 @@ async def publish_to_civitai(
     all_linked_labels: list[str] = []
     post_model_version_id: int | None = None
 
-    timeout = aiohttp.ClientTimeout(total=90)
+    timeout = aiohttp.ClientTimeout(total=180)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for idx, item_spec in enumerate(images):
             img_bytes, fname, readme_text = _resolve_civitai_publish_image_file(ctx, item_spec)
             explicit_pr = str(item_spec.get("prompt") or "").strip()
-            width, height, mime_type, meta_dict, ckpt_vid, linked_labels = _build_civitai_image_meta(
+            width, height, mime_type, media_type, video_metadata, meta_dict, ckpt_vid, linked_labels = _build_civitai_image_meta(
                 img_bytes=img_bytes,
                 readme_text=readme_text,
                 explicit_prompt=explicit_pr,
                 include_meta=include_meta,
+                filename=fname,
             )
             if ckpt_vid and not post_model_version_id:
                 post_model_version_id = ckpt_vid
@@ -8469,7 +8981,11 @@ async def publish_to_civitai(
             async with session.post(
                 "https://civitai.com/api/v1/image-upload",
                 headers=auth_headers,
-                json={"filename": fname, "metadata": {}},
+                json={
+                    "filename": fname,
+                    "type": media_type,
+                    "metadata": video_metadata or {},
+                },
             ) as up_req:
                 if up_req.status == 401:
                     raise ValueError("CivitAI отклонил API-ключ (401 Unauthorized). Проверьте токен аккаунта.")
@@ -8505,8 +9021,10 @@ async def publish_to_civitai(
                 "width": width,
                 "height": height,
                 "mimeType": mime_type,
-                "type": "image",
+                "type": media_type,
             }
+            if video_metadata:
+                img_entry["metadata"] = video_metadata
             if meta_dict:
                 img_entry["meta"] = meta_dict
             if ckpt_vid:
@@ -8780,9 +9298,18 @@ async def krea_director_rewrite_prompt(
     preserved_tags = re.findall(r"<[^>]+>", current_prompt) if current_prompt else []
 
     base_lower = str(base_model or "").lower()
+    is_video_h3 = base_lower in ("minimax_h3", "video", "h3")
     is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
     is_sdxl = is_sdxl_base_model(base_lower)
-    if is_anima:
+    if is_video_h3:
+        model_guidance = (
+            "TARGET DIFFUSION ENGINE: MiniMax-H3 Omni-Modal Video + Stereo Audio (Qwen3-VL-32B, 24fps).\n"
+            "- MiniMax-H3 jointly generates live-action cinematic motion AND synchronized stereo sound in a single pass.\n"
+            "- If the user is animating a reference frame (or current_prompt describes a still image), anchor the opening with '<Picture 1>' (e.g. 'The scene opens on <Picture 1>, preserving her exact face, outfit, and lighting...') and describe fluid, realistic physical motion, micro-expressions, hair/fabric physics, and camera choreography (push-in, slow orbit, handheld tracking, or timed shots like [0s-2.5s] / [2.5s-5s]).\n"
+            "- ALWAYS include a dedicated 'Audio:' paragraph at the end describing synchronized stereo foley, room/outdoor ambience, breathing, footsteps, fabric rustle, or spoken dialogue in quotes if requested. Default to 'No background music.' unless the user asks for music.\n"
+            "- End with 'No text, subtitles, or watermarks.'"
+        )
+    elif is_anima:
         model_guidance = (
             "TARGET DIFFUSION ENGINE: Anima Aesthetic V1.1 (Anime / 2D Illustration).\n"
             "- Write the prompt in English combining structured anime/illustration descriptors (e.g. 'masterpiece, best quality, 1girl, dynamic angle, expressive eyes, ...') with clear visual scene, pose, outfit, and lighting details.\n"
@@ -8940,9 +9467,12 @@ async def krea_director_storyboard(
     model = _get_director_model()
 
     base_lower = str(base_model or "").lower()
+    is_video_h3 = base_lower in ("minimax_h3", "video", "h3")
     is_anima = base_lower in ("anima", "anime", "cyberrealistic_anima", "animaturbo")
     is_sdxl = is_sdxl_base_model(base_lower)
-    if is_anima:
+    if is_video_h3:
+        engine_note = "Write each `visual_prompt` in English for MiniMax-H3 Omni-AV: describe live-action physical motion, camera choreography, and end with an 'Audio:' block describing synchronized stereo ambience/foley (no music unless requested)."
+    elif is_anima:
         engine_note = "Write each `visual_prompt` in English for Anima V1.1 (structured anime/illustration tags + clear pose, outfit, expression, camera framing, and background)."
     elif is_sdxl:
         engine_note = "Write each `visual_prompt` in punchy, concrete English for SDXL 1.0 (camera shot, subject pose & expression, wardrobe continuity, setting details, and lighting in ~50-85 words)."

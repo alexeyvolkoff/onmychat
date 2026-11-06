@@ -2401,6 +2401,33 @@ class KreaGenerateInput(BaseModel):
     stream: bool | None = False
 
 
+class KreaVideoGenerateInput(BaseModel):
+    omd_key: str | None = None
+    prompt: str = ""
+    persona_id: str | None = None
+    persona_name: str | None = None
+    persona_prompt: str | None = None
+    reference_image: str | None = None
+    reference_images: list[str] | None = None
+    width: int = 1344
+    height: int = 768
+    duration: float = 5.0
+    quality: str = "hd"
+    steps: int = 8
+    seed: int | None = None
+    chat: str = "default"
+    settings: dict | None = None
+    device_push: dict | None = None
+    upload_storage: bool | None = None
+    save_local: bool | None = False
+    mcp_keys: dict | None = None
+    subfolder: str | None = None
+    filename_prefix: str | None = None
+    custom_title: str | None = None
+    custom_description: str | None = None
+    stream: bool | None = False
+
+
 class PersonaGenerateInput(BaseModel):
     omd_key: str | None = None
     archetype: str = "alt"
@@ -2701,13 +2728,19 @@ async def get_chat_image(
 ):
     ctx = get_ctx(omd_key)
     safe_filename = os.path.basename(filename)
-    is_markdown = safe_filename.lower().endswith(".md")
-    content_media_type = "text/markdown; charset=utf-8" if is_markdown else "image/png"
+    lower_fn = safe_filename.lower()
+    is_markdown = lower_fn.endswith(".md")
+    is_video = lower_fn.endswith((".mp4", ".webm", ".mov"))
+    if is_markdown:
+        content_media_type = "text/markdown; charset=utf-8"
+    else:
+        guessed_mime, _ = mimetypes.guess_type(safe_filename)
+        content_media_type = guessed_mime or ("video/mp4" if is_video else "image/png")
 
     # 1. Check in-memory ephemeral cache first (Zero Contact / Subscriber mode)
     ephemeral_data = get_ephemeral_image(safe_filename)
     if ephemeral_data:
-        if size and not is_markdown:
+        if size and not is_markdown and not is_video:
             try:
                 img = Image.open(io.BytesIO(ephemeral_data))
                 img.thumbnail((size, size))
@@ -4783,6 +4816,171 @@ async def generate_krea2_endpoint(request: Request, data: KreaGenerateInput):
         raise
     except Exception as e:
         logging.error(f"Error in /generate/krea2: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/krea/video")
+async def generate_krea_video_endpoint(request: Request, data: KreaVideoGenerateInput):
+    agentic_tunnel.note_request(request, omd_key=data.omd_key, settings_payload=data.settings)
+    data.chat = data.chat or "default"
+    ctx = get_ctx(data.omd_key)
+    ctx.private_mode = trusted_private_access(request, ctx)
+    ctx.trusted_owner = trusted_owner_access(request)
+    if data.settings:
+        ctx.settings.update(data.settings)
+        ctx.storage = ctx.settings.get("defaultStorage", "")
+    ctx.mcp_keys = data.mcp_keys or (ctx.settings.get("mcp_keys") if isinstance(ctx.settings, dict) else None) or getattr(ctx, "mcp_keys", None) or {}
+    try:
+        if not (ctx.private_mode or ctx.is_unlimited):
+            safety = await core_service.check_prompt_safety(ctx, data.prompt)
+            if safety != "SAFE":
+                raise HTTPException(status_code=403, detail=safety)
+
+        is_node_owner = False
+        try:
+            is_node_owner = (
+                validated_node_owner(ctx)
+                or getattr(ctx, "trusted_owner", False)
+                or getattr(ctx, "private_mode", False)
+                or trusted_owner_access(request)
+            )
+        except Exception:
+            is_node_owner = getattr(ctx, "trusted_owner", False)
+        save_locally = bool(is_node_owner or data.save_local)
+
+        ref_imgs = data.reference_images or ([data.reference_image] if data.reference_image else None)
+
+        async def _run_video_core() -> dict:
+            t_start = time.time()
+            res = await core_service.generate_krea_video(
+                ctx=ctx,
+                prompt=data.prompt,
+                persona_prompt=data.persona_prompt or "",
+                persona_name=data.persona_name,
+                reference_image=ref_imgs[0] if ref_imgs else None,
+                reference_images=ref_imgs,
+                width=data.width,
+                height=data.height,
+                duration=data.duration,
+                quality=data.quality,
+                steps=data.steps,
+                seed=data.seed,
+                save_local=save_locally,
+                subfolder=data.subfolder,
+                filename_prefix=data.filename_prefix,
+                custom_title=data.custom_title,
+                custom_description=data.custom_description,
+            )
+            total_time = round(time.time() - t_start, 2)
+            gpu_time = None
+            try:
+                from extensions.modal_comfy_client import get_last_video_gpu_time
+                gpu_time = get_last_video_gpu_time()
+            except Exception:
+                pass
+
+            await core_service.emit_generation_progress("saving")
+
+            filename, title, description, video_data, cover_bytes = res[0], res[1], res[2], res[3], res[4]
+            raw_prompt = (data.prompt or data.persona_prompt or "").strip()
+            base_no_ext = os.path.splitext(filename)[0]
+            cover_filename = f"{base_no_ext}.cover.jpg" if cover_bytes else ""
+
+            if video_data:
+                store_ephemeral_image(filename, video_data)
+                readme_filename = f"{base_no_ext}.Readme.md"
+                readme_text = f"# {title}\n\n{description}\n"
+                if raw_prompt:
+                    readme_text += f"\n<!-- prompt: {raw_prompt} -->\n"
+                store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
+                if cover_bytes and cover_filename:
+                    store_ephemeral_image(cover_filename, cover_bytes)
+                if data.device_push:
+                    schedule_generated_image_push(
+                        data.omd_key, data.device_push, filename, video_data, title, description, ctx=ctx, prompt=raw_prompt
+                    )
+                    if cover_bytes and cover_filename:
+                        try:
+                            import device_push as _dp
+                            if not _dp.is_local_target(data.device_push, ctx):
+                                _dp.schedule_push(data.omd_key, data.device_push, [(cover_filename, cover_bytes)], ctx=ctx)
+                        except Exception:
+                            pass
+
+            safe_subfolder = core_service.sanitize_story_slug(data.subfolder) if data.subfolder else ""
+            out_payload = {
+                "video": filename,
+                "image": filename,
+                "is_video": True,
+                "duration": round(core_service.align_minimax_h3_frames(data.duration) / 24.0, 1),
+                "cover": cover_filename,
+                "cover_url": f"/chat/image/{cover_filename}" if cover_filename else "",
+                "path": f"{safe_subfolder}/{filename}" if safe_subfolder else filename,
+                "subfolder": safe_subfolder,
+                "url": f"/chat/image/{filename}",
+                "title": title,
+                "description": description,
+                "prompt": raw_prompt,
+                "persona": data.persona_name or data.persona_id or "",
+                "saved_locally": save_locally,
+                "gpu_time": gpu_time,
+                "total_time": total_time,
+            }
+            try:
+                post_status = await core_service.check_krea_status(ctx)
+                if isinstance(post_status, dict):
+                    for qk in ("tier", "krea_allowed", "credits", "krea_daily_remaining", "krea_daily_limit", "krea_notice"):
+                        if qk in post_status:
+                            out_payload[qk] = post_status[qk]
+            except Exception:
+                pass
+            return out_payload
+
+        if not data.stream:
+            return await _run_video_core()
+
+        async def _ndjson_stream():
+            prog_q: asyncio.Queue = asyncio.Queue()
+
+            def _on_progress(stage: str, **info):
+                prog_q.put_nowait({"type": "progress", "stage": stage, **info})
+
+            token_var = core_service.generation_progress_var.set(_on_progress)
+            task = asyncio.create_task(_run_video_core())
+            core_service.generation_progress_var.reset(token_var)
+            task.add_done_callback(lambda _: prog_q.put_nowait(None))
+
+            yield (json.dumps({"type": "progress", "stage": "warming", "phase": "preparing"}) + "\n").encode("utf-8")
+
+            try:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(prog_q.get(), timeout=8.0)
+                        if ev is None:
+                            while not prog_q.empty():
+                                tail = prog_q.get_nowait()
+                                if tail is not None:
+                                    yield (json.dumps(tail) + "\n").encode("utf-8")
+                            break
+                        yield (json.dumps(ev) + "\n").encode("utf-8")
+                    except asyncio.TimeoutError:
+                        if task.done():
+                            break
+                        yield (json.dumps({"type": "ping"}) + "\n").encode("utf-8")
+
+                result_dict = await task
+                yield (json.dumps({"type": "result", "data": result_dict}) + "\n").encode("utf-8")
+            except HTTPException as he:
+                yield (json.dumps({"type": "error", "detail": str(he.detail)}) + "\n").encode("utf-8")
+            except Exception as exc:
+                logging.error(f"Error in streamed /generate/krea/video: {exc}")
+                yield (json.dumps({"type": "error", "detail": str(exc)}) + "\n").encode("utf-8")
+
+        return StreamingResponse(_ndjson_stream(), media_type="application/x-ndjson")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in /generate/krea/video: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
