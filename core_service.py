@@ -4069,14 +4069,15 @@ async def generate_sdxl_studio_image(
         pass
 
     no_signs_neg = (
-        "(text, sign, signage, street sign, shop sign, storefront sign, neon sign, poster, movie poster, "
-        "placard, billboard, banner, advertisement, lettering, typography, written words, inscription, "
-        "gibberish text, garbled letters, caption, subtitles, speech bubble, label, logo, watermark, signature:1.5)"
+        "(english_text, print_shirt, graphic_tee, shirt_print, clothing_text, text_on_clothes, text, "
+        "logo, brand_logo, emblem, number_print, sign, signage, street_sign, shop_sign, neon_sign, "
+        "poster, placard, billboard, banner, graffiti, advertisement, lettering, typography, "
+        "written_words, inscription, gibberish, caption, subtitles, speech_bubble, label, watermark, signature, artist_name:2.0)"
     )
     negative_prompt = NEGATIVE_PROMPTS["base"]
-    if is_uncensored:
+    if not is_uncensored:
         negative_prompt = NEGATIVE_PROMPTS["fun"] + ", " + negative_prompt
-    if "signage" not in negative_prompt[:180]:
+    if "print_shirt" not in negative_prompt[:180]:
         negative_prompt = no_signs_neg + ", " + negative_prompt
 
     with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
@@ -4242,6 +4243,17 @@ async def generate_sdxl_studio_image(
     # Убираем служебные <теги> из положительного промпта перед CLIPTextEncode
     clean_positive = re.sub(r"<[^>]+>", "", combined_raw_text)
     clean_positive = re.sub(r"\s*,\s*,+", ", ", clean_positive).strip(" ,")
+    # Для DMD2 (1-CFG дистиллят) позитивные токены в 10 раз сильнее негативных:
+    # если пользователь явно не просил текст/принт/логотип, якорим однотонную ткань без принтов и чистые поверхности
+    wants_explicit_text = bool(
+        re.search(
+            r"\b(text|logo|sign|signage|print|printed|slogan|inscription|graffiti|poster|banner|надпис|принт|вывеск|лого|текст)\b",
+            str(prompt or ""),
+            flags=re.IGNORECASE,
+        )
+    )
+    if clean_positive and not wants_explicit_text:
+        clean_positive = f"{clean_positive}, plain unprinted clothing, solid unadorned fabric, clean background surfaces"
     workflow_json["4"]["inputs"]["text"] = negative_prompt
     workflow_json["85"]["inputs"]["text"] = (
         f"{clean_positive}, {IMPROVEMENT_PROMPT}" if clean_positive else IMPROVEMENT_PROMPT
@@ -4258,10 +4270,10 @@ async def generate_sdxl_studio_image(
     eff_seed = int(seed) if (seed is not None and int(seed) > 0) else random.randint(1, 1125899906842624)
     raw_steps_val = int(steps or 7)
     eff_steps = 7 if raw_steps_val > 12 else max(4, raw_steps_val)
-    raw_cfg_val = float(cfg or 1.25)
-    # При cfg == 1.0 ComfyUI пропускает negative_prompt (unguided pass); cfg 1.25 включает негатив без пережога DMD2
+    raw_cfg_val = float(cfg or 1.45)
+    # При cfg <= 1.05 ComfyUI пропускает negative_prompt; cfg 1.45 для DMD2 даёт уверенный отпор принтам/надписям без пережога
     if raw_cfg_val <= 1.05 or raw_cfg_val > 2.2:
-        eff_cfg = 1.25
+        eff_cfg = 1.45
         eff_steps = max(7, eff_steps)
     else:
         eff_cfg = raw_cfg_val
@@ -5124,9 +5136,10 @@ async def generate_krea2_image(
 
     positive_text = ", ".join(full_parts)
     no_signs_krea = (
-        "text, sign, signage, street sign, shop sign, storefront sign, neon sign, poster, movie poster, "
-        "placard, billboard, banner, advertisement, lettering, typography, written words, inscription, "
-        "gibberish text, garbled letters, caption, subtitles, speech bubble, label, logo, watermark, signature"
+        "text, english text, print shirt, printed clothes, graphic tee, shirt print, text on clothes, "
+        "logo, brand logo, sign, signage, street sign, shop sign, storefront sign, neon sign, poster, "
+        "placard, billboard, banner, graffiti, advertisement, lettering, typography, written words, inscription, "
+        "gibberish text, garbled letters, caption, subtitles, speech bubble, label, watermark, signature"
     )
     negative_text = f"{no_signs_krea}, wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, artifacts"
 
@@ -9605,7 +9618,7 @@ async def krea_director_rewrite_prompt(
         "1. IF CURRENT PROMPT IS PROVIDED: Carefully preserve every visual detail (outfit, body proportions, hair/eyes, lighting, camera style, setting, secondary details) that does NOT conflict with the user's new instruction! Replace ONLY the parts that need to change — and make sure to remove or update ALL secondary mentions of any replaced object/action (for example, if replacing a magical staff with a sword, also replace 'crystal inside gold staff head' and 'staff casting light' with matching sword details so zero traces of the old prop remain).\n"
         "2. IF CURRENT PROMPT IS EMPTY: Create a complete, vivid, cinematic English prompt from scratch following the user's vision.\n"
         "3. PERSONA HANDLING: If an active Persona is attached in Studio, Creative Studio automatically appends her static facial passport at render time — so focus your prompt on her pose, body language, outfit, expression, camera framing, action, and environment (you may mention her name or brief hair/key trait naturally for grounding, without copy-pasting a 3-sentence facial passport).\n"
-        "4. ZERO SIGNS / POSTERS / TEXT: NEVER include street signs, shop signage, neon signs with letters, posters, billboards, banners, placards, labels, menus, book titles, or any written text/typography in the scene (unless the user explicitly requests specific text). Diffusion models render background signs and posters as ugly gibberish — describe clean architectural surfaces, warm bokeh lights, colored neon light reflections, lanterns, foliage, or glass reflections instead. If the current prompt contains signs/posters/text, remove them cleanly.\n"
+        "4. ZERO SIGNS / POSTERS / CLOTHING PRINTS / TEXT: NEVER include street signs, shop signage, neon signs with letters, posters, billboards, banners, placards, clothing prints/logos/slogans, labels, menus, or any written text/typography in the scene (unless the user explicitly requests specific text). Always describe tops, tees, crop tops, hoodies, and jackets as 'plain solid unprinted' fabric (e.g. 'plain black deep-plunge crop top') so Pony/SDXL never generates garbled chest prints, and describe clean walls, warm bokeh lights, or neon light reflections instead of signs. If the current prompt contains signs/posters/prints/text, remove them cleanly.\n"
         f"5. Output STRICT JSON ONLY with two keys:\n"
         '{\n'
         f'  "reply": "Short, warm, witty 1-sentence director comment in {reply_lang} confirming what you changed/set up",\n'
