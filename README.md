@@ -1,13 +1,13 @@
-# On My Chat — Self-Hosted AI Node for Ollama
+# On My Chat — AI Node for On My Disk
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-On%20My%20Disk-0070BB.svg)](https://github.com/alexeyvolkoff/onmydisk)
 [![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM%20%26%20Vision-black.svg)](https://ollama.com)
-[![Platform](https://img.shields.io/badge/Platform-On%20My%20Disk%20Direct-0070BB.svg)](https://github.com/alexeyvolkoff/onmydisk)
 [![Web & PWA](https://img.shields.io/badge/PWA-onmychat.com-7c3aed.svg)](https://onmychat.com/?launch=1)
 [![Docs](https://img.shields.io/badge/Docs-onmydisk.org-0ea5e9.svg)](https://onmydisk.org)
 [![Discord](https://img.shields.io/badge/Discord-Community-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/qAQpfmrBPW)
 
-**On My Chat** is an open-source, self-hosted personal AI node built around **Ollama** and [**On My Disk Direct**](https://github.com/alexeyvolkoff/onmydisk). It runs on **Linux**, **Windows**, **macOS**, home servers, NAS boxes, and ARM SBCs — giving you private RAG over your local folders, mobile/PWA remote access over peer-to-peer WebRTC without port forwarding, and a built-in Creative Studio with an Ollama-powered prompt assistant.
+**On My Chat** is the open-source, self-hosted AI node for [**On My Disk**](https://github.com/alexeyvolkoff/onmydisk), powered by **Ollama** (or **RKLLAMA**). It runs on **Linux**, **Windows**, **macOS**, home servers, NAS boxes, and ARM SBCs — giving you private RAG over your local folders, mobile/PWA remote access over peer-to-peer WebRTC without port forwarding, and a built-in Creative Studio with an AI prompt assistant.
 
 ---
 
