@@ -4068,9 +4068,16 @@ async def generate_sdxl_studio_image(
     except Exception:
         pass
 
+    no_signs_neg = (
+        "(text, sign, signage, street sign, shop sign, storefront sign, neon sign, poster, movie poster, "
+        "placard, billboard, banner, advertisement, lettering, typography, written words, inscription, "
+        "gibberish text, garbled letters, caption, subtitles, speech bubble, label, logo, watermark, signature:1.5)"
+    )
     negative_prompt = NEGATIVE_PROMPTS["base"]
     if is_uncensored:
         negative_prompt = NEGATIVE_PROMPTS["fun"] + ", " + negative_prompt
+    if "signage" not in negative_prompt[:180]:
+        negative_prompt = no_signs_neg + ", " + negative_prompt
 
     with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
         workflow_json = json.load(f)
@@ -4249,10 +4256,15 @@ async def generate_sdxl_studio_image(
         workflow_json["6"]["inputs"]["height"] = h_clamped
 
     eff_seed = int(seed) if (seed is not None and int(seed) > 0) else random.randint(1, 1125899906842624)
-    raw_steps_val = int(steps or 6)
-    eff_steps = 6 if raw_steps_val > 12 else max(4, raw_steps_val)
-    raw_cfg_val = float(cfg or 1.0)
-    eff_cfg = 1.0 if raw_cfg_val > 2.2 else max(1.0, raw_cfg_val)
+    raw_steps_val = int(steps or 7)
+    eff_steps = 7 if raw_steps_val > 12 else max(4, raw_steps_val)
+    raw_cfg_val = float(cfg or 1.25)
+    # При cfg == 1.0 ComfyUI пропускает negative_prompt (unguided pass); cfg 1.25 включает негатив без пережога DMD2
+    if raw_cfg_val <= 1.05 or raw_cfg_val > 2.2:
+        eff_cfg = 1.25
+        eff_steps = max(7, eff_steps)
+    else:
+        eff_cfg = raw_cfg_val
     if "5" in workflow_json and "inputs" in workflow_json["5"]:
         workflow_json["5"]["inputs"]["seed"] = eff_seed
         workflow_json["5"]["inputs"]["steps"] = eff_steps
@@ -5111,7 +5123,12 @@ async def generate_krea2_image(
         logging.info(f"[Krea2] Applying Custom Slider LoRA: {custom_lora} (weight={custom_weight})")
 
     positive_text = ", ".join(full_parts)
-    negative_text = "wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, watermark, artifacts"
+    no_signs_krea = (
+        "text, sign, signage, street sign, shop sign, storefront sign, neon sign, poster, movie poster, "
+        "placard, billboard, banner, advertisement, lettering, typography, written words, inscription, "
+        "gibberish text, garbled letters, caption, subtitles, speech bubble, label, logo, watermark, signature"
+    )
+    negative_text = f"{no_signs_krea}, wet skin, blurry, bad anatomy, bad hands, low quality, distorted, extra limbs, artifacts"
 
     if seed is None:
         seed = random.randint(1, 1125899906842624)
@@ -5288,7 +5305,7 @@ async def generate_krea2_image(
         }
         neg_inputs = {
             "clip": current_clip_link,
-            "prompt": "",
+            "prompt": negative_text,
             "image": ["72", 0],
             "grounding_px": 768
         }
@@ -5328,11 +5345,11 @@ async def generate_krea2_image(
             }
         }
         if requested_base in ["anima", "cyberrealistic_anima", "animaturbo", "anime"]:
-            model_neg = "worst quality, low quality, artist name, (lowres:1.2), (worst quality:1.4), (low quality:1.4), (bad anatomy:1.4), bad hands, multiple views, jpeg artifacts, patreon logo, patreon username, web address, signature, watermark, text, logo, artist name, censored, mosaic censoring"
+            model_neg = f"{no_signs_krea}, worst quality, low quality, artist name, (lowres:1.2), (worst quality:1.4), (low quality:1.4), (bad anatomy:1.4), bad hands, multiple views, jpeg artifacts, patreon logo, patreon username, web address, censored, mosaic censoring"
         elif requested_base in ["semi_realism", "muse", "semirealism", "semi-realism", "yogi"]:
-            model_neg = "worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d model render, flat, blurry, bad eyes, crossed eyes, oversaturated, watermark, signature, text, logo"
+            model_neg = f"{no_signs_krea}, worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d model render, flat, blurry, bad eyes, crossed eyes, oversaturated"
         else:
-            model_neg = "worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d render, cgi, cartoon, anime, illustration, painting, drawing, plastic skin, airbrushed, doll, fake, oversaturated, overexposed, blurry, watermark, signature, text, logo"
+            model_neg = f"{no_signs_krea}, worst quality, low quality, (bad anatomy:1.2), (bad hands:1.2), missing fingers, extra digits, deformed, 3d render, cgi, cartoon, anime, illustration, painting, drawing, plastic skin, airbrushed, doll, fake, oversaturated, overexposed, blurry"
 
         neg_node = {
             "class_type": "CLIPTextEncode",
@@ -9588,7 +9605,8 @@ async def krea_director_rewrite_prompt(
         "1. IF CURRENT PROMPT IS PROVIDED: Carefully preserve every visual detail (outfit, body proportions, hair/eyes, lighting, camera style, setting, secondary details) that does NOT conflict with the user's new instruction! Replace ONLY the parts that need to change — and make sure to remove or update ALL secondary mentions of any replaced object/action (for example, if replacing a magical staff with a sword, also replace 'crystal inside gold staff head' and 'staff casting light' with matching sword details so zero traces of the old prop remain).\n"
         "2. IF CURRENT PROMPT IS EMPTY: Create a complete, vivid, cinematic English prompt from scratch following the user's vision.\n"
         "3. PERSONA HANDLING: If an active Persona is attached in Studio, Creative Studio automatically appends her static facial passport at render time — so focus your prompt on her pose, body language, outfit, expression, camera framing, action, and environment (you may mention her name or brief hair/key trait naturally for grounding, without copy-pasting a 3-sentence facial passport).\n"
-        f"4. Output STRICT JSON ONLY with two keys:\n"
+        "4. ZERO SIGNS / POSTERS / TEXT: NEVER include street signs, shop signage, neon signs with letters, posters, billboards, banners, placards, labels, menus, book titles, or any written text/typography in the scene (unless the user explicitly requests specific text). Diffusion models render background signs and posters as ugly gibberish — describe clean architectural surfaces, warm bokeh lights, colored neon light reflections, lanterns, foliage, or glass reflections instead. If the current prompt contains signs/posters/text, remove them cleanly.\n"
+        f"5. Output STRICT JSON ONLY with two keys:\n"
         '{\n'
         f'  "reply": "Short, warm, witty 1-sentence director comment in {reply_lang} confirming what you changed/set up",\n'
         '  "prompt": "The complete ready-to-render English diffusion prompt"\n'

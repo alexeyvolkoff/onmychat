@@ -250,11 +250,11 @@
     {
       "id": "neon",
       "name": "Neon Noir",
-      "description": "Cyberpunk night city reflections & glowing neon signage",
+      "description": "Cyberpunk night city reflections & glowing neon lights",
       "icon": "🌃",
       "filename": "",
       "url": "",
-      "trigger": "neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon signage bokeh, night city reflections, moody dark contrast",
+      "trigger": "neon noir cyberpunk aesthetic, vibrant cyan and magenta rim light, glowing neon light bokeh, night city reflections, moody dark contrast",
       "strength": 1.0,
       "models": [
         "all"
