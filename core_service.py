@@ -5587,13 +5587,154 @@ def adapt_minimax_h3_canvas(width: int = 1344, height: int = 768, quality: str =
     return int(out_w), int(out_h)
 
 
-async def generate_video_workflow(workflow: dict) -> tuple[bytes | None, str | None, bytes | None]:
+def _probe_video_bytes_meta(video_bytes: bytes) -> dict:
+    """Probes width, height, duration, and audio presence of MP4 bytes via ffprobe."""
+    if not video_bytes:
+        return {"duration": 0.0, "width": 0, "height": 0, "has_audio": False}
+    import tempfile
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tf:
+            tf.write(video_bytes)
+            tmp_path = tf.name
+        res = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration:stream=codec_type,width,height",
+                "-of", "json",
+                tmp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        info = json.loads(res.stdout or "{}")
+        streams = info.get("streams") or []
+        v_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        dur = float((info.get("format") or {}).get("duration") or 0.0)
+        return {
+            "duration": dur,
+            "width": int(v_stream.get("width") or 0),
+            "height": int(v_stream.get("height") or 0),
+            "has_audio": has_audio,
+        }
+    except Exception as e:
+        logging.debug(f"[MiniMax-H3] _probe_video_bytes_meta warning: {e}")
+        return {"duration": 0.0, "width": 0, "height": 0, "has_audio": False}
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+async def resolve_reference_video_bytes(ctx: UserContext, video_ref: str | None) -> bytes | None:
+    """ Resolves source MP4 bytes from data URL, HTTP URL, /chat/image/ ephemeral cache, or local generated folder. """
+    if not video_ref:
+        return None
+    try:
+        v_str = str(video_ref).strip()
+        if v_str.startswith("data:") and "," in v_str:
+            _, b64_data = v_str.split(",", 1)
+            return base64.b64decode(b64_data.strip())
+        if v_str.startswith("http://") or v_str.startswith("https://"):
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20.0)) as session:
+                async with session.get(v_str) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+            return None
+
+        clean_ref = v_str.split("?", 1)[0].strip("/")
+        vid_name = urllib.parse.unquote(os.path.basename(clean_ref))
+        # Check in-memory ephemeral store first if available
+        try:
+            import api as _api_mod
+            if hasattr(_api_mod, "get_ephemeral_image") and vid_name:
+                eph = _api_mod.get_ephemeral_image(vid_name)
+                if eph:
+                    return eph
+        except Exception:
+            pass
+
+        rel_candidates = [vid_name]
+        if "/" in clean_ref:
+            for prefix in ("chat/image/", "generated/", "p2p/"):
+                if clean_ref.startswith(prefix):
+                    rel_sub = urllib.parse.unquote(clean_ref[len(prefix):])
+                    if rel_sub and rel_sub not in rel_candidates:
+                        rel_candidates.insert(0, rel_sub)
+
+        search_roots = []
+        try:
+            loc_gen = resolve_local_target_dir(ctx, "generated")
+            if loc_gen and os.path.isdir(loc_gen):
+                search_roots.append(loc_gen)
+        except Exception:
+            pass
+        for d in [
+            os.path.join(APP_ROOT_DIR, "generated"),
+            os.path.join(os.path.expanduser("~"), "Data", "generated"),
+            os.path.join(os.path.expanduser("~"), "Data", "onmychat", "generated"),
+            os.path.join(os.path.expanduser("~"), "OnMyChat", "generated"),
+            os.path.join(os.path.expanduser("~"), "Private", "OnMyChat", "generated"),
+            "/content/ComfyUI/output/generated",
+        ]:
+            if d not in search_roots:
+                search_roots.append(d)
+
+        for root_d in search_roots:
+            for rel_c in rel_candidates:
+                cand = os.path.join(root_d, rel_c)
+                if os.path.isfile(cand):
+                    with open(cand, "rb") as f:
+                        return f.read()
+            if vid_name and os.path.isdir(root_d):
+                for sub_entry in os.listdir(root_d):
+                    sub_cand = os.path.join(root_d, sub_entry, vid_name)
+                    if os.path.isfile(sub_cand):
+                        with open(sub_cand, "rb") as f:
+                            return f.read()
+
+        if os.path.isfile(v_str):
+            with open(v_str, "rb") as f:
+                return f.read()
+        if len(v_str) > 256:
+            try:
+                return base64.b64decode(v_str)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning(f"[MiniMax-H3] resolve_reference_video_bytes warning: {e}")
+    return None
+
+
+async def generate_video_workflow(
+    workflow: dict,
+    extend_video: dict | None = None,
+) -> tuple[bytes | None, str | None, bytes | None]:
     """
     Executes a ComfyUI video workflow (MiniMax-H3 SaveVideo) against local ComfyUI.
     Returns (video_bytes, filename, cover_jpeg_bytes).
     Overridden by private Cloud GPU extension hook when Modal Video GPU is enabled.
     """
-    video_bytes, filename = await generate_image_workflow(workflow)
+    local_wf = json.loads(json.dumps(workflow))
+    # Graceful fallback if local ComfyUI does not have Ref2VAVSAGatePatch installed
+    if "2_vsa" in local_wf:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3.0)) as sess:
+                async with sess.get(f"{COMFY_API_URL}/object_info/Ref2VAVSAGatePatch") as r:
+                    has_vsa = (r.status == 200) and bool(await r.json())
+            if not has_vsa:
+                local_wf.pop("2_vsa", None)
+                if "2_shift" in local_wf:
+                    local_wf["2_shift"]["inputs"]["model"] = ["2", 0]
+        except Exception:
+            pass
+
+    video_bytes, filename = await generate_image_workflow(local_wf)
     return video_bytes, filename, None
 
 
@@ -5644,16 +5785,25 @@ async def generate_krea_video(
     **kwargs,
 ) -> tuple[str, str, str, bytes, bytes | None]:
     """
-    Generates a MiniMax-H3 omni-modal MP4 video with synchronized stereo audio via ComfyUI:
-    - 0 reference images: Text-to-Video + Audio (t2va)
-    - 1 reference image: First-Frame Image-to-Video + Audio (fl2va, <Picture 1>)
-    - 2 reference images: First + Last Keyframe Transition + Audio (fl2va, <Picture 1> -> <Picture 2>)
+    Generates a MiniMax-H3 omni-modal MP4 video with synchronized stereo audio via ComfyUI + FastH3 VSA:
+    - VSA Acceleration: 75% Visual Sparse Attention (comfy-kitchen sol_attn CUDA + fasth3_vsa_gate)
+      with 100% dense multimodal prefix for text, audio, keyframes, and character references.
+    - Modes:
+      * 0 refs: Text-to-Video + Audio (t2va)
+      * Subject / Persona Ref (video_ref_mode='subject' or auto Persona avatar): Ref2VA (<Picture 1..3>)
+        keeping exact character face/identity across arbitrary camera angles, poses, and settings.
+      * Keyframe Animation (video_ref_mode='keyframe'): FL2VA First-Frame (<Picture 1>) or
+        First->Last Transition (<Picture 1> -> <Picture 2>).
+      * Multi-Segment Long Video (10s / 15s): Native AV latent-tail chaining (22-frame hidden overlap)
+        in a single warm ComfyUI graph with zero VAE seam.
+      * Extend Video (+5s, extend_video): Anchors the 22-frame tail + stereo audio of any existing MP4
+        and seamlessly stitches +5.0s (119 new frames) onto the original clip.
     Returns (mp4_filename, title, description, mp4_bytes, cover_jpeg_bytes).
     """
-    has_any_ref = bool(reference_image or (isinstance(reference_images, list) and any(reference_images)))
-    clean_prompt = (prompt or "").strip()
-    if not clean_prompt and not persona_prompt and not has_any_ref:
-        raise Exception("Укажите сценарий движения/звука или выберите кадр для оживления.")
+    raw_extend_ref = str(kwargs.get("extend_video") or "").strip()
+    persona_id = str(kwargs.get("persona_id") or "").strip()
+    req_ref_mode = str(kwargs.get("video_ref_mode") or "auto").strip().lower()
+    use_vsa = bool(kwargs.get("use_vsa", True))
 
     raw_refs: list[str] = []
     if reference_images and isinstance(reference_images, list):
@@ -5661,30 +5811,125 @@ async def generate_krea_video(
     elif reference_image:
         raw_refs.append(reference_image)
 
+    # Auto-attach active Studio Persona portrait as <Picture 1> in Ref2VA mode when no manual ref is given
+    auto_persona_ref = False
+    if not raw_refs and persona_id and req_ref_mode != "keyframe":
+        auto_avatar_ref = f"/personas/{persona_id}/avatar"
+        probe_av = await resolve_reference_image_bytes(ctx, auto_avatar_ref)
+        if probe_av:
+            raw_refs.append("data:image/png;base64," + base64.b64encode(probe_av).decode("ascii"))
+            auto_persona_ref = True
+
+    has_any_ref = bool(raw_refs)
+    clean_prompt = (prompt or "").strip()
+    if not clean_prompt and not persona_prompt and not has_any_ref and not raw_extend_ref:
+        raise Exception("Укажите сценарий движения/звука или выберите кадр для оживления.")
+
+    # Resolve optional source video for +5s Continuity Extension
+    extend_payload: dict | None = None
+    ext_source_bytes: bytes | None = None
+    if raw_extend_ref:
+        ext_source_bytes = await resolve_reference_video_bytes(ctx, raw_extend_ref)
+        if not ext_source_bytes:
+            raise Exception("Не удалось загрузить исходное видео для продолжения сцены.")
+        ext_meta = _probe_video_bytes_meta(ext_source_bytes)
+        if ext_meta["width"] > 0 and ext_meta["height"] > 0:
+            width, height = ext_meta["width"], ext_meta["height"]
+
     out_w, out_h = adapt_minimax_h3_canvas(width, height, quality=quality)
 
+    # Normalize mode aliases ('subject'/'ref2va'/'persona' vs 'keyframe'/'fl2va')
+    if req_ref_mode in ("ref2va", "persona", "character"):
+        req_ref_mode = "subject"
+    elif req_ref_mode in ("fl2va", "frame"):
+        req_ref_mode = "keyframe"
+
+    # Decide Ref2VA (subject/character identity) vs FL2VA (exact keyframe / pure T2VA)
+    if len(raw_refs) >= 2 and req_ref_mode == "keyframe":
+        use_ref2va = False
+    elif req_ref_mode == "subject" or auto_persona_ref:
+        use_ref2va = bool(raw_refs)
+    elif req_ref_mode == "keyframe":
+        use_ref2va = False
+    elif len(raw_refs) >= 2:
+        # Backwards-compatible 2-image default = First -> Last keyframe transition unless subject mode requested
+        use_ref2va = False
+    elif len(raw_refs) == 1 and ext_source_bytes is not None:
+        use_ref2va = True
+    else:
+        use_ref2va = False
+
+    max_refs = 3 if use_ref2va else 2
     comfy_ref_names: list[str] = []
     first_ref_raw_bytes: bytes | None = None
-    for idx_r, ref_item in enumerate(raw_refs[:2]):
+    for idx_r, ref_item in enumerate(raw_refs[:max_refs]):
         ref_bytes = await resolve_reference_image_bytes(ctx, ref_item)
         if ref_bytes:
-            fitted_bytes = _fit_keyframe_to_canvas(ref_bytes, out_w, out_h)
+            upload_bytes = ref_bytes if use_ref2va else _fit_keyframe_to_canvas(ref_bytes, out_w, out_h)
             if idx_r == 0:
-                first_ref_raw_bytes = fitted_bytes
-            c_name = await upload_reference_image_to_comfy(fitted_bytes)
+                first_ref_raw_bytes = upload_bytes
+            c_name = await upload_reference_image_to_comfy(upload_bytes)
             if c_name:
                 comfy_ref_names.append(c_name)
 
-    dur_clamped = max(3.0, min(10.0, float(duration or 5.0)))
-    frame_length = align_minimax_h3_frames(dur_clamped)
+    if use_ref2va and not comfy_ref_names:
+        use_ref2va = False
+
+    # Segment planning:
+    # - Single-pass: <= 8.5s (124 frames = 5.2s, 192 frames = 8.0s)
+    # - 10s multi-segment: 124 + 119 = 243 frames (10.1s) via 22-frame native AV latent tail overlap
+    # - 15s multi-segment: 124 + 119 + 119 = 362 frames (15.1s) via 2x 22-frame native AV latent tail overlap
+    # - Extend (+5s): 141-frame window (22 overlap + 119 new) anchored to existing MP4 tail
+    overlap_frames = 22
+    extension_frames = 119
+    if ext_source_bytes is not None:
+        num_segments = 1
+        seg1_frames = overlap_frames + extension_frames  # 141 frames
+        total_planned_frames = seg1_frames
+        tail_fn = f"krea_tail_{uuid.uuid4().hex[:10]}.mp4"
+        extend_payload = {
+            "source_b64": base64.b64encode(ext_source_bytes).decode("ascii"),
+            "tail_filename": tail_fn,
+            "overlap_frames": overlap_frames,
+        }
+    else:
+        dur_clamped = max(3.0, min(16.0, float(duration or 5.0)))
+        if dur_clamped >= 12.5:
+            num_segments = 3
+            seg1_frames = 124
+            total_planned_frames = 124 + 2 * extension_frames  # 362 frames (~15.1s)
+        elif dur_clamped >= 9.0:
+            num_segments = 2
+            seg1_frames = 124
+            total_planned_frames = 124 + extension_frames  # 243 frames (~10.1s)
+        else:
+            num_segments = 1
+            seg1_frames = align_minimax_h3_frames(dur_clamped)
+            total_planned_frames = seg1_frames
 
     req_steps = int(steps or 8)
-    if req_steps <= 4:
-        eff_steps = 4
-        turbo_lora = "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+    is_fast_q = str(quality or "hd").strip().lower() in ("fast", "std", "standard", "480p", "sd")
+    eff_steps = 4 if (req_steps <= 4 or is_fast_q) else 8
+
+    if use_ref2va:
+        unet_name = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+        if eff_steps <= 4:
+            if is_fast_q:
+                turbo_lora = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+                shift_video, shift_audio = 12.0, 3.0
+            else:
+                turbo_lora = "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+                shift_video, shift_audio = 6.0, 3.0
+        else:
+            turbo_lora = "minimax_h3_ref2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+            shift_video, shift_audio = 12.0, 3.0
     else:
-        eff_steps = 8
-        turbo_lora = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+        unet_name = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+        if eff_steps <= 4:
+            turbo_lora = "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+        else:
+            turbo_lora = "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+        shift_video, shift_audio = 6.0, 3.0
 
     if seed is None or int(seed) < 0:
         import random
@@ -5692,10 +5937,69 @@ async def generate_krea_video(
     else:
         seed = int(seed)
 
+    cleaned_persona = ""
+    if persona_prompt and persona_prompt.strip():
+        cleaned_persona = re.sub(
+            r"^(a\s+)?(portrait|close-up|headshot|bust\s+portrait)\s+of\s+",
+            "",
+            persona_prompt.strip(),
+            flags=re.IGNORECASE,
+        )
+
+    def _ensure_audio_block(p_txt: str) -> str:
+        low = p_txt.lower()
+        if "audio:" not in low and "soundscape" not in low:
+            return (
+                p_txt
+                + "\n\nAudio: Realistic natural ambient room tone and environmental stereo foley synchronized with every movement, subtle fabric rustle and natural breathing. No background music, no text, no watermarks."
+            )
+        return p_txt
+
+    # Build Segment 1 prompt
     prompt_blocks: list[str] = []
-    if comfy_ref_names:
+    subj_def_header = ""
+    if use_ref2va and comfy_ref_names:
+        subj_lines = []
+        for r_idx in range(len(comfy_ref_names)):
+            pic_tag = f"<Picture {r_idx + 1}>"
+            subj_tag = f"<Subject {r_idx + 1}>"
+            if r_idx == 0 and (persona_name or cleaned_persona):
+                desc_hint = f" ({cleaned_persona[:200]})" if cleaned_persona else ""
+                subj_lines.append(
+                    f"{subj_tag} is {persona_name or 'the main character'} in {pic_tag}{desc_hint}, preserving exact facial features, hair, proportions, and identity."
+                )
+            else:
+                subj_lines.append(
+                    f"{subj_tag} is the subject in {pic_tag}, preserving exact facial features, hair, outfit, and visual identity."
+                )
+        subj_def_header = "subject_definitions:\n" + "\n".join(subj_lines)
+
+        if extend_payload is not None:
+            overlap_sec = round(overlap_frames / 24.0, 2)
+            next_act = clean_prompt or "Continue the same uninterrupted live-action shot naturally with fluid motion, natural expressions, and consistent camera flow."
+            prompt_blocks.append(subj_def_header)
+            prompt_blocks.append(
+                f"detailed_description:\nThe opening {overlap_sec}s is overlapping context from the end of the preceding shot. Weld seamlessly to that tail in appearance, pose, lighting, camera motion, and sound. After the overlap, <Subject 1> continues: {next_act}"
+            )
+        elif not clean_prompt:
+            prompt_blocks.append(subj_def_header)
+            prompt_blocks.append(
+                "detailed_description:\nPhotorealistic live-action cinema. <Subject 1> moves naturally in a rich, atmospheric cinematic scene with expressive eyes, natural breathing, fluid hair and fabric physics, and smooth handheld camera push-in."
+            )
+        elif "subject_definitions:" in clean_prompt.lower() or "<picture 1>" in clean_prompt.lower():
+            prompt_blocks.append(clean_prompt)
+        else:
+            prompt_blocks.append(subj_def_header)
+            prompt_blocks.append(f"detailed_description:\nIn one continuous live-action shot featuring <Subject 1> from <Picture 1>: {clean_prompt}")
+    elif extend_payload is not None:
+        overlap_sec = round(overlap_frames / 24.0, 2)
+        next_act = clean_prompt or "Continue the same uninterrupted live-action shot naturally, preserving exact character identity, wardrobe, lighting, camera momentum, and synchronized sound."
+        prompt_blocks.append(
+            f"The opening {overlap_sec}s is overlapping context from the end of the preceding shot. Weld seamlessly to that tail in subject identity, pose, lighting, camera, and sound. After the overlap, next action: {next_act}"
+        )
+    elif comfy_ref_names:
         if not clean_prompt:
-            if len(comfy_ref_names) >= 2:
+            if len(comfy_ref_names) >= 2 and num_segments == 1:
                 prompt_blocks.append(
                     "Smooth, natural cinematic live-action motion transitioning seamlessly from <Picture 1> to <Picture 2>, preserving exact character identity, facial features, wardrobe, and lighting."
                 )
@@ -5711,49 +6015,28 @@ async def generate_krea_video(
     else:
         if clean_prompt:
             prompt_blocks.append(clean_prompt)
-        if persona_prompt and persona_prompt.strip():
-            cleaned_persona = re.sub(
-                r"^(a\s+)?(portrait|close-up|headshot|bust\s+portrait)\s+of\s+",
-                "",
-                persona_prompt.strip(),
-                flags=re.IGNORECASE,
-            )
+        if cleaned_persona:
             prompt_blocks.append(cleaned_persona)
 
-    final_video_prompt = "\n\n".join(prompt_blocks).strip()
-    if "audio:" not in final_video_prompt.lower() and "soundscape" not in final_video_prompt.lower():
-        final_video_prompt += (
-            "\n\nAudio: Realistic natural ambient room tone and environmental foley synchronized with every movement, subtle fabric rustle and soft breathing. No music, no text, no watermarks."
-        )
-
-    i2v_inputs: dict = {
-        "clip": ["3", 0],
-        "vae": ["4", 0],
-        "prompt": final_video_prompt,
-        "width": out_w,
-        "height": out_h,
-        "length": frame_length,
-    }
+    final_video_prompt = _ensure_audio_block("\n\n".join(prompt_blocks).strip())
 
     extra_nodes: dict = {}
-    if len(comfy_ref_names) >= 1:
-        extra_nodes["6"] = {
+    ref_image_inputs: dict = {}
+    for idx_r, c_name in enumerate(comfy_ref_names):
+        nid_img = f"ref_img_{idx_r}"
+        extra_nodes[nid_img] = {
             "class_type": "LoadImage",
-            "inputs": {"image": comfy_ref_names[0]},
+            "inputs": {"image": c_name},
         }
-        i2v_inputs["first_frame"] = ["6", 0]
-    if len(comfy_ref_names) >= 2:
-        extra_nodes["7"] = {
-            "class_type": "LoadImage",
-            "inputs": {"image": comfy_ref_names[1]},
-        }
-        i2v_inputs["last_frame"] = ["7", 0]
+        if use_ref2va:
+            ref_image_inputs[f"ref_images.ref_image_{idx_r}"] = [nid_img, 0]
 
+    sampled_model_ref = ["2_shift", 0]
     video_workflow: dict = {
         "1": {
             "class_type": "UNETLoader",
             "inputs": {
-                "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "unet_name": unet_name,
                 "weight_dtype": "default",
             },
         },
@@ -5763,6 +6046,14 @@ async def generate_krea_video(
                 "model": ["1", 0],
                 "lora_name": turbo_lora,
                 "strength_model": 1.0,
+            },
+        },
+        "2_shift": {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {
+                "model": ["2_vsa", 0] if use_vsa else ["2", 0],
+                "shift_video": shift_video,
+                "shift_audio": shift_audio,
             },
         },
         "3": {
@@ -5785,82 +6076,247 @@ async def generate_krea_video(
                 "vae_name": "minimax_h3_audio_vae_fp32.safetensors",
             },
         },
-        "8": {
-            "class_type": "MiniMaxH3ImageToVideo",
-            "inputs": i2v_inputs,
-        },
-        "9": {
-            "class_type": "RandomNoise",
-            "inputs": {
-                "noise_seed": seed,
-            },
-        },
         "10": {
             "class_type": "KSamplerSelect",
             "inputs": {
-                "sampler_name": "res_multistep",
+                "sampler_name": "euler",
             },
         },
-        "11": {
-            "class_type": "BasicScheduler",
+    }
+
+    if use_vsa:
+        video_workflow["2_vsa"] = {
+            "class_type": "Ref2VAVSAGatePatch",
             "inputs": {
                 "model": ["2", 0],
+                "gate_file": "fasth3_vsa_gate.safetensors",
+                "sparsity": 0.75,
+            },
+        }
+
+    # Segment 1 conditioning
+    if use_ref2va:
+        video_workflow["8"] = {
+            "class_type": "MiniMaxH3ReferenceToVideo",
+            "inputs": {
+                "clip": ["3", 0],
+                "vae": ["4", 0],
+                "audio_vae": ["5", 0],
+                "prompt": final_video_prompt,
+                "width": out_w,
+                "height": out_h,
+                "length": seg1_frames,
+                "ref_image_size": "match",
+                **ref_image_inputs,
+            },
+        }
+    else:
+        i2v_inputs: dict = {
+            "clip": ["3", 0],
+            "vae": ["4", 0],
+            "prompt": final_video_prompt,
+            "width": out_w,
+            "height": out_h,
+            "length": seg1_frames,
+        }
+        if extend_payload is None:
+            if len(comfy_ref_names) >= 1:
+                i2v_inputs["first_frame"] = ["ref_img_0", 0]
+            if len(comfy_ref_names) >= 2 and num_segments == 1:
+                i2v_inputs["last_frame"] = ["ref_img_1", 0]
+        video_workflow["8"] = {
+            "class_type": "MiniMaxH3ImageToVideo",
+            "inputs": i2v_inputs,
+        }
+
+    seg1_cond_ref = ["8", 0]
+    if extend_payload is not None:
+        video_workflow["8_vid"] = {
+            "class_type": "LoadVideo",
+            "inputs": {"file": extend_payload["tail_filename"]},
+        }
+        video_workflow["8_comp"] = {
+            "class_type": "GetVideoComponents",
+            "inputs": {"video": ["8_vid", 0]},
+        }
+        video_workflow["8_guide"] = {
+            "class_type": "MiniMaxH3AddGuide",
+            "inputs": {
+                "positive": ["8", 0],
+                "vae": ["4", 0],
+                "audio_vae": ["5", 0],
+                "latent": ["8", 1],
+                "image": ["8_comp", 0],
+                "audio": ["8_comp", 1],
+                "frame_idx": 0,
+            },
+        }
+        seg1_cond_ref = ["8_guide", 0]
+
+    video_workflow["9"] = {
+        "class_type": "RandomNoise",
+        "inputs": {"noise_seed": seed},
+    }
+    video_workflow["11"] = {
+        "class_type": "BasicScheduler",
+        "inputs": {
+            "model": sampled_model_ref,
+            "scheduler": "simple",
+            "steps": eff_steps,
+            "denoise": 1.0,
+        },
+    }
+    video_workflow["12"] = {
+        "class_type": "BasicGuider",
+        "inputs": {
+            "model": sampled_model_ref,
+            "conditioning": seg1_cond_ref,
+        },
+    }
+    video_workflow["13"] = {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "noise": ["9", 0],
+            "guider": ["12", 0],
+            "sampler": ["10", 0],
+            "sigmas": ["11", 0],
+            "latent_image": ["8", 1],
+        },
+    }
+
+    # Optional Segment 2..N Native AV Latent-Tail Continuation (10s / 15s)
+    final_latent_ref = ["13", 0]
+    for seg_i in range(2, num_segments + 1):
+        overlap_sec = round(overlap_frames / 24.0, 2)
+        act_body = clean_prompt or "Continue the uninterrupted live-action performance with fluid natural movement, consistent lighting, and realistic camera flow."
+        if use_ref2va and subj_def_header:
+            cont_prompt = _ensure_audio_block(
+                f"{subj_def_header}\n\ndetailed_description:\nThe opening {overlap_sec}s is overlapping context from the preceding segment. Weld seamlessly to that tail in subject appearance, motion velocity, lighting, camera, and sound. After the overlap, <Subject 1> continues the uninterrupted shot: {act_body}"
+            )
+            extra_nodes[f"c{seg_i}_cond"] = {
+                "class_type": "MiniMaxH3ReferenceToVideo",
+                "inputs": {
+                    "clip": ["3", 0],
+                    "vae": ["4", 0],
+                    "audio_vae": ["5", 0],
+                    "prompt": cont_prompt,
+                    "width": out_w,
+                    "height": out_h,
+                    "length": overlap_frames + extension_frames,
+                    "ref_image_size": "match",
+                    **ref_image_inputs,
+                },
+            }
+        else:
+            cont_prompt = _ensure_audio_block(
+                f"The opening {overlap_sec}s is overlapping context from the preceding segment. Weld seamlessly to that tail in character identity, wardrobe, motion velocity, lighting, camera, and stereo sound. After the overlap, continue the uninterrupted shot: {act_body}"
+            )
+            c_i2v_in: dict = {
+                "clip": ["3", 0],
+                "vae": ["4", 0],
+                "prompt": cont_prompt,
+                "width": out_w,
+                "height": out_h,
+                "length": overlap_frames + extension_frames,
+            }
+            if seg_i == num_segments and len(comfy_ref_names) >= 2:
+                c_i2v_in["last_frame"] = ["ref_img_1", 0]
+            extra_nodes[f"c{seg_i}_cond"] = {
+                "class_type": "MiniMaxH3ImageToVideo",
+                "inputs": c_i2v_in,
+            }
+
+        extra_nodes[f"c{seg_i}_win"] = {
+            "class_type": "OMC_H3ContinuationWindow",
+            "inputs": {
+                "previous_av_latent": final_latent_ref,
+                "overlap_frames": overlap_frames,
+                "extension_frames": extension_frames,
+            },
+        }
+        extra_nodes[f"c{seg_i}_tail"] = {
+            "class_type": "OMC_H3LatentTailGuide",
+            "inputs": {
+                "positive": [f"c{seg_i}_cond", 0],
+                "previous_av_latent": final_latent_ref,
+                "overlap_video_tokens": [f"c{seg_i}_win", 2],
+                "overlap_audio_tokens": [f"c{seg_i}_win", 3],
+            },
+        }
+        extra_nodes[f"c{seg_i}_noise"] = {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": seed + seg_i * 10007},
+        }
+        extra_nodes[f"c{seg_i}_sched"] = {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "model": sampled_model_ref,
                 "scheduler": "simple",
                 "steps": eff_steps,
                 "denoise": 1.0,
             },
-        },
-        "12": {
+        }
+        extra_nodes[f"c{seg_i}_guider"] = {
             "class_type": "BasicGuider",
             "inputs": {
-                "model": ["2", 0],
-                "conditioning": ["8", 0],
+                "model": sampled_model_ref,
+                "conditioning": [f"c{seg_i}_tail", 0],
             },
-        },
-        "13": {
+        }
+        extra_nodes[f"c{seg_i}_sample"] = {
             "class_type": "SamplerCustomAdvanced",
             "inputs": {
-                "noise": ["9", 0],
-                "guider": ["12", 0],
+                "noise": [f"c{seg_i}_noise", 0],
+                "guider": [f"c{seg_i}_guider", 0],
                 "sampler": ["10", 0],
-                "sigmas": ["11", 0],
-                "latent_image": ["8", 1],
+                "sigmas": [f"c{seg_i}_sched", 0],
+                "latent_image": [f"c{seg_i}_win", 0],
             },
-        },
-        "14": {
-            "class_type": "VAEDecode",
+        }
+        extra_nodes[f"c{seg_i}_append"] = {
+            "class_type": "OMC_H3AppendContinuation",
             "inputs": {
-                "samples": ["13", 0],
-                "vae": ["4", 0],
+                "previous_av_latent": final_latent_ref,
+                "sampled_window": [f"c{seg_i}_sample", 0],
+                "overlap_video_tokens": [f"c{seg_i}_win", 2],
+                "overlap_audio_tokens": [f"c{seg_i}_win", 3],
             },
+        }
+        final_latent_ref = [f"c{seg_i}_append", 0]
+
+    video_workflow["14"] = {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": final_latent_ref,
+            "vae": ["4", 0],
         },
-        "15": {
-            "class_type": "VAEDecodeAudio",
-            "inputs": {
-                "samples": ["13", 0],
-                "vae": ["5", 0],
-            },
+    }
+    video_workflow["15"] = {
+        "class_type": "VAEDecodeAudio",
+        "inputs": {
+            "samples": final_latent_ref,
+            "vae": ["5", 0],
         },
-        "16": {
-            "class_type": "CreateVideo",
-            "inputs": {
-                "images": ["14", 0],
-                "audio": ["15", 0],
-                "fps": 24.0,
-            },
+    }
+    video_workflow["16"] = {
+        "class_type": "CreateVideo",
+        "inputs": {
+            "images": ["14", 0],
+            "audio": ["15", 0],
+            "fps": 24.0,
         },
-        "17": {
-            "class_type": "SaveVideo",
-            "inputs": {
-                "video": ["16", 0],
-                "filename_prefix": "video/MiniMax_H3",
-                "format": "auto",
-            },
+    }
+    video_workflow["17"] = {
+        "class_type": "SaveVideo",
+        "inputs": {
+            "video": ["16", 0],
+            "filename_prefix": "video/MiniMax_H3",
+            "format": "auto",
         },
     }
     video_workflow.update(extra_nodes)
 
-    clean_user_prompt = (clean_prompt or persona_prompt or "Animated scene").strip()
+    clean_user_prompt = (clean_prompt or persona_prompt or ("Extended scene" if extend_payload else "Animated scene")).strip()
     custom_title = str(kwargs.get("custom_title") or "").strip()
     custom_description = str(kwargs.get("custom_description") or "").strip()
 
@@ -5868,12 +6324,17 @@ async def generate_krea_video(
     if not (custom_title or custom_description) and clean_user_prompt:
         desc_task = asyncio.create_task(generate_neutral_description_and_title(ctx, clean_user_prompt))
 
+    mode_tag = "Ref2VA" if use_ref2va else "FL2VA"
+    if extend_payload:
+        mode_tag += "+Extend"
+    elif num_segments > 1:
+        mode_tag += f"x{num_segments}Seg"
     logging.info(
-        f"[MiniMax-H3] Generating video ({out_w}x{out_h}, frames={frame_length} (~{round(frame_length/24.0, 1)}s), "
-        f"steps={eff_steps}, refs={len(comfy_ref_names)})"
+        f"[MiniMax-H3] Generating {mode_tag} ({out_w}x{out_h}, frames={total_planned_frames} (~{round(total_planned_frames/24.0, 1)}s), "
+        f"steps={eff_steps}x{num_segments}, vsa={use_vsa}, refs={len(comfy_ref_names)})"
     )
     try:
-        video_data, raw_fn, cover_bytes = await generate_video_workflow(video_workflow)
+        video_data, raw_fn, cover_bytes = await generate_video_workflow(video_workflow, extend_video=extend_payload)
     except Exception:
         if desc_task and not desc_task.done():
             desc_task.cancel()
@@ -9580,10 +10041,11 @@ async def krea_director_rewrite_prompt(
     is_sdxl = is_sdxl_base_model(base_lower)
     if is_video_h3:
         model_guidance = (
-            "TARGET DIFFUSION ENGINE: MiniMax-H3 Omni-Modal Video + Stereo Audio (Qwen3-VL-32B, 24fps).\n"
-            "- MiniMax-H3 jointly generates live-action cinematic motion AND synchronized stereo sound in a single pass.\n"
-            "- If the user is animating a reference frame (or current_prompt describes a still image), anchor the opening with '<Picture 1>' (e.g. 'The scene opens on <Picture 1>, preserving her exact face, outfit, and lighting...') and describe fluid, realistic physical motion, micro-expressions, hair/fabric physics, and camera choreography (push-in, slow orbit, handheld tracking, or timed shots like [0s-2.5s] / [2.5s-5s]).\n"
-            "- ALWAYS include a dedicated 'Audio:' paragraph at the end describing synchronized stereo foley, room/outdoor ambience, breathing, footsteps, fabric rustle, or spoken dialogue in quotes if requested. Default to 'No background music.' unless the user asks for music.\n"
+            "TARGET DIFFUSION ENGINE: MiniMax-H3 Omni-Modal Video + Stereo Audio (Qwen3-VL-32B, 24fps, FL2VA + Ref2VA).\n"
+            "- MiniMax-H3 jointly generates live-action cinematic motion AND synchronized stereo sound (up to 15s multi-segment or +5s scene extensions).\n"
+            "- If animating a reference frame or character reference, reference '<Picture 1>' (and '<Picture 2>' if two refs are present), preserving exact face, hair, and identity while describing fluid physical motion, micro-expressions, hair/fabric physics, and camera choreography (push-in, slow orbit, handheld tracking, or timed shots like [0s-5s] / [5s-10s]).\n"
+            "- Spoken dialogue can be written cleanly inside '<d>[Language] Dialogue text.</d>' (e.g. '<d>[Russian] Привет, идём за мной!</d>' or '<d>[English] Come with me.</d>').\n"
+            "- ALWAYS include a dedicated 'Audio:' paragraph at the end describing synchronized stereo foley, room/outdoor ambience, breathing, footsteps, fabric rustle, and any spoken dialogue. Default to 'No background music.' unless the user asks for music.\n"
             "- End with 'No text, subtitles, or watermarks.'"
         )
     elif is_anima:

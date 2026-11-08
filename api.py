@@ -2409,6 +2409,8 @@ class KreaVideoGenerateInput(BaseModel):
     persona_prompt: str | None = None
     reference_image: str | None = None
     reference_images: list[str] | None = None
+    video_ref_mode: str | None = "auto"
+    extend_video: str | None = None
     width: int = 1344
     height: int = 768
     duration: float = 5.0
@@ -4877,10 +4879,13 @@ async def generate_krea_video_endpoint(request: Request, data: KreaVideoGenerate
             res = await core_service.generate_krea_video(
                 ctx=ctx,
                 prompt=data.prompt,
+                persona_id=data.persona_id,
                 persona_prompt=data.persona_prompt or "",
                 persona_name=data.persona_name,
                 reference_image=ref_imgs[0] if ref_imgs else None,
                 reference_images=ref_imgs,
+                video_ref_mode=data.video_ref_mode or "auto",
+                extend_video=data.extend_video,
                 width=data.width,
                 height=data.height,
                 duration=data.duration,
@@ -4908,15 +4913,19 @@ async def generate_krea_video_endpoint(request: Request, data: KreaVideoGenerate
             base_no_ext = os.path.splitext(filename)[0]
             cover_filename = f"{base_no_ext}.cover.jpg" if cover_bytes else ""
 
+            actual_duration = round(core_service.align_minimax_h3_frames(data.duration) / 24.0, 1)
             if video_data:
-                store_ephemeral_image(filename, video_data)
+                probed = core_service._probe_video_bytes_meta(video_data)
+                if probed.get("duration", 0) > 0.5:
+                    actual_duration = round(float(probed["duration"]), 1)
+                store_ephemeral_image(filename, video_data, ttl=1800)
                 readme_filename = f"{base_no_ext}.Readme.md"
                 readme_text = f"# {title}\n\n{description}\n"
                 if raw_prompt:
                     readme_text += f"\n<!-- prompt: {raw_prompt} -->\n"
-                store_ephemeral_image(readme_filename, readme_text.encode("utf-8"))
+                store_ephemeral_image(readme_filename, readme_text.encode("utf-8"), ttl=1800)
                 if cover_bytes and cover_filename:
-                    store_ephemeral_image(cover_filename, cover_bytes)
+                    store_ephemeral_image(cover_filename, cover_bytes, ttl=1800)
                 if data.device_push:
                     schedule_generated_image_push(
                         data.omd_key, data.device_push, filename, video_data, title, description, ctx=ctx, prompt=raw_prompt
@@ -4934,7 +4943,7 @@ async def generate_krea_video_endpoint(request: Request, data: KreaVideoGenerate
                 "video": filename,
                 "image": filename,
                 "is_video": True,
-                "duration": round(core_service.align_minimax_h3_frames(data.duration) / 24.0, 1),
+                "duration": actual_duration,
                 "cover": cover_filename,
                 "cover_url": f"/chat/image/{cover_filename}" if cover_filename else "",
                 "path": f"{safe_subfolder}/{filename}" if safe_subfolder else filename,
