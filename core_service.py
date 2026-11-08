@@ -5922,10 +5922,8 @@ async def generate_krea_video(
     # shift (12.0 / 3.0) + 2nd-order res_multistep yields zero frame-to-frame camera jitter on all ratios.
     if use_ref2va:
         unet_name = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-        if eff_steps <= 4:
-            turbo_lora = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
-        else:
-            turbo_lora = "minimax_h3_ref2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+        turbo_lora = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+        eff_steps = 4
         shift_video, shift_audio = 12.0, 3.0
     else:
         unet_name = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
