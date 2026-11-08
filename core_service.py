@@ -6093,6 +6093,7 @@ async def _inject_hub_card_fallback(ctx, doc_filter: str, facts: list, sources_m
         facts.append(f"• [File: {full_path}] {clean_body[:limit]}")
         key = f"{tag}:{doc_filter}"
         if key not in sources_map:
+            card_title = str(card.get("title") or want_fn).strip()
             sources_map[key] = {
                 "title":       card_title,
                 "owner":       ctx.user_id or user_context.node_owner(),
@@ -6327,6 +6328,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
             )
             ctx.temp_search_distance = min((r.get("distance", 1.0) for r in db_results), default=1.0)
             for r in db_results:
+                if not ctx.private_mode and not unified_memory._is_record_allowed_public(r):
+                    continue
                 rec_type  = r.get("type", "")
                 doc_id    = r.get("document_id", "")
                 raw_title = r.get("title", doc_id.split("/")[-1] if doc_id else "")
@@ -6411,6 +6414,8 @@ async def inject_facts(ctx: UserContext, query: str, collection: str = "", mem_i
                     document_id=doc_filter,
                 )
                 for r in attach_results:
+                    if not ctx.private_mode and not unified_memory._is_record_allowed_public(r):
+                        continue
                     text = r.get("text", "")
                     title = r.get("title") or adoc["title"]
                     rec_type = r.get("type", "")
@@ -6655,7 +6660,7 @@ async def _perform_prompt_gen(ctx: UserContext,
             "RETRIEVAL & MATCHING RULES:\n"
             "- When listing files, photos, or documents, include their exact full path without extra markdown formatting.\n"
             "- Format each file item simply as: `• /path/to/filename.ext: Description`.\n"
-            "  Example: `• /beelink/Data/Phone/IMG_20260918_134813_1.jpg: Посещение художественной галереи в Ужгороде...`\n"
+            "  Example: `• /Device/Photos/IMG_20260918_134813.jpg: Visiting a city art gallery...`\n"
             "- Include ALL files matching the requested topic, location, event, or timeframe.\n"
             "- When searching for photos or media of a person (e.g. by name such as 'Наташа' or 'Алексей') in a place or event: include BOTH exact name mentions AND candidate photos depicting a matching person (e.g. 'woman', 'girl', 'portrait of woman', 'man', etc.) in that requested location, setting, or timeframe. Do NOT omit relevant candidate photos just because the caption uses generic terms like 'woman' or 'portrait' instead of the specific name.\n"
             "- Be comprehensive: do NOT arbitrarily truncate or drop relevant candidate photos or files found in *Known facts*. List all matching items.\n"
@@ -10531,20 +10536,61 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
 
     return filename, img_title, neutral_description, img_data
 
+async def _resolve_chat_image_sliders(ctx: UserContext, sliders: dict | None) -> tuple[dict, bool]:
+    """
+    Checks whether `ctx` is entitled to Cloud GPU Krea 2 (`krea_allowed`).
+    When `krea_allowed` is False (e.g. Guest or depleted Krea quota), maps `sliders`
+    to local Express SDXL (`sdxl_realistic` / `sdxl_tooned` / `sdxl_fantasy`) so chat
+    image creation works seamlessly in Express mode without hitting Studio gating.
+    """
+    eff = dict(sliders or {})
+    can_krea = False
+    try:
+        if await is_krea_available(ctx):
+            st = await check_krea_status(ctx)
+            can_krea = bool(isinstance(st, dict) and st.get("krea_allowed"))
+    except Exception as e:
+        logging.debug(f"[ExpressFallback] check_krea_status failed: {e}")
+        can_krea = False
+
+    if can_krea:
+        return eff, True
+
+    style_key = str(eff.get("style") or "").strip().lower()
+    if style_key in ("anime", "pixar", "3d", "comic"):
+        eff["base_model"] = "sdxl_tooned"
+    elif style_key in ("midjourney", "fantasy"):
+        eff["base_model"] = "sdxl_fantasy"
+    else:
+        eff["base_model"] = "sdxl_realistic"
+    eff.setdefault("steps", 7)
+    eff.setdefault("cfg", 1.45)
+    return eff, False
+
+
 async def generate_character_image(ctx: UserContext, prompt, chat: str = 'default', update_history: bool = True, prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
-    if await is_krea_available():
-        clean_prompt, persona_prompt, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=True)
-        logging.info(f"[Krea2] Generating character image: prompt='{clean_prompt[:50]}...', archetypes={sliders.get('archetypes')}, style={sliders.get('style')}")
+    clean_prompt, persona_prompt, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=True)
+    eff_sliders, can_krea = await _resolve_chat_image_sliders(ctx, sliders)
+    if can_krea:
+        logging.info(f"[Krea2] Generating character image: prompt='{clean_prompt[:50]}...', archetypes={eff_sliders.get('archetypes')}, style={eff_sliders.get('style')}")
         ref_avatar = ctx.settings.get("assistant_avatar") or get_assistant_avatar_path(ctx)
-        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, reference_image=ref_avatar, upload_storage=upload_storage)
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=eff_sliders, reference_image=ref_avatar, upload_storage=upload_storage)
+    if await is_comfy_available():
+        logging.info(f"[Express/SDXL] Generating character image in Express ({eff_sliders.get('base_model')}): prompt='{clean_prompt[:50]}...'")
+        ref_avatar = ctx.settings.get("assistant_avatar") or get_assistant_avatar_path(ctx)
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=eff_sliders, reference_image=ref_avatar, upload_storage=upload_storage)
     return await generate_image(ctx, prompt, chat, update_history=update_history, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # Generate general image, returns full path for further sending or conversion
 async def generate_general_image(ctx: UserContext, prompt, chat: str = 'default', prompt_id: str | None = None, upload_storage: bool = True) -> tuple[str, str, str, bytes]:
-    if await is_krea_available():
-        clean_prompt, _, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=False)
-        logging.info(f"[Krea2] Generating general image: prompt='{clean_prompt[:50]}...', style={sliders.get('style')}")
-        return await generate_krea2_image(ctx, clean_prompt, persona_prompt="", sliders=sliders, upload_storage=upload_storage)
+    clean_prompt, _, sliders = extract_krea2_prompt_and_params(ctx, prompt, is_character=False)
+    eff_sliders, can_krea = await _resolve_chat_image_sliders(ctx, sliders)
+    if can_krea:
+        logging.info(f"[Krea2] Generating general image: prompt='{clean_prompt[:50]}...', style={eff_sliders.get('style')}")
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt="", sliders=eff_sliders, upload_storage=upload_storage)
+    if await is_comfy_available():
+        logging.info(f"[Express/SDXL] Generating general image in Express ({eff_sliders.get('base_model')}): prompt='{clean_prompt[:50]}...'")
+        return await generate_krea2_image(ctx, clean_prompt, persona_prompt="", sliders=eff_sliders, upload_storage=upload_storage)
     return await generate_image(ctx, prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage)
 
 # img is base64 image #
@@ -11480,11 +11526,12 @@ async def generate_avatar(ctx: UserContext, style: str, character_lora: str, pro
                     f"{prompt} <{character_lora}> <{style}>",
                     is_character=True
                 )
+                eff_sliders, _ = await _resolve_chat_image_sliders(ctx, sliders)
                 filename, title, desc, img_data = await generate_krea2_image(
                     ctx,
                     clean_prompt,
                     persona_prompt=persona_prompt,
-                    sliders=sliders,
+                    sliders=eff_sliders,
                     width=768,
                     height=768,
                     upload_storage=False

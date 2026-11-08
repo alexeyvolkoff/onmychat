@@ -4087,6 +4087,27 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 else:
                     raw_intent = await core_service.classify_user_intent(ctx, prompt, chat, provided_history=provided_history)
                     intent, search_query = core_service.parse_intent_and_query(raw_intent, default_prompt=prompt)
+                    if not prompt.lstrip().startswith("/") and intent in ("show", "view", "generate"):
+                        _p_norm = prompt.strip()
+                        _cap_en = re.match(
+                            r"^(?:(?:so|wait|oh|well|wow|hey|really|and)\b[\s,]*)*(?:(?:can|could|do|are|will)\s+you|you\s+(?:can|could|also)?)(?:\s+(?:really|actually|also|even|able\s+to))?\s+(?:create|generate|make|draw|render|paint|produce|send|show)(?:\s+me)?(?:\s+(?:any|new|ai|some))?(?:\s+(?:images?|pictures?|photos?|art|artwork|illustrations?|visuals?|drawings?|selfies?))?\s*\?+\s*$",
+                            _p_norm,
+                            flags=re.IGNORECASE,
+                        )
+                        _how_en = re.match(
+                            r"^(?:how\s+(?:do|can)\s+you|what\s+kind\s+of\s+(?:images?|pictures?)\s+(?:can|do)\s+you)\s+(?:create|generate|make|draw|render)\b[^.]*\?*\s*$",
+                            _p_norm,
+                            flags=re.IGNORECASE,
+                        )
+                        _cap_ru = re.match(
+                            r"^(?:(?:а|и|о|ого|ну|так|то\s+есть|получается)\b[\s,]*)*(?:ты\s+|вы\s+)?(?:правда\s+|тоже\s+|реально\s+)?(?:умеешь|умеете|можешь|можете|способна|способен)?\s*(?:создавать|генерировать|рисовать|делать|сделать|нарисовать|присылать|генерить)(?:\s+(?:мне|нам))?(?:\s+(?:любые|разные|новые|свои))?(?:\s+(?:картинки|изображения|фотки|фото|фотографии|рисунки|арты|селфи))?\s*\?+\s*$",
+                            _p_norm,
+                            flags=re.IGNORECASE,
+                        )
+                        if _cap_en or _how_en or _cap_ru:
+                            logging.info(f"[IntentGuard] Downgrading meta capability question from '{intent}' to 'chat': {_p_norm}")
+                            intent = "chat"
+                            search_query = ""
             
             # Ensure chat existence for all intent types (crucial for 'show' intent which bypasses perform_prompt)
             # This ensures chat is in the index and has a title
@@ -4383,14 +4404,11 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
                 prompt_id = provided_prompt_id or ("p_" + core_service.hash_string(img_prompt + ctx.settings.get("style", "")))
 
                 upload_storage_flag = not is_inline_image
-                if await core_service.is_krea_available():
-                    logging.info(f"[Krea2] Generating image in chat via Krea 2 for prompt: {img_prompt}")
-                    has_char_tag = any(k in img_prompt.lower() for k in ["<domi>", "<ada>", "<brie>", "<tifa>", "<alt>", "<influencer>", "<june>"])
-                    is_char = has_char_tag or bool(ctx.settings.get("assistant_model") or ctx.settings.get("character_lora"))
-                    ref_avatar = ctx.settings.get("assistant_avatar") or core_service.get_assistant_avatar_path(ctx)
-                    res = await core_service.generate_krea2_image(ctx, clean_prompt, persona_prompt=persona_prompt, sliders=sliders, reference_image=ref_avatar, upload_storage=upload_storage_flag)
+                has_char_tag = any(k in img_prompt.lower() for k in ["<domi>", "<ada>", "<brie>", "<tifa>", "<alt>", "<influencer>", "<june>"])
+                if has_char_tag:
+                    res = await core_service.generate_character_image(ctx, formatted_prompt, chat, update_history=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 else:
-                    res = await core_service.generate_image(ctx, formatted_prompt, chat, use_default_lora=False, prompt_id=prompt_id, upload_storage=upload_storage_flag)
+                    res = await core_service.generate_general_image(ctx, formatted_prompt, chat, prompt_id=prompt_id, upload_storage=upload_storage_flag)
                 path, title, description = res[0], res[1], res[2]
                 if len(res) > 3 and res[3]:
                     store_ephemeral_image(path, res[3])
@@ -4469,8 +4487,12 @@ async def chat_stream(request: Request, prompt: str, omd_key: str | None = Depen
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:
+            err_str = str(e).strip()
             logging.error(f"Error in event_generator: {e}")
-            yield f"data: {json.dumps({'error': 'Request failed. Please try again later.', 'done': True})}\n\n"
+            if err_str.startswith("✨"):
+                yield f"data: {json.dumps({'delta': err_str, 'content': err_str, 'role': 'assistant', 'done': True})}\n\n"
+            else:
+                yield f"data: {json.dumps({'error': 'Request failed. Please try again later.', 'done': True})}\n\n"
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",

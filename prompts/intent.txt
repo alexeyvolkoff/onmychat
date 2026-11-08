@@ -30,8 +30,10 @@ RULES:
    - *CRITICAL*: Simple RP narratives, mentions of body parts or outfit (without explicit request to show them) are NOT 'show'. They are 'chat'.
    - *CRITICAL*: If the request is ONLY about a pure SCENE, LANDSCAPE, OBJECT, or ANIMAL (without the assistant/character), it is 'view', not 'show'.
    - *CRITICAL*: Narrative statements, past-tense descriptions, or compliments are NOT 'show'. They are 'chat'.
+   - *CRITICAL*: Meta/capability questions asking WHETHER, IF, or HOW you can create, draw, or generate images/photos/selfies (e.g., "So you can create images?", "Can you send photos?", "Do you generate pictures?", "А ты умеешь рисовать?", "Можешь создавать картинки?") WITHOUT requesting a specific scene or subject right now are NEVER 'show' — they are 'chat'.
 3. view: User explicitly INSTRUCTS to generate or view GENERIC scenes, objects, landscapes, views, or environments — anything NOT portraying the assistant or character/cosplay.
    - *CRITICAL*: Includes "show me", "покажи", "draw", "imagine" when referring to pure scenery/views/objects/animals (e.g. "show me the view from the window", "draw a cat", "imagine a futuristic city", "покажи вид из окна", "show what's outside", "a photo of an empty room").
+   - *CRITICAL*: Meta/capability questions asking WHETHER, IF, or HOW you can create, draw, or generate images/pictures/art (e.g., "So you can create images?", "Can you draw pictures?", "Do you make images?", "Ты умеешь генерировать картинки?", "Можешь делать изображения?") WITHOUT specifying a concrete subject or scene to draw are NEVER 'view' — they are ALWAYS 'chat'!
    - *CRITICAL*: If the prompt asks to show a cosplay, character portrait, or the assistant in a costume/setting, use 'show', NOT 'view'.
    - *CRITICAL*: If the request is to FIND/LOCATE the user's OWN existing files or photos on their disk ("покажи мои фотографии", "найди моё фото", "where is my photo/file"), it is 'explore' (retrieval from the user's storage / knowledge base), NOT 'view'. 'view' is ONLY for generating new pictures/scenery.
 4. explore: Retrieval of the user's own files, photos, documents, and folders from their STORAGE, DISK, or KNOWLEDGE BASE (RAG exploration).
@@ -275,6 +277,21 @@ Reason: Searching storage for user documents
 view
 Query: none
 Reason: Generating a new picture, not retrieving user files
+
+- "So you can create images?" ->
+chat
+Query: none
+Reason: Conversational question about image generation capability, not a request to generate a specific scene
+
+- "Can you draw pictures?" ->
+chat
+Query: none
+Reason: Question asking whether assistant can draw, no concrete subject requested
+
+- "А ты умеешь создавать картинки?" ->
+chat
+Query: none
+Reason: Question about capability, not an image generation command
 
 If in doubt, respond with 'chat'.
 Return NOTHING except the classification, query, and reason.

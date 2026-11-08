@@ -295,6 +295,7 @@ def search(
     record_types=None,
     document_id=None,
     recent_first=False,
+    required_tags=None,
 ) -> list:
     """
     Единая точка поиска.
@@ -302,7 +303,6 @@ def search(
     Args:
         query         - поисковый запрос
         tags_filter   - список тегов: только записи с хотя бы одним из тегов
-                        (для гостевого режима: ["omd"])
         owner         - фильтр по владельцу
         top_k         - максимум результатов
         threshold     - косинусное расстояние (0=идентично, ниже=лучше)
@@ -311,6 +311,8 @@ def search(
                         /learn — граничит факты конкретно этим файлом/карточкой)
         recent_first  - переранжировать по relevance × recency: свежие файлы
                         (source_stamp/timestamp) поднимаются выше
+        required_tags - обязательный фильтр тегов (например PUBLIC_TAGS для гостей),
+                        применяется через $and вместе с tags_filter
     """
     if top_k is None:
         top_k = RAG_TOP_K
@@ -326,6 +328,8 @@ def search(
     conditions = []
     if document_id:
         conditions.append({"document_id": {"$eq": document_id}})
+    if required_tags:
+        conditions.append(_tags_match_filter(required_tags))
     if tags_filter:
         conditions.append(_tags_match_filter(tags_filter))
     if owner:
@@ -402,7 +406,10 @@ def search(
                     r["relevance"] = round((1.0 - r["distance"]) * 100, 1)
                     r["score"] = r["relevance"]
 
-            all_recs = coll.get(include=["metadatas", "documents"])
+            get_kwargs = dict(include=["metadatas", "documents"])
+            if where:
+                get_kwargs["where"] = where
+            all_recs = coll.get(**get_kwargs)
             got = set(ids)
             kw_ids = []
             for rid, meta, doc in zip(all_recs.get("ids", []), all_recs.get("metadatas", []), all_recs.get("documents", [])):
@@ -1476,9 +1483,56 @@ def match_qa(question: str, min_score: float = 0.8, top_k: int = 1) -> dict:
     return {"answer": best.get("answer", ""), "score": round(best["relevance"] / 100.0, 4)}
 
 
+_PRIVATE_MEDIA_PATH_PREFIXES = (
+    "/data/",
+    "/onmychat/generated/",
+    "/private/",
+    "/pictures/",
+    "/photos/",
+)
+
+
+def _is_private_media_path(doc_id: str) -> bool:
+    """Возвращает True, если путь заведомо относится к личным медиа/генерациям владельца ноды."""
+    if not doc_id:
+        return False
+    norm = ("/" + str(doc_id).strip().lstrip("/")).lower()
+    if any(norm.startswith(p) for p in _PRIVATE_MEDIA_PATH_PREFIXES):
+        return True
+    stripped = _strip_device_namespace(str(doc_id).strip())
+    if stripped:
+        s_norm = stripped.lower()
+        if any(s_norm.startswith(p) for p in _PRIVATE_MEDIA_PATH_PREFIXES):
+            return True
+    return False
+
+
+def _is_record_allowed_public(meta: dict) -> bool:
+    """Жёсткая серверная ACL-проверка записи для гостевого (не-приватного) режима."""
+    if not isinstance(meta, dict):
+        return False
+    doc_id = str(meta.get("document_id") or "").strip()
+    if doc_id and _is_private_media_path(doc_id):
+        return False
+    pub_tags = set(_normalize_tag(t) for t in PUBLIC_TAGS if _normalize_tag(t))
+    if not pub_tags:
+        return False
+    for pt in pub_tags:
+        if meta.get(f"t_{pt}") == 1:
+            return True
+    raw_tags = meta.get("tags")
+    if isinstance(raw_tags, str):
+        rec_tags = set(_normalize_tag(t) for t in raw_tags.split(",") if _normalize_tag(t))
+    elif isinstance(raw_tags, (list, tuple, set)):
+        rec_tags = set(_normalize_tag(t) for t in raw_tags if _normalize_tag(t))
+    else:
+        rec_tags = set()
+    return bool(rec_tags & pub_tags)
+
+
 def is_document_public(doc_id: str) -> bool:
     """Проверяет, помечен ли документ или карточка одним из PUBLIC_TAGS."""
-    if not doc_id:
+    if not doc_id or _is_private_media_path(doc_id):
         return False
     pub_tags = set(t.lower() for t in PUBLIC_TAGS)
     coll = get_collection()
@@ -1525,7 +1579,7 @@ def search_for_rag(
 ) -> list:
     """
     Поиск для RAG-инъекции:
-    - private_mode=False (гость)       -> ВСЕГДА только PUBLIC_TAGS (или пересечение с tags_filter)
+    - private_mode=False (гость)       -> ВСЕГДА только PUBLIC_TAGS (и пересечение с tags_filter, если задан)
     - private_mode=True + tags_filter  -> только эти теги
     - private_mode=True + document_id  -> только чанки/карточка этого файла (теги не фильтруем)
     - private_mode=True + нет тегов    -> вся база (владелец ноды)
@@ -1533,8 +1587,12 @@ def search_for_rag(
     """
     if top_k is None:
         top_k = RAG_TOP_K
+    required_tags = None
     if not private_mode:
-        tag_filter = tags_filter or PUBLIC_TAGS
+        required_tags = PUBLIC_TAGS
+        tag_filter = tags_filter or None
+        if document_id and _is_private_media_path(document_id):
+            return []
     elif tags_filter:
         tag_filter = tags_filter
     elif document_id:
@@ -1547,15 +1605,19 @@ def search_for_rag(
     # «посмотри, нормально ли получилось» по эмбеддингу далёк от текста
     # презентации, и порог RAG_THRESHOLD отрезал бы все чанки. Пропускаем всё.
     focus_threshold = 2.0 if document_id else RAG_THRESHOLD
-    return search(
+    rows = search(
         query,
         tags_filter=tag_filter,
+        required_tags=required_tags,
         top_k=top_k,
         threshold=focus_threshold,
         record_types=["file_chunk", "memory_card"],
         document_id=document_id,
         recent_first=True,
     )
+    if not private_mode:
+        rows = [r for r in rows if _is_record_allowed_public(r)]
+    return rows
 
 
 def search_files_for_ui(
@@ -1568,14 +1630,17 @@ def search_files_for_ui(
     """
     if top_k is None:
         top_k = SEARCH_TOP_K
-    tags_filter = None if private_mode else PUBLIC_TAGS
-    return search(
+    required_tags = None if private_mode else PUBLIC_TAGS
+    rows = search(
         query,
-        tags_filter=tags_filter,
+        required_tags=required_tags,
         top_k=top_k,
         threshold=SEARCH_THRESHOLD,
         record_types=["file_chunk"],
     )
+    if not private_mode:
+        rows = [r for r in rows if _is_record_allowed_public(r)]
+    return rows
 
 
 def chunk_document(text: str, chunk_size=500, overlap=50) -> list[str]:
