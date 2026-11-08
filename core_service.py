@@ -5803,7 +5803,11 @@ async def generate_krea_video(
     raw_extend_ref = str(kwargs.get("extend_video") or "").strip()
     persona_id = str(kwargs.get("persona_id") or "").strip()
     req_ref_mode = str(kwargs.get("video_ref_mode") or "auto").strip().lower()
-    use_vsa = bool(kwargs.get("use_vsa", True))
+    # Keep VSA gate transplant opt-in (default False): fasth3_vsa_gate's 4x4x4 (64x64px)
+    # coarse-pooled branch was co-trained with FastVideo's own backbone LoRA, so transplanting
+    # it onto LightX2V 768p Turbo LoRAs causes 64x64px translucent block halos around high-contrast
+    # light sources (windows, lamps). Native Hopper FlashAttention-3 / cuDNN SDPA on H100 is clean & fast.
+    use_vsa = bool(kwargs.get("use_vsa", False))
 
     raw_refs: list[str] = []
     if reference_images and isinstance(reference_images, list):
