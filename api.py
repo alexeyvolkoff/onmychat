@@ -6491,6 +6491,33 @@ def _load_configured_node_apps() -> list[dict]:
     return out
 
 
+def _probe_local_genvault_sync(gv_port: int) -> dict | None:
+    """Fast local loopback probe for GenVault (default port 8077)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{gv_port}/api/config", timeout=0.35) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+            if (
+                isinstance(data, dict)
+                and data.get("library_root")
+                and isinstance(data.get("platforms"), list)
+                and isinstance(data.get("kinds"), list)
+            ):
+                return {
+                    "slug": "genvault",
+                    "name": "GenVault",
+                    "port": gv_port,
+                    "entryPath": "/",
+                    "icon": "genvault",
+                    "description": "Local AI Media Vault",
+                }
+    except Exception:
+        return None
+    return None
+
+
 @app.get("/api/node/apps")
 async def list_node_apps(request: Request):
     """Zero-config App Proxy discovery for the paired Node Owner only."""
@@ -6512,7 +6539,16 @@ async def list_node_apps(request: Request):
             "description": "Autonomous Persona & Social Studio",
         }
 
-    # 2. Apply optional [apps] overrides / custom apps from config.ini
+    # 2. Auto-detect GenVault running locally on this node (default port 8077)
+    try:
+        gv_port = int(os.environ.get("GENVAULT_PORT", 8077))
+    except ValueError:
+        gv_port = 8077
+    gv_app = await asyncio.to_thread(_probe_local_genvault_sync, gv_port)
+    if gv_app:
+        discovered["genvault"] = gv_app
+
+    # 3. Apply optional [apps] overrides / custom apps from config.ini
     for item in _load_configured_node_apps():
         slug = item.get("slug")
         if not slug:
