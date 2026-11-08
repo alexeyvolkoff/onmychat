@@ -5915,25 +5915,22 @@ async def generate_krea_video(
     is_fast_q = str(quality or "hd").strip().lower() in ("fast", "std", "standard", "480p", "sd")
     eff_steps = 4 if (req_steps <= 4 or is_fast_q) else 8
 
+    # Mixed-aspect-ratio LightX2V Turbo LoRAs (shift 12.0 / 3.0 + res_multistep):
+    # Note: the '*_768p' LoRA variants were distilled exclusively on horizontal 1344x768 (shift 6/3)
+    # and cause high-frequency vertical camera oscillation on portrait/square aspect ratios (e.g. 768x992)
+    # when paired with 1st-order euler. Using the mixed-aspect v1.0 / v0.1 checkpoints at native H3
+    # shift (12.0 / 3.0) + 2nd-order res_multistep yields zero frame-to-frame camera jitter on all ratios.
     if use_ref2va:
         unet_name = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
         if eff_steps <= 4:
-            if is_fast_q:
-                turbo_lora = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
-                shift_video, shift_audio = 12.0, 3.0
-            else:
-                turbo_lora = "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
-                shift_video, shift_audio = 6.0, 3.0
+            turbo_lora = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
         else:
             turbo_lora = "minimax_h3_ref2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
-            shift_video, shift_audio = 12.0, 3.0
+        shift_video, shift_audio = 12.0, 3.0
     else:
         unet_name = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
-        if eff_steps <= 4:
-            turbo_lora = "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
-        else:
-            turbo_lora = "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
-        shift_video, shift_audio = 6.0, 3.0
+        turbo_lora = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+        shift_video, shift_audio = 12.0, 3.0
 
     if seed is None or int(seed) < 0:
         import random
@@ -6083,7 +6080,7 @@ async def generate_krea_video(
         "10": {
             "class_type": "KSamplerSelect",
             "inputs": {
-                "sampler_name": "euler",
+                "sampler_name": "res_multistep",
             },
         },
     }
