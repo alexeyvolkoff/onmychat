@@ -6458,8 +6458,9 @@ def _load_configured_node_apps() -> list[dict]:
                             "name": str(parsed.get("name") or slug.capitalize()),
                             "port": int(parsed["port"]),
                             "entryPath": ep,
-                            "icon": str(parsed.get("icon") or slug),
+                            "icon": str(parsed.get("icon") or "window-stack"),
                             "description": str(parsed.get("description") or ""),
+                            "probe": bool(parsed.get("probe", True)),
                         })
                 except Exception:
                     pass
@@ -6471,8 +6472,9 @@ def _load_configured_node_apps() -> list[dict]:
                     "name": slug.capitalize(),
                     "port": int(parts[0]),
                     "entryPath": "/",
-                    "icon": slug,
+                    "icon": "window-stack",
                     "description": "",
+                    "probe": True,
                 })
             elif len(parts) >= 2 and parts[1].isdigit():
                 ep = parts[2] if len(parts) >= 3 and parts[2] else "/"
@@ -6483,39 +6485,25 @@ def _load_configured_node_apps() -> list[dict]:
                     "name": parts[0] or slug.capitalize(),
                     "port": int(parts[1]),
                     "entryPath": ep,
-                    "icon": parts[3] if len(parts) >= 4 and parts[3] else slug,
+                    "icon": parts[3] if len(parts) >= 4 and parts[3] else "window-stack",
                     "description": parts[4] if len(parts) >= 5 else "",
+                    "probe": True,
                 })
     except Exception as e:
         logging.debug(f"[_load_configured_node_apps] {e}")
     return out
 
 
-def _probe_local_genvault_sync(gv_port: int) -> dict | None:
-    """Fast local loopback probe for GenVault (default port 8077)."""
-    import urllib.request
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{gv_port}/api/config", timeout=0.35) as resp:
-            if resp.status != 200:
-                return None
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-            if (
-                isinstance(data, dict)
-                and data.get("library_root")
-                and isinstance(data.get("platforms"), list)
-                and isinstance(data.get("kinds"), list)
-            ):
-                return {
-                    "slug": "genvault",
-                    "name": "GenVault",
-                    "port": gv_port,
-                    "entryPath": "/",
-                    "icon": "genvault",
-                    "description": "Local AI Media Vault",
-                }
-    except Exception:
-        return None
-    return None
+def _is_local_port_open_sync(port: int) -> bool:
+    """Fast loopback TCP check so stopped apps in [apps] stay hidden."""
+    import socket
+    for host in ("127.0.0.1", "::1"):
+        try:
+            with socket.create_connection((host, port), timeout=0.15):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 @app.get("/api/node/apps")
@@ -6527,7 +6515,7 @@ async def list_node_apps(request: Request):
     discovered: dict[str, dict] = {}
     self_port = int(os.environ.get("PORT", 4000))
 
-    # 1. Auto-detect Autopilot extension mounted on this node
+    # 1. Built-in Autopilot extension mounted on this node
     has_autopilot = any(getattr(r, "path", "") == "/autopilot" for r in app.routes)
     if has_autopilot:
         discovered["autopilot"] = {
@@ -6535,28 +6523,36 @@ async def list_node_apps(request: Request):
             "name": "Autopilot",
             "port": self_port,
             "entryPath": "/autopilot",
-            "icon": "autopilot",
+            "icon": "rocket-takeoff-fill",
             "description": "Autonomous Persona & Social Studio",
         }
 
-    # 2. Auto-detect GenVault running locally on this node (default port 8077)
-    try:
-        gv_port = int(os.environ.get("GENVAULT_PORT", 8077))
-    except ValueError:
-        gv_port = 8077
-    gv_app = await asyncio.to_thread(_probe_local_genvault_sync, gv_port)
-    if gv_app:
-        discovered["genvault"] = gv_app
+    # 2. Load [apps] from config.ini (probing local ports concurrently)
+    configured = _load_configured_node_apps()
+    to_probe = [
+        item for item in configured
+        if not item.get("disabled") and item.get("probe", True) and int(item.get("port", 0)) != self_port
+    ]
+    probe_results: dict[str, bool] = {}
+    if to_probe:
+        checks = await asyncio.gather(
+            *(asyncio.to_thread(_is_local_port_open_sync, int(it["port"])) for it in to_probe)
+        )
+        for it, ok in zip(to_probe, checks):
+            probe_results[it["slug"]] = ok
 
-    # 3. Apply optional [apps] overrides / custom apps from config.ini
-    for item in _load_configured_node_apps():
+    for item in configured:
         slug = item.get("slug")
         if not slug:
             continue
         if item.get("disabled"):
             discovered.pop(slug, None)
-        else:
-            discovered[slug] = item
+            continue
+        if slug in probe_results and not probe_results[slug]:
+            discovered.pop(slug, None)
+            continue
+        clean_item = {k: v for k, v in item.items() if k != "probe"}
+        discovered[slug] = clean_item
 
     return {"apps": list(discovered.values())}
 
