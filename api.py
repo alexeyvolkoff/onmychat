@@ -208,6 +208,11 @@ async def on_startup():
         pass
     except Exception as e:
         logging.error(f"[api] extensions startup error: {e}")
+    try:
+        import horde_dreamer
+        await horde_dreamer.start_horde_dreamer()
+    except Exception as e:
+        logging.error(f"[api] horde_dreamer startup error: {e}")
 
 
 @app.get("/api/agentic/status")
@@ -6449,6 +6454,13 @@ async def push_test_endpoint(request: Request, data: Optional[PushTestInput] = N
 # --- On My Document: native Univer docs converter (odt/docx -> univer.json) ---
 import ondoc as _ondoc_module
 _ondoc_module.mount(app)
+
+# --- AI Horde Dreamer Worker & Console (/horde) ---
+try:
+    import horde_dreamer as _horde_dreamer_module
+    _horde_dreamer_module.mount_horde_dreamer(app)
+except Exception as _hd_mount_err:
+    logging.error(f"[api] AI Horde Dreamer mount error: {_hd_mount_err}")
 
 try:
     import extensions as _extensions_module

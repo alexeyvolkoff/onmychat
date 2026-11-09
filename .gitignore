@@ -18,3 +18,6 @@ asset/
 extensions/
 vapid_keys.json
 push_subscriptions.json
+horde_dreamer_data.json
+horde_dreamer_data.json.*
+

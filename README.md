@@ -17,7 +17,8 @@
 - **Mobile & PWA Remote Access (Zero Port Forwarding)** — Connect to your home Ollama node from any phone or browser at [**onmychat.com**](https://onmychat.com) (or [**direct.onmydisk.net**](https://direct.onmydisk.net)) over encrypted P2P WebRTC DataChannels. No static IP, router setup, or VPN required.
 - **Passwordless Cryptographic Identity (DID)** — Access control is based on W3C-style Decentralized Identifiers (`DID` keypairs with portable `.json` keyfiles) and P2P device pairing (`LinkID` / QR) — **no static API tokens in `config.ini`**.
 - **Creative Studio & Prompt Assistant** — Includes an Ollama-powered **AI Art Director** that writes and surgically refines visual prompts, plans multi-scene storyboards, manages character Personas, and drives local **ComfyUI** pipelines (SDXL DMD2, IP-Adapter Plus Face + ReActor FaceSwap, Auto-Inpaint retouch, Krea 2, Anima, video generation, and 1-click CivitAI publishing).
-- **Flexible Runtime Modes (`local` · `agentic` · `hybrid`)** — Run everything on a single GPU box (`local`), keep lightweight CPU indexing on an always-on NAS/SBC while tunneling Ollama & ComfyUI over P2P to a desktop GPU (`agentic`), or run on Rockchip RK3588/RK3576 NPUs via `RKLLAMA`.
+- **Flexible Runtime Modes (`local` · `agentic` · `hybrid` · `horde`)** — Run everything on a single GPU box (`local`), keep lightweight CPU indexing on an always-on NAS/SBC while tunneling Ollama & ComfyUI over P2P to a desktop GPU (`agentic`), tap into the crowdsourced [**AI Horde**](https://aihorde.net) cluster (`horde` / `hybrid`), or run on Rockchip RK3588/RK3576 NPUs via `RKLLAMA`.
+- **Built-in AI Horde Client & ComfyUI Dreamer Worker (`/horde`)** — Includes both an **AI Horde text & image generation client** (`horde_client.py`, `horde_dreamer.py`) and an idle-aware **AI Horde Image Worker ("Dreamer")** with a live management console at `http://localhost:4000/horde` that contributes idle ComfyUI GPU cycles (`SDXL DMD2` / `Krea 2`) to the Horde and earns Kudos automatically.
 - **MCP Tools, Voice & Push Notifications** — Native Model Context Protocol (`MCP`) server & client integrations, local neural TTS (`Kokoro-82M`), and Web/mobile push notifications when background tasks or renders complete.
 
 ---
@@ -155,6 +156,20 @@ COMFY_INPUT_DIR = /opt/ComfyUI/input
 ### Agentic Split Mode (`AI_PROVIDER = agentic`)
 
 If you run `onmychat` on a low-power always-on NAS or mini-PC without a discrete GPU, set `AI_PROVIDER = agentic` (or switch to **Agentic** directly in the web UI under **Settings → AI Node**). Knowledge indexing and ChromaDB stay local on CPU, while Ollama and ComfyUI calls are transparently tunneled over On My Disk P2P to a paired desktop GPU node (`agentic_tunnel.py`).
+
+### AI Horde Client & Built-in ComfyUI Dreamer Worker (`/horde`)
+
+**On My Chat** integrates natively with [**AI Horde**](https://aihorde.net) both as a **Client** (`horde_client.py`, `horde_dreamer.py`) and as an **Idle-Aware ComfyUI Image Worker ("Dreamer")**:
+
+- **AI Horde Client (`AI_PROVIDER = horde` / `hybrid`):** Generate text and images via the crowdsourced AI Horde cluster when no local GPU is available, or combine local Ollama for private RAG with AI Horde for creative sessions.
+- **Built-in Dreamer Worker (`HORDE_WORKER_ENABLED = true`):** Contribute your idle local ComfyUI GPU cycles (`SDXL DMD2` 7-step pipeline via `flow.json`) to AI Horde and earn Kudos automatically whenever your local ComfyUI queue is empty. Manage models, quotas, and live telemetry in the built-in web console at `http://localhost:4000/horde` (or via the **AI Horde** Node App inside **On My Disk**).
+
+```ini
+HORDE_WORKER_ENABLED = true
+HORDE_WORKER_API_KEY = your_aihorde_api_key
+HORDE_WORKER_NAME = OnMyChat-Dreamer
+HORDE_WORKER_MODELS = CyberRealistic Pony
+```
 
 ---
 

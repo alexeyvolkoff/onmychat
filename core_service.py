@@ -12172,4 +12172,10 @@ except ImportError:
 except Exception as e:
     logging.warning(f"[Extensions] Optional extensions load failed: {e}")
 
+try:
+    import horde_dreamer
+    horde_dreamer.install_horde_client_hooks()
+except Exception as e:
+    logging.warning(f"[HordeDreamer] Failed installing AI Horde client hooks: {e}")
+
 
