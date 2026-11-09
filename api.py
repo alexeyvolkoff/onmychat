@@ -6548,7 +6548,7 @@ async def list_node_apps(request: Request):
     discovered: dict[str, dict] = {}
     self_port = int(os.environ.get("PORT", 4000))
 
-    # 1. Built-in Autopilot extension mounted on this node
+    # 1. Built-in Autopilot & AI Horde extensions mounted on this node
     has_autopilot = any(getattr(r, "path", "") == "/autopilot" for r in app.routes)
     if has_autopilot:
         discovered["autopilot"] = {
@@ -6558,6 +6558,17 @@ async def list_node_apps(request: Request):
             "entryPath": "/autopilot",
             "icon": "rocket-takeoff-fill",
             "description": "Autonomous Persona & Social Studio",
+        }
+
+    has_horde = any(getattr(r, "path", "") == "/horde" for r in app.routes)
+    if has_horde:
+        discovered["horde"] = {
+            "slug": "horde",
+            "name": "AI Horde",
+            "port": self_port,
+            "entryPath": "/horde",
+            "icon": "gpu-card",
+            "description": "AI Horde Dreamer Worker Console",
         }
 
     # 2. Load [apps] from config.ini (probing local ports concurrently)
