@@ -57,8 +57,8 @@ def is_modal_enabled() -> bool:
     return bool(str(SETTINGS.get("MODAL_COMFY_URL", "")).strip())
 
 HORDE_API_BASE = "https://aihorde.net/api/v2"
-BRIDGE_AGENT = "AI Horde Worker reGen:18.0.0:https://github.com/alexeyvolkoff/onmychat"
-CLIENT_AGENT = "OnMyChat:1.0:https://github.com/alexeyvolkoff/onmychat"
+BRIDGE_AGENT = "OnMyChat:1.0.0:https://github.com/alexeyvolkoff/onmychat"
+CLIENT_AGENT = "OnMyChat:1.0.0:https://github.com/alexeyvolkoff/onmychat"
 PROMPT_SEPARATOR = "###"
 
 # Mapping from official AI Horde model names to local ComfyUI SDXL checkpoints
