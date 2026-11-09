@@ -161,8 +161,14 @@ If you run `onmychat` on a low-power always-on NAS or mini-PC without a discrete
 
 **On My Chat** integrates natively with [**AI Horde**](https://aihorde.net) both as a **Client** (`horde_client.py`, `horde_dreamer.py`) and as an **Idle-Aware ComfyUI Image Worker ("Dreamer")**:
 
-- **AI Horde Client (`AI_PROVIDER = horde` / `hybrid`):** Generate text and images via the crowdsourced AI Horde cluster when no local GPU is available, or combine local Ollama for private RAG with AI Horde for creative sessions.
-- **Built-in Dreamer Worker (`HORDE_WORKER_ENABLED = true`):** Contribute your idle local ComfyUI GPU cycles (`SDXL DMD2` 7-step pipeline via `flow.json`) to AI Horde and earn Kudos automatically whenever your local ComfyUI queue is empty. Manage models, quotas, and live telemetry in the built-in web console at `http://localhost:4000/horde` (or via the **AI Horde** Node App inside **On My Disk**).
+- **Dual Work & Fun (Roleplay) Modes (`AI_PROVIDER = hybrid` / `horde`):**
+  - **Work Mode:** Serious private productivity — local multilingual RAG over your documents (`PDF`, `DOCX`, `XLSX`, `PPTX`, `MD`, code), semantic search, and MCP tools powered by your local Ollama model.
+  - **Fun / RP Mode:** Switch seamlessly to crowdsourced **AI Horde** 70B–123B roleplay models (or local uncensored models) with **1-click SillyTavern Character Card (`.png` / `.json`) import**, custom Personas, appearance & avatar generation, and neural voice (`Kokoro-82M`).
+- **Built-in Dreamer Worker (`HORDE_WORKER_ENABLED = true`):** Contribute your idle local ComfyUI GPU cycles (`SDXL DMD2` 7-step pipeline via `flow.json`, plus optional daily-capped `Krea 2`) to AI Horde and earn Kudos automatically whenever your local ComfyUI queue is empty. Manage models, quotas, and live telemetry in the built-in web console at `http://localhost:4000/horde` (or via the **AI Horde** Node App inside **On My Disk**).
+
+![AI Horde Hybrid Mode & SillyTavern Character Import](docs/horde_assistant.jpg)
+
+![AI Horde Dreamer Worker Console](docs/horde_worker.jpg)
 
 ```ini
 HORDE_WORKER_ENABLED = true
