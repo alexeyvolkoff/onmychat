@@ -465,16 +465,6 @@ async def _run_local_comfy_silent(workflow: dict[str, Any], timeout: int = 180) 
                                     async with session.get(f"{comfy_url}/view", params=params) as img_resp:
                                         if img_resp.status == 200:
                                             final_image_data = await img_resp.read()
-                                            # Clean up temp file
-                                            comfy_base = os.path.dirname(comfy_output_dir) if comfy_output_dir else ""
-                                            if comfy_base and filename:
-                                                target_dir = os.path.join(comfy_base, img_type, subfolder) if subfolder else os.path.join(comfy_base, img_type)
-                                                temp_file = os.path.join(target_dir, filename)
-                                                try:
-                                                    if os.path.exists(temp_file):
-                                                        os.remove(temp_file)
-                                                except Exception:
-                                                    pass
                 return final_image_data
     except Exception as e:
         logger.error(f"[HordeDreamer] Error in _run_local_comfy_silent: {e}")
