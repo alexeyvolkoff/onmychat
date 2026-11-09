@@ -36,10 +36,21 @@ import horde_client
 import user_context
 from config import SETTINGS
 
+try:
+    from horde_safety.deep_danbooru_model import DeepDanbooruModel, get_deep_danbooru_model
+    from horde_safety.interrogate import Interrogator, get_interrogator_no_blip
+    from horde_safety.nsfw_checker_class import NSFWChecker, NSFWResult
+    HORDE_SAFETY_AVAILABLE = True
+except Exception as _safety_import_err:
+    HORDE_SAFETY_AVAILABLE = False
+    NSFWChecker = Any  # type: ignore
+    NSFWResult = Any  # type: ignore
+
 logger = logging.getLogger("horde_dreamer")
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(ROOT_DIR, "horde_dreamer_data.json")
+HORDE_ASSETS_DIR = os.path.join(ROOT_DIR, "assets", "horde")
 
 
 def is_modal_enabled() -> bool:
@@ -81,9 +92,13 @@ _worker_lock = asyncio.Lock()
 _worker_task: Optional[asyncio.Task] = None
 _wake_event = asyncio.Event()
 
+_safety_init_lock = threading.Lock()
+_nsfw_checker: Optional[NSFWChecker] = None
+_censor_png_cache: dict[str, bytes] = {}
+
 # Live in-memory telemetry
 _runtime_status: dict[str, Any] = {
-    "state": "stopped",  # stopped | idle_polling | waiting_local_busy | rendering | error | paused
+    "state": "stopped",  # stopped | idle_polling | waiting_local_busy | rendering | evaluating_safety | error | paused
     "current_job_id": None,
     "current_model": None,
     "current_backend": None,
@@ -94,7 +109,127 @@ _runtime_status: dict[str, Any] = {
     "active_models_offered": [],
     "user_info": None,
     "user_info_ts": 0.0,
+    "safety_available": HORDE_SAFETY_AVAILABLE,
+    "safety_loaded": False,
 }
+
+
+def _get_censor_png_bytes(reason: str) -> bytes:
+    """
+    Returns official AI Horde replacement censor image PNG bytes (`nsfw_censor_*.png` from `horde-worker-reGen`).
+    Falls back to a solid black 512x512 PNG if the asset file is missing.
+    """
+    if reason in _censor_png_cache:
+        return _censor_png_cache[reason]
+    filename_map = {
+        "csam": "nsfw_censor_csam.png",
+        "censorlist": "nsfw_censor_censorlist.png",
+        "sfw_request": "nsfw_censor_sfw_request.png",
+        "sfw_worker": "nsfw_censor_sfw_worker.png",
+    }
+    fname = filename_map.get(reason, "nsfw_censor_sfw_request.png")
+    fpath = os.path.join(HORDE_ASSETS_DIR, fname)
+    try:
+        if os.path.isfile(fpath):
+            with open(fpath, "rb") as f:
+                raw = f.read()
+            _censor_png_cache[reason] = raw
+            return raw
+    except Exception as e:
+        logger.warning(f"[HordeDreamer] Failed loading censor asset {fpath}: {e}")
+    fallback_buf = io.BytesIO()
+    Image.new("RGB", (512, 512), color=(0, 0, 0)).save(fallback_buf, format="PNG")
+    raw = fallback_buf.getvalue()
+    _censor_png_cache[reason] = raw
+    return raw
+
+
+def _ensure_safety_checker() -> NSFWChecker:
+    """
+    Initializes `horde_safety` (`NSFWChecker` with `get_interrogator_no_blip` and `get_deep_danbooru_model`)
+    exactly as required by `Haidra-Org/horde-worker-reGen`.
+    Raises RuntimeError if `horde_safety` cannot be initialized (fail-closed).
+    """
+    global _nsfw_checker
+    if _nsfw_checker is not None:
+        return _nsfw_checker
+    with _safety_init_lock:
+        if _nsfw_checker is not None:
+            return _nsfw_checker
+        if not HORDE_SAFETY_AVAILABLE:
+            raise RuntimeError("horde_safety package is not installed; refusing to run AI Horde worker without safety checks")
+        safety_device = str(SETTINGS.get("HORDE_SAFETY_DEVICE", "cpu")).strip() or "cpu"
+        logger.info(f"[HordeDreamer] Initializing horde_safety (CLIP + DeepDanbooru) on device='{safety_device}'...")
+        deep_danbooru_model = get_deep_danbooru_model(device=safety_device)
+        interrogator = get_interrogator_no_blip(device=safety_device)
+        _nsfw_checker = NSFWChecker(
+            interrogator,
+            deep_danbooru_model,
+        )
+        _runtime_status["safety_loaded"] = True
+        logger.info("[HordeDreamer] horde_safety NSFWChecker initialized and ready.")
+        return _nsfw_checker
+
+
+def _evaluate_image_safety(
+    png_bytes: bytes,
+    raw_prompt: str,
+    censor_nsfw: bool,
+    sfw_worker: bool,
+    model_info: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Runs `horde_safety` (`NSFWChecker.check_for_nsfw`) on a generated image, matching
+    `Haidra-Org/horde-worker-reGen/horde_worker_regen/process_management/safety_process.py`:
+    - If `is_csam` is True: discards original image, replaces with `nsfw_censor_csam.png`,
+      sets `state='csam'`, `censored=True`, and `gen_metadata=[{"type": "censorship", "value": "csam"}]`.
+    - If `sfw_worker` or `censor_nsfw` and `is_nsfw` is True: replaces with official SFW censor image,
+      sets `state='censored'`, `censored=True`, and `gen_metadata=[{"type": "censorship", "value": "nsfw"}]`.
+    - If `is_nsfw` is True on an NSFW request/worker: keeps image and attaches
+      `gen_metadata=[{"type": "information", "value": "nsfw"}]`.
+    """
+    checker = _ensure_safety_checker()
+    with Image.open(io.BytesIO(png_bytes)) as im:
+        image_as_pil = im.convert("RGB")
+    nsfw_result: Optional[NSFWResult] = checker.check_for_nsfw(
+        image=image_as_pil,
+        prompt=raw_prompt,
+        model_info=model_info or {},
+    )
+    if nsfw_result is None:
+        raise RuntimeError("horde_safety check_for_nsfw returned None")
+
+    final_png_bytes = png_bytes
+    submit_state = "ok"
+    is_censored = False
+    gen_metadata: list[dict[str, str]] = []
+
+    if nsfw_result.is_csam:
+        final_png_bytes = _get_censor_png_bytes("csam")
+        submit_state = "csam"
+        is_censored = True
+        gen_metadata.append({"type": "censorship", "value": "csam"})
+    elif sfw_worker and nsfw_result.is_nsfw:
+        final_png_bytes = _get_censor_png_bytes("sfw_worker")
+        submit_state = "censored"
+        is_censored = True
+        gen_metadata.append({"type": "censorship", "value": "nsfw"})
+    elif censor_nsfw and nsfw_result.is_nsfw:
+        final_png_bytes = _get_censor_png_bytes("sfw_request")
+        submit_state = "censored"
+        is_censored = True
+        gen_metadata.append({"type": "censorship", "value": "nsfw"})
+    elif nsfw_result.is_nsfw:
+        gen_metadata.append({"type": "information", "value": "nsfw"})
+
+    return {
+        "final_png_bytes": final_png_bytes,
+        "submit_state": submit_state,
+        "censored": is_censored,
+        "is_csam": bool(nsfw_result.is_csam),
+        "is_nsfw": bool(nsfw_result.is_nsfw),
+        "gen_metadata": gen_metadata,
+    }
 
 
 def _utc_today_str() -> str:
@@ -147,6 +282,8 @@ def _default_data() -> dict[str, Any]:
         "sdxl_jobs_completed": 0,
         "krea_jobs_completed": 0,
         "total_jobs_faulted": 0,
+        "total_csam_filtered": 0,
+        "total_nsfw_censored": 0,
         "total_kudos_earned": 0.0,
         "total_megapixelsteps": 0.0,
         "recent_jobs": [],
@@ -652,6 +789,15 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
             _runtime_status["state"] = "waiting_local_busy"
             return {"status": "local_busy", "detail": "Local ComfyUI or Autopilot is currently busy"}
 
+        # Fail-closed safety requirement: never pop jobs if horde_safety (NSFW/CSAM scanner) is unavailable
+        try:
+            await asyncio.to_thread(_ensure_safety_checker)
+        except Exception as safety_err:
+            _runtime_status["state"] = "error"
+            _runtime_status["last_error"] = f"horde_safety initialization failed: {safety_err}"
+            logger.error(f"[HordeDreamer] Refusing to pop jobs without horde_safety: {safety_err}")
+            return {"status": "safety_unavailable", "detail": _runtime_status["last_error"]}
+
         worker_name = str(data.get("worker_name") or "OnMyChat-Dreamer").strip()[:100]
         max_pixels = int(data.get("max_pixels") or (1024 * 1024))
         nsfw_flag = bool(data.get("nsfw", True))
@@ -699,17 +845,16 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                             logger.warning(f"[HordeDreamer] {_runtime_status['last_error']}")
                             return {"status": "unsafe_ip", "detail": _runtime_status["last_error"]}
                         if "Maintenance mode" in err_text or "WorkerMaintenance" in err_text:
-                            uinfo = await fetch_horde_user_info(api_key, force=True)
-                            for wid in (uinfo or {}).get("worker_ids") or []:
-                                try:
-                                    async with session.put(
-                                        f"{HORDE_API_BASE}/workers/{wid}",
-                                        json={"maintenance": False},
-                                        headers=headers,
-                                    ) as m_resp:
-                                        logger.info(f"[HordeDreamer] Cleared maintenance mode on worker {wid}: HTTP {m_resp.status}")
-                                except Exception as m_err:
-                                    logger.warning(f"[HordeDreamer] Failed clearing maintenance on {wid}: {m_err}")
+                            # Never auto-clear maintenance mode: respect moderator/owner maintenance state and pause the worker.
+                            data["enabled"] = False
+                            save_dreamer_data(data)
+                            _runtime_status["state"] = "paused"
+                            _runtime_status["last_error"] = (
+                                "Worker placed in Maintenance Mode on AI Horde. "
+                                "Worker has been automatically paused; resolve any issues before disabling maintenance mode."
+                            )
+                            logger.warning(f"[HordeDreamer] {_runtime_status['last_error']}")
+                            return {"status": "maintenance_paused", "detail": _runtime_status["last_error"]}
                         _runtime_status["last_error"] = f"Pop HTTP {pop_resp.status}: {err_text[:180]}"
                         logger.warning(f"[HordeDreamer] Pop failed ({pop_resp.status}): {err_text[:200]}")
                         return {"status": "error", "detail": _runtime_status["last_error"]}
@@ -831,7 +976,53 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                     _runtime_status["current_job_id"] = None
                     return {"status": "faulted", "job_id": job_id}
 
-                webp_bytes = _convert_png_to_webp(png_bytes, quality=92)
+                # Evaluate generated image safety (NSFW & CSAM scanning via horde_safety)
+                _runtime_status["state"] = "evaluating_safety"
+                censor_nsfw_req = bool(
+                    gen_payload.get("use_nsfw_censor")
+                    or gen_payload.get("censor_nsfw")
+                    or pop_data.get("censor_nsfw")
+                )
+                try:
+                    safety_res = await asyncio.to_thread(
+                        _evaluate_image_safety,
+                        png_bytes,
+                        raw_prompt,
+                        censor_nsfw_req,
+                        not nsfw_flag,
+                        {},
+                    )
+                except Exception as safety_eval_err:
+                    logger.error(f"[HordeDreamer] horde_safety check failed for job {job_id}: {safety_eval_err}")
+                    fault_body = {
+                        "id": job_id,
+                        "generation": "faulted",
+                        "state": "faulted",
+                        "seed": seed_int,
+                        "censored": False,
+                    }
+                    try:
+                        await session.post(f"{HORDE_API_BASE}/generate/submit", json=fault_body, headers=headers)
+                    except Exception:
+                        pass
+                    upd = load_dreamer_data()
+                    upd["total_jobs_faulted"] = int(upd.get("total_jobs_faulted", 0)) + 1
+                    save_dreamer_data(upd)
+                    _runtime_status["state"] = "error"
+                    _runtime_status["last_error"] = f"Safety check failed for job {job_id}: {safety_eval_err}"
+                    _runtime_status["current_job_id"] = None
+                    return {"status": "faulted", "job_id": job_id}
+
+                final_png_bytes = safety_res["final_png_bytes"]
+                submit_state = safety_res["submit_state"]
+                is_censored = bool(safety_res["censored"])
+                gen_metadata = safety_res["gen_metadata"]
+                if safety_res.get("is_csam"):
+                    logger.warning(f"[HordeDreamer] CSAM detected by horde_safety in job {job_id}. Image replaced with CSAM censor placeholder.")
+                elif is_censored:
+                    logger.info(f"[HordeDreamer] NSFW censored by horde_safety in job {job_id} (censor_nsfw={censor_nsfw_req}, sfw_worker={not nsfw_flag}).")
+
+                webp_bytes = _convert_png_to_webp(final_png_bytes, quality=92)
                 if r2_url and r2_url.startswith("http"):
                     uploaded = await _upload_webp_to_r2(session, r2_url, webp_bytes)
                     if not uploaded:
@@ -842,12 +1033,13 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                 else:
                     generation_field = base64.b64encode(webp_bytes).decode("ascii")
 
-                submit_body = {
+                submit_body: dict[str, Any] = {
                     "id": job_id,
                     "generation": generation_field,
-                    "state": "ok",
+                    "state": submit_state,
                     "seed": seed_int,
-                    "censored": False,
+                    "censored": is_censored,
+                    "gen_metadata": gen_metadata,
                 }
 
                 reward = 0.0
@@ -870,6 +1062,10 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                     upd["krea_jobs_completed"] = int(upd.get("krea_jobs_completed", 0)) + 1
                 else:
                     upd["sdxl_jobs_completed"] = int(upd.get("sdxl_jobs_completed", 0)) + 1
+                if safety_res.get("is_csam"):
+                    upd["total_csam_filtered"] = int(upd.get("total_csam_filtered", 0)) + 1
+                elif is_censored:
+                    upd["total_nsfw_censored"] = int(upd.get("total_nsfw_censored", 0)) + 1
                 upd["total_kudos_earned"] = round(float(upd.get("total_kudos_earned", 0.0)) + reward, 2)
                 upd["total_megapixelsteps"] = round(float(upd.get("total_megapixelsteps", 0.0)) + mps, 2)
 
@@ -882,8 +1078,9 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                     "steps": steps,
                     "duration_sec": render_sec,
                     "kudos": round(reward, 2),
-                    "status": "ok",
-                    "prompt_preview": pos_prompt[:100],
+                    "status": submit_state,
+                    "censored": is_censored,
+                    "prompt_preview": "[CSAM Filtered]" if safety_res.get("is_csam") else pos_prompt[:100],
                 }
                 upd.setdefault("recent_jobs", []).insert(0, job_record)
                 save_dreamer_data(upd)
@@ -896,7 +1093,7 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                 _runtime_status["state"] = "idle_polling"
 
                 logger.info(
-                    f"[HordeDreamer] Submitted job {job_id} ({job_model} via {backend_label}) in {render_sec}s -> "
+                    f"[HordeDreamer] Submitted job {job_id} ({job_model} via {backend_label}, state={submit_state}, censored={is_censored}) in {render_sec}s -> "
                     f"+{reward:.1f} Kudos (Krea today: {upd['krea_daily_count']}/{upd['krea_daily_limit']})"
                 )
                 return {"status": "ok", "job": job_record}
@@ -1176,6 +1373,8 @@ async def _build_state_payload(refresh_user: bool = False) -> dict[str, Any]:
             "sdxl_jobs_completed": int(data.get("sdxl_jobs_completed", 0)),
             "krea_jobs_completed": int(data.get("krea_jobs_completed", 0)),
             "total_jobs_faulted": int(data.get("total_jobs_faulted", 0)),
+            "total_csam_filtered": int(data.get("total_csam_filtered", 0)),
+            "total_nsfw_censored": int(data.get("total_nsfw_censored", 0)),
             "total_kudos_earned": round(float(data.get("total_kudos_earned", 0.0)), 2),
             "total_megapixelsteps": round(float(data.get("total_megapixelsteps", 0.0)), 2),
             "recent_jobs": (data.get("recent_jobs") or [])[:30],
@@ -1191,6 +1390,8 @@ async def _build_state_payload(refresh_user: bool = False) -> dict[str, Any]:
             "last_skipped": _runtime_status.get("last_skipped") or {},
             "active_models_offered": get_active_models_for_pop(data),
             "bridge_agent": BRIDGE_AGENT,
+            "safety_available": bool(_runtime_status.get("safety_available", HORDE_SAFETY_AVAILABLE)),
+            "safety_loaded": bool(_runtime_status.get("safety_loaded", False)),
         },
         "account": {
             "username": (uinfo or {}).get("username", ""),
@@ -1400,6 +1601,7 @@ HORDE_CONSOLE_HTML = """<!DOCTYPE html>
       <h1>
         <span>⚡ AI Horde Dreamer Worker</span>
         <span id="stateBadge" class="badge">Loading...</span>
+        <span id="safetyBadge" class="badge ok">🛡️ horde-safety</span>
       </h1>
       <div class="stat-sub mono" id="bridgeAgent"></div>
     </div>
@@ -1513,6 +1715,12 @@ function renderState(d) {
   const badge = document.getElementById('stateBadge');
   badge.textContent = (cfg.enabled ? rt.state : 'paused').toUpperCase();
   badge.className = 'badge ' + (cfg.enabled && rt.state !== 'error' ? 'ok' : (rt.state === 'error' ? 'err' : 'warn'));
+
+  const sBadge = document.getElementById('safetyBadge');
+  if (sBadge) {
+    sBadge.textContent = rt.safety_available ? (rt.safety_loaded ? '🛡️ horde-safety: Active' : '🛡️ horde-safety: Ready') : '⚠️ horde-safety: Missing';
+    sBadge.className = 'badge ' + (rt.safety_available ? 'ok' : 'err');
+  }
 
   document.getElementById('toggleBtn').textContent = cfg.enabled ? '⏸ Pause Worker' : '▶ Resume Worker';
   document.getElementById('bridgeAgent').textContent = rt.bridge_agent || '';

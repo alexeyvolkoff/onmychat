@@ -24,3 +24,5 @@ opencv-python-headless
 aiortc>=1.15
 pywebpush>=2.0.0
 py-vapid>=1.9.0
+horde_safety>=0.3.1
+
