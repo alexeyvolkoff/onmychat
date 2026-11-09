@@ -465,10 +465,38 @@ async def _run_local_comfy_silent(workflow: dict[str, Any], timeout: int = 180) 
                                     async with session.get(f"{comfy_url}/view", params=params) as img_resp:
                                         if img_resp.status == 200:
                                             final_image_data = await img_resp.read()
+                                    # Keep the latest 30 temp preview files for ComfyUI Queue sidebar,
+                                    # and prune older ones so ComfyUI/temp/ never fills the disk.
+                                    if img_type == "temp":
+                                        _prune_comfy_temp(keep=30)
                 return final_image_data
     except Exception as e:
         logger.error(f"[HordeDreamer] Error in _run_local_comfy_silent: {e}")
         return None
+
+
+def _prune_comfy_temp(keep: int = 30) -> None:
+    """Keep only the newest `keep` preview PNGs in ComfyUI/temp/ so the Queue UI works without filling disk."""
+    try:
+        temp_dir = os.path.expanduser("~/projects/ComfyUI/temp")
+        if not os.path.isdir(temp_dir):
+            return
+        entries = []
+        for name in os.listdir(temp_dir):
+            if name.startswith("ComfyUI_temp_") and name.endswith(".png"):
+                full = os.path.join(temp_dir, name)
+                try:
+                    entries.append((os.path.getmtime(full), full))
+                except OSError:
+                    pass
+        entries.sort(reverse=True)
+        for _, old_path in entries[keep:]:
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 async def _run_modal_krea_silent(workflow: dict[str, Any], timeout: int = 180) -> Optional[bytes]:
