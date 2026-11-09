@@ -5545,6 +5545,30 @@ async def krea_civitai_publish_endpoint(request: Request, data: CivitaiPublishIn
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/krea/autopilot/intake")
+async def krea_autopilot_intake_endpoint(request: Request, data: CivitaiPublishInput):
+    """Sends 1..20 images or videos from Creative Studio directly into Autopilot review queue (pending_review)."""
+    ctx = _build_krea_ctx(request, data)
+    status = await core_service.check_krea_status(ctx)
+    if not status.get("allowed") or status.get("tier") == "guest":
+        raise HTTPException(status_code=403, detail=status.get("krea_notice") or status.get("error", "Creative Studio Pass required"))
+    try:
+        from extensions import autopilot as _autopilot_ext
+        return await _autopilot_ext.intake_creation_to_autopilot(
+            ctx=ctx,
+            images=data.images or [],
+            title=data.title or "",
+            detail=data.detail or "",
+            tags=data.tags,
+            persona_id=data.persona_id or "",
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logging.error(f"Error in /krea/autopilot/intake: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/krea/director/prompt")
 async def krea_director_prompt_endpoint(request: Request, data: DirectorPromptInput):
     """AI Director's Chair — Prompt Co-Pilot (rewrites or creates Krea2/Anima/SDXL prompts in natural language, with CivitAI URL auto-import)."""
