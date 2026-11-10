@@ -3,8 +3,9 @@ AI Horde Dreamer Worker & Image Client for OnMyChat (`horde_dreamer.py`).
 
 Features:
 1. Built-in AI Horde Image Worker ("Dreamer"):
-   - Unlimited 24/7 Local SDXL generation via local ComfyUI (`flow.json` DMD2 pipeline)
-     when local ComfyUI queue is idle.
+   - Unlimited 24/7 Local SDXL generation via local ComfyUI (`hordelib`-compatible
+     `stable_diffusion` pipeline honoring requested `steps`, `cfg_scale`, `sampler_name`,
+     `karras`/`scheduler`, and `clip_skip`) when local ComfyUI queue is idle.
    - Optional daily-capped Modal Krea 2 (`Krea2-Turbo_fp8`) generation (default max 10/day,
      auto-reset at UTC midnight; once reached, `Krea2-Turbo_fp8` is automatically
      removed from `/v2/generate/pop` models for the rest of the day).
@@ -61,29 +62,89 @@ BRIDGE_AGENT = "OnMyChat:1.0.0:https://github.com/alexeyvolkoff/onmychat"
 CLIENT_AGENT = "OnMyChat:1.0.0:https://github.com/alexeyvolkoff/onmychat"
 PROMPT_SEPARATOR = "###"
 
-# Mapping from official AI Horde model names to local ComfyUI SDXL checkpoints
+# Strict 1-to-1 mapping from official AI Horde model names (`AI-Horde-image-model-reference`)
+# to their corresponding ComfyUI SDXL checkpoint filenames. Only models whose `.safetensors`
+# file is physically present in `~/projects/ComfyUI/models/checkpoints/` are offered in `/v2/generate/pop`.
 LOCAL_SDXL_MODEL_CATALOG: dict[str, dict[str, str]] = {
     "CyberRealistic Pony": {
         "ckpt": "cyberrealisticPony_v180Coreshift.safetensors",
         "description": "Top-4 AI Horde model (Pony/SDXL Photorealism) — stays warm in VRAM",
     },
     "Pony Realism": {
-        "ckpt": "cyberrealisticPony_v180Coreshift.safetensors",
-        "description": "Uses the same cyberrealisticPony checkpoint (zero VRAM swap)",
+        "ckpt": "ponyRealism_v21MainVAE.safetensors",
+        "description": "Official Pony Realism v2.1 SDXL checkpoint",
     },
     "AlbedoBase XL (SDXL)": {
-        "ckpt": "CyberRealisticXLPlay_V10.0_FP16.safetensors",
-        "description": "High-demand general SDXL photorealism checkpoint",
+        "ckpt": "albedo_base_xl.safetensors",
+        "description": "Official AlbedoBase XL SDXL checkpoint",
     },
     "SDXL 1.0": {
-        "ckpt": "CyberRealisticXLPlay_V10.0_FP16.safetensors",
-        "description": "Standard SDXL 1.0 requests routed to CyberRealisticXLPlay",
+        "ckpt": "sd_xl_base_1.0.safetensors",
+        "description": "Official SDXL 1.0 Base checkpoint",
     },
     "WAI-NSFW-illustrious-SDXL": {
-        "ckpt": "CyberIllustrious_V12_FP16.safetensors",
-        "description": "Illustrious anime/illustration SDXL checkpoint",
+        "ckpt": "waiNSFWIllustrious_v140.safetensors",
+        "description": "Official WAI-NSFW-illustrious-SDXL v14.0 checkpoint",
     },
 }
+
+# Canonical AI Horde -> ComfyUI sampler mapping (`Haidra-Org/hordelib/hordelib/pipeline/constants.py`)
+HORDE_TO_COMFY_SAMPLERS: dict[str, str] = {
+    "k_euler": "euler",
+    "k_euler_a": "euler_ancestral",
+    "k_heun": "heun",
+    "k_dpm_2": "dpm_2",
+    "k_dpm_2_a": "dpm_2_ancestral",
+    "k_lms": "lms",
+    "k_dpm_fast": "dpm_fast",
+    "k_dpm_adaptive": "dpm_adaptive",
+    "k_dpmpp_2s_a": "dpmpp_2s_ancestral",
+    "k_dpmpp_sde": "dpmpp_sde",
+    "k_dpmpp_2m": "dpmpp_2m",
+    "ddim": "ddim",
+    "dpmsolver": "dpmpp_2m",
+    "lcm": "lcm",
+    "plms": "euler",
+    "uni_pc": "uni_pc",
+    "uni_pc_bh2": "uni_pc_bh2",
+    "dpmpp_2m_sde": "dpmpp_2m_sde",
+    "dpmpp_3m_sde": "dpmpp_3m_sde",
+    "ddpm": "ddpm",
+    "deis": "deis",
+    "ipndm": "ipndm",
+    "res_multistep": "res_multistep",
+    "gradient_estimation": "gradient_estimation",
+    "heunpp2": "heunpp2",
+    "er_sde": "er_sde",
+    "sa_solver": "sa_solver",
+    "ipndm_v": "ipndm_v",
+    "dpmpp_2m_sde_heun": "dpmpp_2m_sde_heun",
+    "sa_solver_pece": "sa_solver_pece",
+    "seeds_2": "seeds_2",
+    "seeds_3": "seeds_3",
+    "res_multistep_ancestral": "res_multistep_ancestral",
+    "euler_cfg_pp": "euler_cfg_pp",
+    "euler_ancestral_cfg_pp": "euler_ancestral_cfg_pp",
+    "dpmpp_2s_ancestral_cfg_pp": "dpmpp_2s_ancestral_cfg_pp",
+    "dpmpp_2m_cfg_pp": "dpmpp_2m_cfg_pp",
+    "res_multistep_cfg_pp": "res_multistep_cfg_pp",
+    "res_multistep_ancestral_cfg_pp": "res_multistep_ancestral_cfg_pp",
+    "gradient_estimation_cfg_pp": "gradient_estimation_cfg_pp",
+}
+
+COMFY_SUPPORTED_SCHEDULERS: frozenset[str] = frozenset(
+    {
+        "normal",
+        "karras",
+        "simple",
+        "sgm_uniform",
+        "exponential",
+        "ddim_uniform",
+        "beta",
+        "linear_quadratic",
+        "kl_optimal",
+    }
+)
 
 KREA_HORDE_MODEL_NAME = "Krea2-Turbo_fp8"
 
@@ -348,10 +409,18 @@ def get_effective_api_key(data: Optional[dict[str, Any]] = None) -> str:
     return ""
 
 
+def _is_comfy_checkpoint_installed(ckpt_name: str) -> bool:
+    """Returns True if `ckpt_name` exists in the local ComfyUI checkpoints folder."""
+    if not ckpt_name:
+        return False
+    ckpts_dir = os.path.expanduser(str(SETTINGS.get("COMFY_CHECKPOINTS_DIR", "~/projects/ComfyUI/models/checkpoints")))
+    return os.path.isfile(os.path.join(ckpts_dir, ckpt_name))
+
+
 def get_active_models_for_pop(data: Optional[dict[str, Any]] = None) -> list[str]:
     """
     Returns the list of AI Horde models this worker currently offers for `/v2/generate/pop`:
-    - Unlimited local SDXL models when `sdxl_enabled` is True.
+    - Unlimited local SDXL models when `sdxl_enabled` is True AND their `.safetensors` file is installed.
     - `Krea2-Turbo_fp8` ONLY when `krea_enabled` is True, Modal is configured,
       and today's `krea_daily_count < krea_daily_limit` (or `krea_daily_limit < 0` for unlimited).
     """
@@ -367,7 +436,8 @@ def get_active_models_for_pop(data: Optional[dict[str, Any]] = None) -> list[str
     if data.get("sdxl_enabled", True):
         for m in data.get("sdxl_models") or ["CyberRealistic Pony"]:
             m_str = str(m).strip()
-            if m_str and m_str in LOCAL_SDXL_MODEL_CATALOG and m_str not in models:
+            cat_entry = LOCAL_SDXL_MODEL_CATALOG.get(m_str)
+            if cat_entry and m_str not in models and _is_comfy_checkpoint_installed(cat_entry.get("ckpt", "")):
                 models.append(m_str)
 
     if data.get("krea_enabled", True) and is_modal_enabled():
@@ -419,6 +489,33 @@ def _split_horde_prompt(raw_prompt: str) -> tuple[str, str]:
     return raw_prompt.strip(), ""
 
 
+def _resolve_comfy_sampler(sampler_name: Optional[str]) -> str:
+    """Maps an AI Horde sampler name to its canonical ComfyUI KSampler `sampler_name`."""
+    raw = str(sampler_name or "k_euler").strip().lower()
+    return HORDE_TO_COMFY_SAMPLERS.get(raw, "euler")
+
+
+def _resolve_comfy_scheduler(comfy_sampler: str, scheduler: Optional[str], karras: bool = True) -> str:
+    """
+    Resolves the ComfyUI KSampler `scheduler` from the AI Horde request's `scheduler` and `karras` fields,
+    matching `Haidra-Org/AI-Horde/horde/consts.py` (`scheduler_for_request`) and `Haidra-Org/hordelib`
+    (`dpmpp_3m_sde` schedule guard).
+    """
+    if scheduler is not None:
+        cand = str(scheduler).strip().lower()
+        if cand in COMFY_SUPPORTED_SCHEDULERS:
+            eff_sched = cand
+        else:
+            eff_sched = "karras" if karras else "normal"
+    else:
+        eff_sched = "karras" if karras else "normal"
+
+    # `dpmpp_3m_sde` diverges to color noise under `normal`; `hordelib` substitutes `karras`.
+    if comfy_sampler == "dpmpp_3m_sde" and eff_sched == "normal":
+        eff_sched = "karras"
+    return eff_sched
+
+
 def _build_sdxl_horde_workflow(
     positive_prompt: str,
     negative_prompt: str,
@@ -426,52 +523,73 @@ def _build_sdxl_horde_workflow(
     width: int,
     height: int,
     seed: int,
+    steps: int = 30,
+    cfg: float = 7.5,
+    sampler_name: str = "k_euler_a",
+    karras: bool = True,
+    scheduler: Optional[str] = None,
+    clip_skip: int = 1,
 ) -> dict[str, Any]:
-    """Builds a clean, fast 7-step DMD2 SDXL ComfyUI workflow from `flow.json`."""
-    workflow_path = str(SETTINGS.get("WORKFLOW_PATH", "flow.json"))
-    if not os.path.isabs(workflow_path):
-        workflow_path = os.path.join(ROOT_DIR, workflow_path)
-    with open(workflow_path, "r", encoding="utf-8") as f:
-        wf = json.load(f)
+    """
+    Builds a pure, unmodified ComfyUI SDXL text-to-image workflow matching `Haidra-Org/hordelib`'s
+    `stable_diffusion` pipeline (`CheckpointLoaderSimple -> CLIPSetLastLayer -> CLIPTextEncode ->
+    EmptyLatentImage -> KSampler -> VAEDecode -> PreviewImage`), honoring the exact request parameters
+    (`steps`, `cfg_scale`, `sampler_name`, `karras`/`scheduler`, `clip_skip`, `seed`, `width`, `height`,
+    and unmodified `positive_prompt`/`negative_prompt`).
+    """
+    w_clamped = max(64, min(2048, ((int(width or 1024) + 63) // 64) * 64))
+    h_clamped = max(64, min(2048, ((int(height or 1024) + 63) // 64) * 64))
+    eff_steps = max(1, min(150, int(steps or 30)))
+    eff_cfg = max(1.0, min(100.0, float(cfg if cfg is not None else 7.5)))
+    eff_clip_skip = max(1, min(20, int(clip_skip or 1)))
+    comfy_sampler = _resolve_comfy_sampler(sampler_name)
+    comfy_scheduler = _resolve_comfy_scheduler(comfy_sampler, scheduler, karras)
 
-    # Set checkpoint
-    if "127" in wf and "inputs" in wf["127"]:
-        wf["127"]["inputs"]["ckpt_name"] = ckpt_name
-
-    # Disable all character/style LoRAs in Power Lora Loader (node "103")
-    if "103" in wf and "inputs" in wf["103"]:
-        for k, v in wf["103"]["inputs"].items():
-            if isinstance(v, dict) and ("lora" in v or "name" in v):
-                v["on"] = False
-
-    base_neg = (
-        "worst quality, low quality, blurry, deformed, bad anatomy, bad hands, extra digits, "
-        "missing fingers, watermark, signature"
-    )
-    eff_neg = f"{negative_prompt}, {base_neg}".strip(", ") if negative_prompt else base_neg
-    eff_pos = positive_prompt.strip() or "masterpiece, best quality, ultra detailed"
-
-    if "4" in wf and "inputs" in wf["4"]:
-        wf["4"]["inputs"]["text"] = eff_neg
-        wf["4"]["inputs"]["clip"] = ["103", 1]
-    if "85" in wf and "inputs" in wf["85"]:
-        wf["85"]["inputs"]["text"] = eff_pos
-        wf["85"]["inputs"]["clip"] = ["103", 1]
-
-    w_clamped = max(512, min(1536, (int(width or 1024) // 8) * 8))
-    h_clamped = max(512, min(1536, (int(height or 1024) // 8) * 8))
-    if "6" in wf and "inputs" in wf["6"]:
-        wf["6"]["inputs"]["width"] = w_clamped
-        wf["6"]["inputs"]["height"] = h_clamped
-
-    if "5" in wf and "inputs" in wf["5"]:
-        wf["5"]["inputs"]["seed"] = int(seed)
-        wf["5"]["inputs"]["steps"] = 7
-        wf["5"]["inputs"]["cfg"] = 1.45
-        wf["5"]["inputs"]["sampler_name"] = "lcm"
-        wf["5"]["inputs"]["scheduler"] = "exponential"
-
-    return wf
+    return {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": ckpt_name},
+        },
+        "2": {
+            "class_type": "CLIPSetLastLayer",
+            "inputs": {"stop_at_clip_layer": -eff_clip_skip, "clip": ["1", 1]},
+        },
+        "3": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": positive_prompt, "clip": ["2", 0]},
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": negative_prompt, "clip": ["2", 0]},
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": w_clamped, "height": h_clamped, "batch_size": 1},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": int(seed),
+                "steps": eff_steps,
+                "cfg": eff_cfg,
+                "sampler_name": comfy_sampler,
+                "scheduler": comfy_scheduler,
+                "denoise": 1.0,
+                "model": ["1", 0],
+                "positive": ["3", 0],
+                "negative": ["4", 0],
+                "latent_image": ["5", 0],
+            },
+        },
+        "7": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["6", 0], "vae": ["1", 2]},
+        },
+        "8": {
+            "class_type": "PreviewImage",
+            "inputs": {"images": ["7", 0]},
+        },
+    }
 
 
 def _build_krea_horde_workflow(
@@ -482,19 +600,25 @@ def _build_krea_horde_workflow(
     seed: int,
     steps: int = 8,
     cfg: float = 1.5,
+    sampler_name: str = "k_euler",
+    karras: bool = False,
+    scheduler: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Builds the Krea 2 UNET workflow for Modal GPU execution."""
+    """
+    Builds the Krea 2 UNET workflow for Modal GPU execution matching `Haidra-Org/hordelib`'s
+    `qwen_krea2` pipeline, honoring the request's `steps`, `cfg_scale`, `sampler_name`,
+    `karras`/`scheduler`, `seed`, `width`, `height`, and unmodified `positive_prompt`/`negative_prompt`.
+    """
     unet_model = SETTINGS.get("KREA_MODEL", "CyberRealistic_Krea2_V4.0_BF16.safetensors")
     clip_model = SETTINGS.get("KREA_CLIP", "qwen3-vl-4b-heretic.safetensors")
     vae_model = SETTINGS.get("KREA_VAE", "qwen_image_vae.safetensors")
 
-    w_clamped = max(512, min(1536, (int(width or 1024) // 8) * 8))
-    h_clamped = max(512, min(1536, (int(height or 1024) // 8) * 8))
-    eff_steps = max(4, min(12, int(steps or 8)))
-    eff_cfg = max(1.0, min(3.5, float(cfg or 1.5)))
-    base_neg = "worst quality, low quality, blurry, bad anatomy, bad hands, deformed, watermark, signature"
-    eff_neg = f"{negative_prompt}, {base_neg}".strip(", ") if negative_prompt else base_neg
-    eff_pos = positive_prompt.strip() or "masterpiece, photorealistic, high detail"
+    w_clamped = max(64, min(2048, ((int(width or 1024) + 63) // 64) * 64))
+    h_clamped = max(64, min(2048, ((int(height or 1024) + 63) // 64) * 64))
+    eff_steps = max(1, min(50, int(steps or 8)))
+    eff_cfg = max(1.0, min(30.0, float(cfg if cfg is not None else 1.5)))
+    comfy_sampler = _resolve_comfy_sampler(sampler_name)
+    comfy_scheduler = _resolve_comfy_scheduler(comfy_sampler, scheduler, karras)
 
     return {
         "1": {
@@ -511,11 +635,11 @@ def _build_krea_horde_workflow(
         },
         "4": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": eff_pos, "clip": ["2", 0]},
+            "inputs": {"text": positive_prompt, "clip": ["2", 0]},
         },
         "5": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"text": eff_neg, "clip": ["2", 0]},
+            "inputs": {"text": negative_prompt, "clip": ["2", 0]},
         },
         "6": {
             "class_type": "EmptySD3LatentImage",
@@ -527,8 +651,8 @@ def _build_krea_horde_workflow(
                 "seed": int(seed),
                 "steps": eff_steps,
                 "cfg": eff_cfg,
-                "sampler_name": "euler",
-                "scheduler": "simple",
+                "sampler_name": comfy_sampler,
+                "scheduler": comfy_scheduler,
                 "denoise": 1.0,
                 "model": ["1", 0],
                 "positive": ["4", 0],
@@ -878,8 +1002,12 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                 pos_prompt, neg_prompt = _split_horde_prompt(raw_prompt)
                 width = int(gen_payload.get("width") or 1024)
                 height = int(gen_payload.get("height") or 1024)
-                steps = int(gen_payload.get("ddim_steps") or gen_payload.get("steps") or 20)
-                cfg_scale = float(gen_payload.get("cfg_scale") or 7.0)
+                steps = int(gen_payload.get("ddim_steps") or gen_payload.get("steps") or 30)
+                cfg_scale = float(gen_payload.get("cfg_scale") if gen_payload.get("cfg_scale") is not None else 7.5)
+                sampler_name = str(gen_payload.get("sampler_name") or "k_euler_a")
+                karras = bool(gen_payload.get("karras", True))
+                scheduler = gen_payload.get("scheduler")
+                clip_skip = int(gen_payload.get("clip_skip") or 1)
 
                 raw_seed = gen_payload.get("seed")
                 try:
@@ -901,7 +1029,8 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
 
                 logger.info(
                     f"[HordeDreamer] Popped job {job_id} | model='{job_model}' ({backend_label}) | "
-                    f"{width}x{height} | steps={steps} | prompt='{pos_prompt[:70]}'"
+                    f"{width}x{height} | steps={steps} | sampler={sampler_name} | cfg={cfg_scale} | "
+                    f"clip_skip={clip_skip} | prompt='{pos_prompt[:70]}'"
                 )
 
                 t0 = time.time()
@@ -926,6 +1055,9 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                             seed=seed_int,
                             steps=steps,
                             cfg=cfg_scale,
+                            sampler_name=sampler_name,
+                            karras=karras,
+                            scheduler=scheduler,
                         )
                         png_bytes = await _run_modal_krea_silent(wf)
                 else:
@@ -938,6 +1070,12 @@ async def run_single_dreamer_cycle(ignore_enabled: bool = False) -> dict[str, An
                         width=width,
                         height=height,
                         seed=seed_int,
+                        steps=steps,
+                        cfg=cfg_scale,
+                        sampler_name=sampler_name,
+                        karras=karras,
+                        scheduler=scheduler,
+                        clip_skip=clip_skip,
                     )
                     png_bytes = await _run_local_comfy_silent(wf)
 
