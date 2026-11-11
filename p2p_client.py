@@ -57,7 +57,7 @@ import os
 import random
 import string
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 import aiohttp
@@ -826,7 +826,25 @@ class P2PClient:
                 connection = None
             if connection is None:
                 connection = P2PConnection(self.settings, self._signaling, link_id)
-                await connection.open()
+                try:
+                    await connection.open()
+                except Exception as primary_err:
+                    await connection.close("primary signaling failed")
+                    if "disk.direct" not in (self.settings.signaling_url or ""):
+                        raise
+                    tribute_settings = replace(
+                        self.settings,
+                        signaling_url="https://direct.onmydisk.net/api/signaling",
+                        ice_servers=default_ice_servers("direct.onmydisk.net"),
+                    )
+                    if not hasattr(self, "_tribute_signaling"):
+                        self._tribute_signaling = SignalingClient(tribute_settings)
+                    log.info(
+                        "P2P primary signaling failed (%s); retrying %s via Tribute direct.onmydisk.net",
+                        primary_err, link_id,
+                    )
+                    connection = P2PConnection(tribute_settings, self._tribute_signaling, link_id)
+                    await connection.open()
                 self._connections[link_id] = connection
 
         client = DeviceClient(self.settings, connection)
@@ -847,6 +865,8 @@ class P2PClient:
         for connection in connections:
             await connection.close("client shutdown")
         await self._signaling.close()
+        if hasattr(self, "_tribute_signaling"):
+            await self._tribute_signaling.close()
 
 
 _SENDER_ID_FILE = os.path.join("user_data", "p2p_sender_id")
